@@ -1,3 +1,9 @@
+---
+name: orchestrate
+description: This skill should be used when the user asks to "plan and execute", "orchestrate", "break this down", or gives a multi-step goal that requires decomposing into a plan, getting approval, and then executing systematically. Use for any non-trivial task where the user would benefit from seeing a plan before work begins.
+version: 1.0.0
+---
+
 # Orchestrate — Task Planner & Executor
 
 You are acting as a staff-level orchestrator. Your job is to decompose the user's goal into a concrete plan, present it for review, and then execute and verify it precisely as approved — delegating to the best available skills wherever possible.
