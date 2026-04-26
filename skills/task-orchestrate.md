@@ -34,11 +34,12 @@ To allow uninterrupted "go auto", grant them now:
   Gemini CLI        — add to ~/.gemini/settings.json under permissions.allow.
   Copilot / others  — grant terminal/shell execution permissions in the IDE.
 
-Type "grant" and I will write the missing entries to .claude/settings.json automatically.
+Type "grant" and I will write the missing entries to the project `.claude/settings.json`. Type "grant global" to write to `~/.claude/settings.json` instead.
 Type "skip" to continue without granting — you will be prompted mid-flow for each missing permission.
 ```
 
-On **"grant"**: read the current `.claude/settings.json` (create it if absent), merge the missing entries into `permissions.allow`, write it back, confirm `✓ Permissions updated — .claude/settings.json`, then proceed to plan.
+On **"grant"**: read the current project `.claude/settings.json` (create it if absent), merge the missing entries into `permissions.allow`, write it back, confirm `✓ Permissions updated — .claude/settings.json`, then proceed to plan.
+On **"grant global"**: same as above but targeting `~/.claude/settings.json`.
 On **"skip"**: proceed without modifying settings.
 
 ---
@@ -49,16 +50,18 @@ On **"skip"**: proceed without modifying settings.
 - Scan CWD for `.task-orchestrate-state-*.md`.
 - If **none found**: ask "What task would you like to orchestrate?"
 - If **one or more found**: list each as `[ID] <task summary> — phase X/Y (<status>)` and ask the user to pick an ID to resume, or say "new" to start a fresh task. **Never auto-load** — always wait for explicit selection even when only one file exists.
-- On resume: read the `mode` field from state file and restore it — if `mode: auto`, continue executing in auto mode without asking the user; if `mode: gated`, announce the next phase and wait.
+- On resume: read the `mode` field from state file and restore it — if `mode: auto`, continue executing in auto mode without asking the user; if `mode: gated`, announce the next phase and wait. If the resumed state file has `mode: pending` (user never typed 'go'), re-present the original plan and wait for go/go-auto/abort.
 - **`awaiting_critic` phases on resume:** if any phase has status `awaiting_critic`, the agent already returned but the critic did not run. Check `captured_output` in the state file:
   - If `captured_output` is present: announce `▶ Phase N — agent returned before compression, resuming from captured output`, then proceed directly to the critic (Step B) using the stored fields. Do NOT re-invoke the agent.
-  - If `captured_output` is absent (compression hit before the state write): reset status to `pending`, re-invoke the agent, and note `⚠ Phase N — captured output lost, re-invoking agent`.
+  - If `captured_output` is absent (compression hit before the state write): reset status to `pending`, increment `retries`, re-invoke the agent, and note `⚠ Phase N — captured output lost, re-invoking agent`. If retries reach 3, halt and declare a rabbit hole instead.
 
 **New task path** (a task description was given):
 - Generate a collision-resistant ID from the current date-time: `YYYYMMDD-HHMMSS` (e.g. `20260420-142837`). This eliminates index-collision races between concurrent sessions in the same directory.
-- Verify no `.task-orchestrate-state-{ID}.md` already exists; if it does (same-second collision), append `-2` (e.g. `20260420-142837-2`).
+- Verify no `.task-orchestrate-state-{ID}.md` already exists; if it does (same-second collision), append `-2`, `-3`, … incrementing until no collision is found (e.g. `20260420-142837-2`, `20260420-142837-3`).
 - Use that as `{N}` for this session.
 - If the user typed `resume` but also provided a task description, treat it as a new task (the description takes precedence).
+
+`resume` must match the full trimmed input to trigger the resume path. Any input containing other words (including 'resume the X') is treated as a new task description.
 
 Read the task. Classify complexity:
 - **Lightweight** (2–3 phases) · **Moderate** (4–5 phases) · **Complex** (6 phases) → decompose phases first, then apply the phase classification below (Steps 1–3) to route each phase to the right model and executor directly.
@@ -74,6 +77,8 @@ Before presenting, consolidate: merge consecutive phases of the same type and mo
 | test, verify, check, validate | execution |
 | review, architect, assess, evaluate | reasoning |
 | fetch, lookup, list, script, query | simple |
+
+Precedence when a phase matches multiple rows: reasoning > execution > simple > instructional.
 
 **Step 2 — Model tier (execution phases only):**
 
@@ -139,7 +144,7 @@ phases:
   3: [direct · agent/Haiku]        pending          depends_on: [1] retries: 0  criteria: ["..."]
 
 # OPERATING RULES (embedded for context-compression resilience)
-# Re-read ~/.claude/skills/task-orchestrate/SKILL.md before each turn.
+# Re-read ~/.claude/skills/task-orchestrate.md before each turn.
 # Supervisor only — never execute work directly.
 # State file ID is datetime-based (YYYYMMDD-HHMMSS) — never use sequential integers (collision risk).
 # Resume: always list all state files and ask user to pick — never auto-load even if only one exists.
@@ -160,9 +165,10 @@ phases:
 **On "go" / "go auto":** Update the state file `mode` field immediately:
 - `"go"` → set `mode: gated`
 - `"go auto"` → set `mode: auto`
+- `"go auto, approve MCP: <list>"` → write `mcp_preauthorized: [<list>]` into the state file and set `mode: auto`.
 
 **Execution — self-refresh before every turn:**
-At the start of each execution turn (before running any phase), **re-read this skill file** from `~/.claude/skills/task-orchestrate/SKILL.md` using the Read tool. This ensures operating rules are current even if earlier context was compressed. Also re-read the state file `.task-orchestrate-state-{N}.md` to confirm current mode and phase status. Skip re-reading only if this is the very first phase of a freshly loaded session.
+At the start of each execution turn (before running any phase), **re-read this skill file** from `~/.claude/skills/task-orchestrate.md` using the Read tool. This ensures operating rules are current even if earlier context was compressed. Also re-read the state file `.task-orchestrate-state-{N}.md` to confirm current mode and phase status. Skip re-reading only if this is the very first phase of a freshly loaded session.
 
 Before each turn, scan the phase list for **ready phases** — phases where all `depends_on` entries are `✓ complete` and the phase itself is `pending`.
 
@@ -188,7 +194,7 @@ Before each turn, scan the phase list for **ready phases** — phases where all 
 **Feedback → Decision → Execute** (runs after every agent returns, both modes):
 
 **Step A — Get feedback:**
-Extract the `## PHASE OUTPUT` block from the agent response. If the block is missing, go to Step B with verdict = ⚠️ and gap = "agent did not produce a PHASE OUTPUT block."
+Extract the `## PHASE OUTPUT` block from the agent response. If the block is missing, go to Step B with verdict = ⚠️ and gap = "agent did not produce a PHASE OUTPUT block." Do not invoke the critic. Do not write `captured_output`. Proceed directly to Step C with verdict ⚠️.
 
 Parse these fields:
 - `summary` — 1-line result description
@@ -223,6 +229,8 @@ Skip critic and micro-verifier for simple and instructional phases.
 | PASS or PARTIAL | any | non-empty, caused by this change | ❌ reason: first blocker |
 | (block missing) | — | — | ⚠️ gap: "no PHASE OUTPUT block" |
 
+Note: The `(block missing)` row documents a bypass path for reference only — the critic is not invoked in this case (see Step A).
+
 **Critic-override rule (blockers):** When critic returns `PASS` and all reported blockers are explicitly described as pre-existing or unrelated to this phase's changes (e.g. a broken local test environment that affects all specs), treat the phase as ✅ and surface the pre-existing issue as a note. Do not gate. This prevents environment noise from blocking correct code changes.
 
 For simple/instructional phases (no critic): high/medium confidence → ✅, low confidence → ⚠️.
@@ -231,10 +239,10 @@ For simple/instructional phases (no critic): high/medium confidence → ✅, low
 - ✅ → write checkpoint (phase → `✓ complete`, copy agent's `summary`). Reset phase `retries` to 0.
   - **Gated**: output 2–3 line summary, announce `⏸ Ready for Phase N+1 — "go" · describe changes · "skip" (skip phase N+1, mark ✗ skipped, advance to N+2) · "abort"` and wait for user.
   - **Auto**: output `✓ Phase N — <summary>` (one line), then **immediately call the next Agent tool** — do NOT stop, do NOT output `⏸`, do NOT wait.
-- ⚠️ → increment phase `retries` in state file. Output `🔍 Gap: <what's missing>`. If retries reach 3, halt and declare a rabbit hole (see Rabbit hole prevention). Otherwise re-invoke the same phase as an agent immediately, appending the gap to the prompt. On 2nd retry (retries == 2): upgrade model tier (Haiku→Sonnet, Sonnet→Opus). Return to Step A.
+- ⚠️ → increment phase `retries` in state file. Output `🔍 Gap: <what's missing>`. If retries reach 3, halt and declare a rabbit hole (see Rabbit hole prevention). Otherwise re-invoke the same phase as an agent immediately, appending the gap to the prompt. Retry upgrades apply as: retries==1 → original tier, retries==2 → first upgrade (Haiku→Sonnet, Sonnet→Opus), retries==3 → halt (rabbit hole). The Sonnet→Opus second upgrade is only reachable if the original tier was Haiku; for Sonnet-tier phases only one upgrade attempt is possible before halting. Return to Step A.
 - ❌ → write checkpoint (phase → `✗ failed`). Output error + one-sentence diagnosis. Gate both modes: `⏸ retry · skip · replan · abort · instruct`.
   - **retry**: re-invoke the phase as-is.
-  - **skip**: mark phase `✗ skipped`. If any later phases `depends_on` this one, surface them: "Phases N+1, N+2 depend on this — proceed anyway (they will run without this output), or replan?"
+  - **skip**: mark phase `✗ skipped`. If any later phases `depends_on` this one, surface the full transitive closure of dependents (not just direct): "Phases X, Y, Z transitively depend on this — proceed anyway (they will run without this output) or replan?"
   - **replan**: present a revised plan for remaining phases only.
   - **abort**: delete state file, stop.
   - **instruct**: user provides a corrective instruction — append it to the original phase prompt and re-invoke.
@@ -256,11 +264,11 @@ LOOP:
   4. Run Feedback → Decision → Execute (Steps A/B/C above) for each
   5. On ✅ for all: goto LOOP immediately — no pause, no user prompt
   6. On ⚠️: goto step 3 (re-launch phase agent with gap appended; if retries == 3 → declare rabbit hole, halt)
-  7. On ❌: halt, gate user
+  7. On ❌: checkpoint all ✅ phases in this batch first, then halt and gate user
 ```
 The entire loop runs within a single turn. Never stop between steps 5 and 1.
 
-On completion: delete `.task-orchestrate-state-{N}.md`. Output: `TASK COMPLETE — <task>` · `✓/✗ Phase N [executor/model]` · `Outputs: <list>`. Always announce `▶ Phase N — <name>` before invoking each phase agent. On "replan": revised plan for remaining phases only; rewrite checkpoint with updated phases.
+On completion: delete `.task-orchestrate-state-{N}.md`. Output: `TASK COMPLETE — <task>` · `✓/✗ Phase N [executor/model]` · `Outputs: <list>`. Always announce `▶ Phase N — <name>` before invoking each phase agent. On "replan": revised plan for remaining phases only; rewrite checkpoint with updated phases. Continue numbering from the highest completed phase number. Completed phase entries remain in the state file unchanged; failed/incomplete entries are replaced with the new plan.
 
 **Rabbit hole prevention:** Track retry count per phase. After **3 retries on the same phase** (or the same error repeating), halt and declare a rabbit hole:
 > ⚠️ Phase N appears stuck (`<brief diagnosis of what's been tried and why it's not working>`).
@@ -278,7 +286,7 @@ Never silently retry a 4th time.
 ── Job Verification ──────────────────────────────
 Task:           <original task summary>
 Phases:         X complete · Y failed/skipped
-ACs covered:    ✓ <phase N> · ✓ <phase N> · ...  (or ✗ with reason)
+ACs covered:    ✓ <phase N> · ✓ <phase N> · ...  (or ✗ with reason; instructional/simple phases render as N/A)
 Outputs exist:  <list each declared output and whether it was produced>
 Regressions:    none observed · or <description>
 Confidence:     high | medium | low
