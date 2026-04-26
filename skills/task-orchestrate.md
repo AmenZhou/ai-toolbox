@@ -1,9 +1,47 @@
 ---
 name: task-orchestrate
-description: Use when you need to break a complex task into phases, approve each step before it runs, and route each phase to the right skill automatically — with built-in failure recovery.
+description: Use when you need to break a complex task into phases, approve each step before it runs, and route each phase to the right model and executor — with built-in failure recovery.
 ---
 
 You are a **supervisor**: you only plan, approve, and delegate. You never execute work directly.
+
+**On invocation — permission check (runs before anything else):**
+
+Read `.claude/settings.json` (project) and `~/.claude/settings.json` (global). Check whether all three of the following appear in any `permissions.allow` list:
+
+- `Bash(mv:*)`
+- `Bash(rm:*)`
+- `Bash(git push:*)`
+
+**If all three are present:** proceed silently — no message needed.
+
+**If any are missing:** surface a warning before presenting the plan:
+
+```
+⚠ Auto mode may be interrupted — the following permissions are not yet granted:
+  • <each missing permission> — missing
+
+To allow uninterrupted "go auto", grant them now:
+
+  Claude Code — add to .claude/settings.json:
+  {
+    "permissions": {
+      "allow": ["Bash(mv:*)", "Bash(rm:*)", "Bash(git push:*)"]
+    }
+  }
+
+  Cursor / Windsurf — enable "Auto-run" or "Yolo mode" in settings.
+  Gemini CLI        — add to ~/.gemini/settings.json under permissions.allow.
+  Copilot / others  — grant terminal/shell execution permissions in the IDE.
+
+Type "grant" and I will write the missing entries to .claude/settings.json automatically.
+Type "skip" to continue without granting — you will be prompted mid-flow for each missing permission.
+```
+
+On **"grant"**: read the current `.claude/settings.json` (create it if absent), merge the missing entries into `permissions.allow`, write it back, confirm `✓ Permissions updated — .claude/settings.json`, then proceed to plan.
+On **"skip"**: proceed without modifying settings.
+
+---
 
 **On invocation — determine state file ID `{N}` first:**
 
@@ -23,9 +61,9 @@ You are a **supervisor**: you only plan, approve, and delegate. You never execut
 - If the user typed `resume` but also provided a task description, treat it as a new task (the description takes precedence).
 
 Read the task. Classify complexity:
-- **Simple** (2–3 phases) or **Moderate/Complex** (3–6 phases) → decompose phases first, then apply the phase classification below (Steps 1–3) to route each phase to the right model and executor directly.
+- **Lightweight** (2–3 phases) · **Moderate** (4–5 phases) · **Complex** (6 phases) → decompose phases first, then apply the phase classification below (Steps 1–3) to route each phase to the right model and executor directly.
 
-Before presenting, consolidate: merge consecutive same-skill phases; cap total phases at 6. Then **classify each phase** in two steps:
+Before presenting, consolidate: merge consecutive phases of the same type and model tier with no intervening dependency; cap total phases at 6. If decomposition naturally exceeds 6, merge the lowest-scope consecutive phases into one. Then **classify each phase** in three steps:
 
 **Step 1 — Phase type by keywords:**
 
@@ -54,59 +92,54 @@ Reasoning phases always use Opus. Simple phases always use Haiku. Instructional 
 Present immediately:
 
 ```
-TASK PLAN — `<summary>`  Complexity: Simple|Moderate|Complex
-Phase 1: `<name>` [`/skill-name` · skill] → `<output>`
-Phase 2: `<name>` [`/skill-name` · agent/Sonnet] [parallel with 3] → `<output>`
-Phase 3: `<name>` [`/skill-name` · agent/Haiku] [parallel with 2] → `<output>`
+TASK PLAN — `<summary>`  Complexity: Lightweight|Moderate|Complex (2–3|4–5|6 phases)
+Phase 1: `<name>` [direct · instructional] → `<output>`
+Phase 2: `<name>` [/skill-name · agent/Sonnet] [parallel with 3] → `<output>`
+Phase 3: `<name>` [direct · agent/Haiku] [parallel with 2] → `<output>`
 ⏸ "go" (gated) · "go auto" (ungated) · describe changes · "abort"
 ```
 
-**Pre-execution questions:** Immediately after presenting the plan, surface 1–3 targeted clarifying questions before accepting "go". Focus on ambiguities, risks, or missing information that would change how a phase executes. Format as:
+Note: `/skill-name` is shown when an available skill clearly fits the phase — otherwise use `direct`. Skill assignment is optional and manual; use `Glob ~/.claude/skills/*.md` to check what's available.
+
+**Pre-execution questions + MCP pre-authorization:** Immediately after presenting the plan, surface both in a single combined block so the user answers once before typing "go":
 
 ```
-❓ Before we start — a few clarifications:
+❓ Before we start:
 1. <question targeting the biggest risk or ambiguity in the plan>
 2. <question about scope or assumptions — omit if unambiguous>
 3. <question about a dependency, constraint, or side-effect — omit if clear>
 
-Answer inline, then type "go" or "go auto" to proceed.
+⚠ This plan will call external MCP services: <list>     ← omit if no MCP phases
+  Type "go auto, approve MCP: <services>" to pre-authorize and run uninterrupted.
+  Type "go auto" alone to keep mid-flow confirmation gates for MCP phases.
+
+Answer inline, then type "go" · "go auto" · "go auto, approve MCP: <services>" to proceed.
 ```
 
 Rules:
 - Do not ask about things already stated in the task or obvious from context
 - Cap at 3 questions — ask only the ones that would meaningfully change the plan
-- If the plan is fully unambiguous with no gaps, skip the block and output `▶ Plan looks clear — type "go" to proceed.`
-- In all cases, wait for the user's reply before accepting "go"
-
-**MCP gate:** If a phase will call external MCP services (Confluence, Jira, Semaphore, etc.), annotate the phase line with `[MCP: <service>]`.
-
-- **Plan time pre-authorization (preferred):** After presenting the plan, if any phases are annotated `[MCP: ...]`, list the services that will be called and ask the user to pre-authorize them in their "go auto" reply:
-  ```
-  ⚠ This plan will call external MCP services: Jira, GitHub
-  Type "go auto, approve MCP: Jira GitHub" (or list specific services) to run fully uninterrupted.
-  Type "go auto" alone to keep mid-flow confirmation gates for MCP phases.
-  ```
-  Record pre-authorized services in the state file under `mcp_preauthorized: [Jira, GitHub]`.
-- **Mid-flow gate (fallback):** If the user did not pre-authorize at plan time, pause before dispatching each MCP phase and ask for confirmation — even in auto mode.
-- **Pre-authorized phases:** If a service appears in `mcp_preauthorized`, skip the mid-flow gate and proceed without pausing.
+- If no questions and no MCP phases, output `▶ Plan looks clear — type "go" to proceed.`
+- Always wait for the user's reply before accepting "go"
+- Record pre-authorized MCP services in the state file under `mcp_preauthorized: [...]`
+- If a service appears in `mcp_preauthorized`, skip mid-flow gates for that service; otherwise pause before each MCP phase even in auto mode
 
 Write `.task-orchestrate-state-{N}.md` to CWD (where `{N}` is the datetime ID, e.g. `20260420-142837`):
 ```
 id: "{N}"
 task: "<summary>"
-complexity: Simple|Moderate|Complex
+complexity: Lightweight|Moderate|Complex
 mode: pending        # set to "gated" on "go", "auto" on "go auto"
-current_phase: 0
 total_phases: N
+mcp_preauthorized: []
 phases:
-  1: [/skill-name · skill]         pending          depends_on: []  retries: 0  criteria: []
+  1: [direct · instructional]      pending          depends_on: []  retries: 0  criteria: []
   2: [/skill-name · agent/Sonnet]  awaiting_critic  depends_on: [1] retries: 0  criteria: ["...", "..."]
      captured_output: {summary: "...", confidence: high, files_changed: [path/a, path/b], blockers: none}
-  3: [/skill-name · agent/Haiku]   pending          depends_on: [1] retries: 0  criteria: ["..."]
-last_output_summary: ""
+  3: [direct · agent/Haiku]        pending          depends_on: [1] retries: 0  criteria: ["..."]
 
 # OPERATING RULES (embedded for context-compression resilience)
-# Re-read ~/.claude/skills/task-orchestrate.md before each turn.
+# Re-read ~/.claude/skills/task-orchestrate/SKILL.md before each turn.
 # Supervisor only — never execute work directly.
 # State file ID is datetime-based (YYYYMMDD-HHMMSS) — never use sequential integers (collision risk).
 # Resume: always list all state files and ask user to pick — never auto-load even if only one exists.
@@ -129,7 +162,7 @@ last_output_summary: ""
 - `"go auto"` → set `mode: auto`
 
 **Execution — self-refresh before every turn:**
-At the start of each execution turn (before running any phase), **re-read this skill file** from `~/.claude/skills/task-orchestrate.md` using the Read tool. This ensures operating rules are current even if earlier context was compressed. Also re-read the state file `.task-orchestrate-state-{N}.md` to confirm current mode and phase status. Skip re-reading only if this is the very first phase of a freshly loaded session.
+At the start of each execution turn (before running any phase), **re-read this skill file** from `~/.claude/skills/task-orchestrate/SKILL.md` using the Read tool. This ensures operating rules are current even if earlier context was compressed. Also re-read the state file `.task-orchestrate-state-{N}.md` to confirm current mode and phase status. Skip re-reading only if this is the very first phase of a freshly loaded session.
 
 Before each turn, scan the phase list for **ready phases** — phases where all `depends_on` entries are `✓ complete` and the phase itself is `pending`.
 
@@ -139,9 +172,7 @@ Before each turn, scan the phase list for **ready phases** — phases where all 
 **Agent invocation — always include in the prompt:**
 1. Prior phase summaries as context.
 2. Acceptance criteria: `"This phase is complete when: 1. … 2. … 3. …"`
-3. **Cross-phase test data warning (Playwright specs only):** If a prior phase ran a Playwright spec that included an `afterAll` teardown calling a DELETE setup endpoint, include this note in the prompt:
-  > ⚠️ The previous phase's spec deleted test data via its `afterAll` teardown. The Playwright config's `dependencies: ['setup']` will re-create test data automatically when you run `--project=chromium`. Do NOT read the state file until after the current run's setup completes — it will overwrite the stale IDs with fresh ones. If `beforeEach` times out waiting for a UI element, verify the seeded admin/user ID from the updated state file actually exists (e.g. `curl http://localhost:3000/dev/playwright_admin_login?admin_id=NEW_ID&redirect_to=%2F`).
-4. Structured output requirement:
+3. Structured output requirement:
   > End your response with a `## PHASE OUTPUT` block:
   > ```
   > files_changed: [list or "none"]
@@ -198,10 +229,15 @@ For simple/instructional phases (no critic): high/medium confidence → ✅, low
 
 **Step C — Execute next action:**
 - ✅ → write checkpoint (phase → `✓ complete`, copy agent's `summary`). Reset phase `retries` to 0.
-  - **Gated**: output 2–3 line summary, announce `⏸ Ready for Phase N+1` and wait for user.
+  - **Gated**: output 2–3 line summary, announce `⏸ Ready for Phase N+1 — "go" · describe changes · "skip" (skip phase N+1, mark ✗ skipped, advance to N+2) · "abort"` and wait for user.
   - **Auto**: output `✓ Phase N — <summary>` (one line), then **immediately call the next Agent tool** — do NOT stop, do NOT output `⏸`, do NOT wait.
-- ⚠️ → increment phase `retries` in state file. Output `🔍 Gap: <what's missing>`. Re-invoke the same phase as an agent immediately, appending the gap to the prompt. On 2nd retry (retries == 2): upgrade model tier (Haiku→Sonnet, Sonnet→Opus). Return to Step A.
+- ⚠️ → increment phase `retries` in state file. Output `🔍 Gap: <what's missing>`. If retries reach 3, halt and declare a rabbit hole (see Rabbit hole prevention). Otherwise re-invoke the same phase as an agent immediately, appending the gap to the prompt. On 2nd retry (retries == 2): upgrade model tier (Haiku→Sonnet, Sonnet→Opus). Return to Step A.
 - ❌ → write checkpoint (phase → `✗ failed`). Output error + one-sentence diagnosis. Gate both modes: `⏸ retry · skip · replan · abort · instruct`.
+  - **retry**: re-invoke the phase as-is.
+  - **skip**: mark phase `✗ skipped`. If any later phases `depends_on` this one, surface them: "Phases N+1, N+2 depend on this — proceed anyway (they will run without this output), or replan?"
+  - **replan**: present a revised plan for remaining phases only.
+  - **abort**: delete state file, stop.
+  - **instruct**: user provides a corrective instruction — append it to the original phase prompt and re-invoke.
 
 **Parallel batch mixed results:**
 When a parallel batch completes and phases have different verdicts:
@@ -219,12 +255,12 @@ LOOP:
   3. Launch ready phase(s) as Agent tool call(s) — parallel if multiple ready (max 6 at once)
   4. Run Feedback → Decision → Execute (Steps A/B/C above) for each
   5. On ✅ for all: goto LOOP immediately — no pause, no user prompt
-  6. On ⚠️: re-invoke phase, goto step 4
+  6. On ⚠️: goto step 3 (re-launch phase agent with gap appended; if retries == 3 → declare rabbit hole, halt)
   7. On ❌: halt, gate user
 ```
 The entire loop runs within a single turn. Never stop between steps 5 and 1.
 
-On completion: delete `.task-orchestrate-state-{N}.md`. Output: `TASK COMPLETE — <task>` · `✓/✗ Phase N [executor/model]` · `Outputs: <list>`. Never cross a phase boundary silently. On "replan": revised plan for remaining phases only; rewrite checkpoint with updated phases.
+On completion: delete `.task-orchestrate-state-{N}.md`. Output: `TASK COMPLETE — <task>` · `✓/✗ Phase N [executor/model]` · `Outputs: <list>`. Always announce `▶ Phase N — <name>` before invoking each phase agent. On "replan": revised plan for remaining phases only; rewrite checkpoint with updated phases.
 
 **Rabbit hole prevention:** Track retry count per phase. After **3 retries on the same phase** (or the same error repeating), halt and declare a rabbit hole:
 > ⚠️ Phase N appears stuck (`<brief diagnosis of what's been tried and why it's not working>`).
@@ -265,6 +301,7 @@ Orchestrator:
 Skills invoked:
   • [/skill-name] <one concrete suggestion based on what was observed during this task — or "none">
   • [/skill-name] ...
+  • (none invoked — all phases ran direct)
 ──────────────────────────────────────────────────
 ```
 
