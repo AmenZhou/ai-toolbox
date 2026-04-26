@@ -52,7 +52,7 @@ On **"skip"**: proceed without modifying settings.
 - If **one or more found**: list each as `[ID] <task summary> — phase X/Y (<status>)` and ask the user to pick an ID to resume, or say "new" to start a fresh task. **Never auto-load** — always wait for explicit selection even when only one file exists. State files with `mode: pending` that are older than 7 days are considered abandoned. On resume, list them separately and offer "delete abandoned plans (y/n)?" before listing active ones.
 - On resume: read the `mode` field from state file and restore it — if `mode: auto`, continue executing in auto mode without asking the user; if `mode: gated`, announce the next phase and wait. If the resumed state file has `mode: pending` (user never typed 'go'), re-present the original plan and wait for go/go-auto/abort. The original pre-execution questions are not re-asked. Re-present only the phase list from the state file, then wait for go/go-auto/abort.
 - **`awaiting_critic` phases on resume:** if any phase has status `awaiting_critic`, the agent already returned but the critic did not run. Check `captured_output` in the state file:
-  - If `captured_output` is present: announce `▶ Phase N — agent returned before compression, resuming from captured output`, then proceed directly to the critic invocation in Step A (skipping the agent re-invocation only; then continue from Step A's critic call onward) using the stored fields. Do NOT re-invoke the agent.
+  - If `captured_output` is present: announce `▶ Phase N — agent returned before compression, resuming from captured output`. Skip the pre-critic state write in Step A (status is already `awaiting_critic` and `captured_output` is already on disk) — jump directly to the `invoke a Haiku critic agent` line using the stored fields. Do NOT re-invoke the agent.
   - If `captured_output` is absent (compression hit before the state write): reset status to `pending`, increment `retries`, re-invoke the agent, and note `⚠ Phase N — captured output lost, re-invoking agent`. If retries reach 3, halt and declare a rabbit hole instead.
 
 **New task path** (a task description was given):
@@ -126,7 +126,7 @@ Rules:
 - Cap at 3 questions — ask only the ones that would meaningfully change the plan
 - If no questions and no MCP phases, output `▶ Plan looks clear — type "go" to proceed.`
 - Always wait for the user's reply before accepting "go"
-- Record pre-authorized MCP services in the state file under `mcp_preauthorized: [...]`
+- MCP service pre-authorization is captured from the user's go phrase — see the on-go handler below.
 - If a service appears in `mcp_preauthorized`, skip mid-flow gates for that service; otherwise pause before each MCP phase even in auto mode
 - MCP service list format: comma-separated names matching `[MCP: <name>]` annotations exactly (case-insensitive). Example: `go auto, approve MCP: Jira, GitHub`.
 
@@ -135,7 +135,7 @@ Write `.task-orchestrate-state-{N}.md` to CWD (where `{N}` is the datetime ID, e
 id: "{N}"
 task: "<summary>"
 complexity: Lightweight|Moderate|Complex
-mode: pending        # set to "gated" on "go", "auto" on "go auto"
+mode: pending        # set to "gated" on "go", "auto" on "go auto" (with or without approve MCP clause)
 total_phases: N
 mcp_preauthorized: []
 phases:
@@ -145,7 +145,7 @@ phases:
   3: [direct · agent/Haiku]        pending          depends_on: [1] retries: 0  criteria: ["..."]
 
 # OPERATING RULES (embedded for context-compression resilience)
-# Re-read ~/.claude/skills/task-orchestrate.md before each turn. Skip re-reading on the very first phase of a freshly loaded session.
+# Re-read ~/.claude/skills/task-orchestrate.md before each turn. Skip re-reading only if this is the first turn after the skill was just invoked via the Skill tool — i.e., its body is verbatim in the immediately preceding context.
 # Supervisor only — never execute work directly.
 # State file ID is datetime-based (YYYYMMDD-HHMMSS) — never use sequential integers (collision risk).
 # Resume: always list all state files and ask user to pick — never auto-load even if only one exists.
@@ -168,9 +168,10 @@ phases:
 - `"go auto"` → set `mode: auto`
 - `"go auto, approve MCP: <list>"` → write `mcp_preauthorized: [<list>]` into the state file and set `mode: auto`.
 - `go auto` (no MCP clause) → leave `mcp_preauthorized` unchanged (remains `[]` or previously set value).
+- On free-form input that matches no keyword (go/abort/skip/etc.): treat as a plan-revision request, regenerate affected phases, re-present the plan, and re-prompt for go/abort.
 
 **Execution — self-refresh before every turn:**
-At the start of each execution turn (before running any phase), **re-read this skill file** from `~/.claude/skills/task-orchestrate.md` using the Read tool. This ensures operating rules are current even if earlier context was compressed. Also re-read the state file `.task-orchestrate-state-{N}.md` to confirm current mode and phase status. Skip re-reading only if this is the very first phase of a freshly loaded session.
+At the start of each execution turn (before running any phase), **re-read this skill file** from `~/.claude/skills/task-orchestrate.md` using the Read tool. This ensures operating rules are current even if earlier context was compressed. Also re-read the state file `.task-orchestrate-state-{N}.md` to confirm current mode and phase status. Skip re-reading only if this is the first turn after the skill was just invoked via the Skill tool — i.e., its body is verbatim in the immediately preceding context.
 
 Before each turn, scan the phase list for **ready phases** — phases where all `depends_on` entries are `✓ complete` and the phase itself is `pending`.
 
@@ -191,12 +192,14 @@ Before each turn, scan the phase list for **ready phases** — phases where all 
 
 **Important:** Never invoke the `Skill` tool from within a phase agent. The Skill tool raises `disable-model-invocation` when called in a nested agent context. All phase work must use the `Agent` tool directly.
 
+When a phase is tagged `[/skill-name · agent/X]`, the supervisor reads that skill's SKILL.md body and embeds the relevant instructions into the agent's prompt — the agent does not call the Skill tool itself.
+
 **Foreground vs background:** Default to foreground agents. Only set `run_in_background: true` for tasks genuinely expected to take > 5 minutes AND where there is independent parallel work to run concurrently. A background reasoning agent running alongside a polling loop creates confusing interleaved waits.
 
 **Feedback → Decision → Execute** (runs after every agent returns, both modes):
 
 **Step A — Get feedback:**
-Extract the `## PHASE OUTPUT` block from the agent response. If the block is missing, write `phase N status → pending` and increment `retries` in the state file before re-invoking, so resume can restore the retry count. Go to Step B with verdict = ⚠️ and gap = "agent did not produce a PHASE OUTPUT block." Do not invoke the critic. Do not write `captured_output`. Proceed directly to Step C with verdict ⚠️.
+Extract the `## PHASE OUTPUT` block from the agent response. If the block is missing, write `phase N status → pending` in the state file. Do not invoke the critic. Do not write `captured_output`. Proceed directly to Step C with verdict ⚠️ and gap = "agent did not produce a PHASE OUTPUT block." Step C will increment `retries`.
 
 Parse these fields:
 - `summary` — 1-line result description
@@ -246,7 +249,7 @@ For simple/instructional phases (no critic): high/medium confidence → ✅, low
 - ✅ → write checkpoint (phase → `✓ complete`, copy agent's `summary`). Reset phase `retries` to 0.
   - **Gated**: output 2–3 line summary, announce `⏸ Ready for Phase N+1 — "go" · describe changes · "skip" (skip phase N+1, mark ✗ skipped, advance to N+2) · "abort"` and wait for user.
   - **Auto**: output `✓ Phase N — <summary>` (one line), then **immediately call the next Agent tool** — do NOT stop, do NOT output `⏸`, do NOT wait.
-- ⚠️ → increment phase `retries` in state file. Output `🔍 Gap: <what's missing>`. If retries reach threshold, halt and declare a rabbit hole (see Rabbit hole prevention). Otherwise re-invoke the same phase as an agent immediately, appending the gap to the prompt. Retry schedule: retries==1 → re-invoke at original tier; retries==2 → re-invoke at first upgrade (Haiku→Sonnet, Sonnet→Opus); retries==3 → re-invoke at second upgrade (Sonnet→Opus, if applicable); retries==4 → halt, declare rabbit hole. For Sonnet-tier phases: retries==1 → original; retries==2 → Opus; retries==3 → halt. Return to Step A.
+- ⚠️ → increment phase `retries` in state file. Output `🔍 Gap: <what's missing>`. If retries reach threshold, halt and declare a rabbit hole (see Rabbit hole prevention). Otherwise re-invoke the same phase as an agent immediately, appending the gap to the prompt. Retry schedule: retries==1 → re-invoke at original tier; retries==2 → re-invoke at first upgrade (Haiku→Sonnet, Sonnet→Opus); retries==3 → re-invoke at second upgrade (Sonnet→Opus, if applicable); retries==4 → halt, declare rabbit hole. For Sonnet-tier phases: retries==1 → original; retries==2 → Opus; retries==3 → halt. For Opus-tier (reasoning) phases: retries==1 → original (Opus); retries==2 → original (Opus, no upgrade available); retries==3 → halt (rabbit hole). Opus has no upgrade target. Return to Step A.
 - ❌ → write checkpoint (phase → `✗ failed`). Output error + one-sentence diagnosis. Gate both modes: `⏸ retry · skip · replan · abort · instruct`.
   - **retry**: re-invoke the phase as-is.
   - **skip**: mark phase `✗ skipped`. Before skipping, surface the full transitive closure of dependents: "Phases X, Y, Z transitively depend on N+1 — proceed anyway or replan?" Surface all transitively dependent phases (not just direct dependents) and wait for confirmation before proceeding.
@@ -259,7 +262,7 @@ When a parallel batch completes and phases have different verdicts:
 1. Process each phase independently through Steps A/B/C.
 2. Checkpoint all ✅ phases immediately — their dependents become eligible as ready phases.
 3. For each ⚠️ phase: re-invoke it immediately (do not wait for ❌ phases to resolve first).
-4. If any phase returns ❌: halt the entire batch, gate the user with a summary of which phases passed and which failed before gating.
+4. If any phase returns ❌: halt the entire batch, gate the user with a summary of which phases passed and which failed before gating. Do NOT re-invoke ⚠️ phases in that batch before halting. On user 'retry', re-invoke the ⚠️ phases alongside the ❌ phase.
 5. In auto mode: ✅ phases unblock downstream work; re-invoke ⚠️ phases in parallel with any newly ready downstream phases if they share no output files.
 
 **Auto mode execution loop** (when `mode: auto` in state file):
@@ -270,7 +273,7 @@ LOOP:
   3. Launch ready phase(s) as Agent tool call(s) — parallel if multiple ready (max 6 at once)
   4. Run Feedback → Decision → Execute (Steps A/B/C above) for each
   5. On ✅ for all: goto LOOP immediately — no pause, no user prompt
-  6. On ⚠️: reset phase status to `pending`, increment retries, then goto step 3 (re-launch; if retries ≥ threshold → declare rabbit hole, halt)
+  6. On ⚠️: run Step C ⚠️ branch (gap append + retry schedule + tier upgrade), then goto LOOP
   7. On ❌: checkpoint all ✅ phases in this batch first, then halt and gate user
 ```
 The entire loop runs within a single turn. Never stop between steps 5 and 1.
@@ -307,6 +310,8 @@ If confidence is `low` or any AC is unmet (`✗`), do NOT proceed to TASK COMPLE
 ⚠ Verification found gaps: <list>
 ⏸ retry affected phases · replan · accept-as-is · abort
 ```
+
+On `retry affected phases`: reset listed phase statuses to `pending` and retries to 0, re-execute via Step C ⚠️ flow, then re-run Job Verification when complete.
 
 **Improvement suggestions (mandatory — both modes):** After job verification passes, and before deleting the state file, output a brief retrospective:
 
