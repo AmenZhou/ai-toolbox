@@ -38,7 +38,7 @@ Type "grant" and I will write the missing entries to the project `.claude/settin
 Type "skip" to continue without granting — you will be prompted mid-flow for each missing permission.
 ```
 
-On **"grant"**: read the current project `.claude/settings.json` (create it if absent), merge the missing entries into `permissions.allow`, write it back, confirm `✓ Permissions updated — .claude/settings.json`, then proceed to plan.
+On **"grant"**: read the current project `.claude/settings.json` (create it if absent), merge the missing entries into `permissions.allow`, write it back, confirm `✓ Permissions updated — .claude/settings.json`, then proceed to plan. Before writing, validate that `permissions.allow` is an array. If `permissions` key is absent, create it. If `allow` is not an array, surface an error and do not write.
 On **"grant global"**: same as above but targeting `~/.claude/settings.json`.
 On **"skip"**: proceed without modifying settings.
 
@@ -49,10 +49,10 @@ On **"skip"**: proceed without modifying settings.
 **Resume path** (`resume` keyword or no task given and no new task described):
 - Scan CWD for `.task-orchestrate-state-*.md`.
 - If **none found**: ask "What task would you like to orchestrate?"
-- If **one or more found**: list each as `[ID] <task summary> — phase X/Y (<status>)` and ask the user to pick an ID to resume, or say "new" to start a fresh task. **Never auto-load** — always wait for explicit selection even when only one file exists.
-- On resume: read the `mode` field from state file and restore it — if `mode: auto`, continue executing in auto mode without asking the user; if `mode: gated`, announce the next phase and wait. If the resumed state file has `mode: pending` (user never typed 'go'), re-present the original plan and wait for go/go-auto/abort.
+- If **one or more found**: list each as `[ID] <task summary> — phase X/Y (<status>)` and ask the user to pick an ID to resume, or say "new" to start a fresh task. **Never auto-load** — always wait for explicit selection even when only one file exists. State files with `mode: pending` that are older than 7 days are considered abandoned. On resume, list them separately and offer "delete abandoned plans (y/n)?" before listing active ones.
+- On resume: read the `mode` field from state file and restore it — if `mode: auto`, continue executing in auto mode without asking the user; if `mode: gated`, announce the next phase and wait. If the resumed state file has `mode: pending` (user never typed 'go'), re-present the original plan and wait for go/go-auto/abort. The original pre-execution questions are not re-asked. Re-present only the phase list from the state file, then wait for go/go-auto/abort.
 - **`awaiting_critic` phases on resume:** if any phase has status `awaiting_critic`, the agent already returned but the critic did not run. Check `captured_output` in the state file:
-  - If `captured_output` is present: announce `▶ Phase N — agent returned before compression, resuming from captured output`, then proceed directly to the critic (Step B) using the stored fields. Do NOT re-invoke the agent.
+  - If `captured_output` is present: announce `▶ Phase N — agent returned before compression, resuming from captured output`, then proceed directly to the critic invocation in Step A (skipping the agent re-invocation only; then continue from Step A's critic call onward) using the stored fields. Do NOT re-invoke the agent.
   - If `captured_output` is absent (compression hit before the state write): reset status to `pending`, increment `retries`, re-invoke the agent, and note `⚠ Phase N — captured output lost, re-invoking agent`. If retries reach 3, halt and declare a rabbit hole instead.
 
 **New task path** (a task description was given):
@@ -128,6 +128,7 @@ Rules:
 - Always wait for the user's reply before accepting "go"
 - Record pre-authorized MCP services in the state file under `mcp_preauthorized: [...]`
 - If a service appears in `mcp_preauthorized`, skip mid-flow gates for that service; otherwise pause before each MCP phase even in auto mode
+- MCP service list format: comma-separated names matching `[MCP: <name>]` annotations exactly (case-insensitive). Example: `go auto, approve MCP: Jira, GitHub`.
 
 Write `.task-orchestrate-state-{N}.md` to CWD (where `{N}` is the datetime ID, e.g. `20260420-142837`):
 ```
@@ -144,7 +145,7 @@ phases:
   3: [direct · agent/Haiku]        pending          depends_on: [1] retries: 0  criteria: ["..."]
 
 # OPERATING RULES (embedded for context-compression resilience)
-# Re-read ~/.claude/skills/task-orchestrate.md before each turn.
+# Re-read ~/.claude/skills/task-orchestrate.md before each turn. Skip re-reading on the very first phase of a freshly loaded session.
 # Supervisor only — never execute work directly.
 # State file ID is datetime-based (YYYYMMDD-HHMMSS) — never use sequential integers (collision risk).
 # Resume: always list all state files and ask user to pick — never auto-load even if only one exists.
@@ -155,7 +156,7 @@ phases:
 # Agent prompts must include: prior summaries + acceptance criteria + ## PHASE OUTPUT block requirement.
 # After execution/reasoning phases: run Haiku critic → Haiku micro-verifier (if files_changed).
 # Assessment: ✅ checkpoint + advance · ⚠️ re-invoke (2nd retry → upgrade model) · ❌ gate user.
-# Rabbit hole: halt after 3 retries, replan.
+# Rabbit hole: halt after 4 retries (or 3 for Sonnet-tier), replan.
 # Model tiers: simple→Haiku, execution→Sonnet, reasoning→Opus. Retry upgrades: Haiku→Sonnet→Opus.
 # MCP gate: annotate phases [MCP: service]. Pre-authorize at plan time via "go auto, approve MCP: X Y" → record in mcp_preauthorized. Mid-flow gate only if not pre-authorized.
 # AUTO MODE LOOP: after ✅ do NOT output ⏸ prompt — immediately scan for next ready phases and execute.
@@ -166,6 +167,7 @@ phases:
 - `"go"` → set `mode: gated`
 - `"go auto"` → set `mode: auto`
 - `"go auto, approve MCP: <list>"` → write `mcp_preauthorized: [<list>]` into the state file and set `mode: auto`.
+- `go auto` (no MCP clause) → leave `mcp_preauthorized` unchanged (remains `[]` or previously set value).
 
 **Execution — self-refresh before every turn:**
 At the start of each execution turn (before running any phase), **re-read this skill file** from `~/.claude/skills/task-orchestrate.md` using the Read tool. This ensures operating rules are current even if earlier context was compressed. Also re-read the state file `.task-orchestrate-state-{N}.md` to confirm current mode and phase status. Skip re-reading only if this is the very first phase of a freshly loaded session.
@@ -194,7 +196,7 @@ Before each turn, scan the phase list for **ready phases** — phases where all 
 **Feedback → Decision → Execute** (runs after every agent returns, both modes):
 
 **Step A — Get feedback:**
-Extract the `## PHASE OUTPUT` block from the agent response. If the block is missing, go to Step B with verdict = ⚠️ and gap = "agent did not produce a PHASE OUTPUT block." Do not invoke the critic. Do not write `captured_output`. Proceed directly to Step C with verdict ⚠️.
+Extract the `## PHASE OUTPUT` block from the agent response. If the block is missing, write `phase N status → pending` and increment `retries` in the state file before re-invoking, so resume can restore the retry count. Go to Step B with verdict = ⚠️ and gap = "agent did not produce a PHASE OUTPUT block." Do not invoke the critic. Do not write `captured_output`. Proceed directly to Step C with verdict ⚠️.
 
 Parse these fields:
 - `summary` — 1-line result description
@@ -210,6 +212,9 @@ phase N captured_output → {summary: "...", confidence: ..., files_changed: ...
 This ensures that if context compression occurs between the agent returning and the critic running, a resume can pick up from the captured output rather than re-invoking the agent.
 
 For execution and reasoning phases: invoke a **Haiku critic agent** with the acceptance criteria and the full `## PHASE OUTPUT` content. The critic returns exactly one of: `PASS` · `PARTIAL: <gap>` · `FAIL: <reason>`.
+
+Critic prompt template:
+"You are a critic. Acceptance criteria: <criteria>. PHASE OUTPUT: <output block>. Classify each blocker as 'pre-existing' or 'caused-by-change'. Return exactly one of: PASS · PARTIAL: <gap> · FAIL: <reason>."
 
 If critic returns PASS or PARTIAL **and** `files_changed` is non-empty: invoke a **Haiku micro-verifier agent** to run build, lint, and any fast unit tests covering the changed files. If micro-verification fails, override critic verdict to `PARTIAL` with gap = micro-verifier failure output.
 
@@ -231,6 +236,8 @@ Skip critic and micro-verifier for simple and instructional phases.
 
 Note: The `(block missing)` row documents a bypass path for reference only — the critic is not invoked in this case (see Step A).
 
+Classifying blockers: the critic prompt must instruct the critic to classify each reported blocker as `pre-existing` (existed before this phase ran) or `caused-by-change` (introduced by this phase). This classification drives the table rows above.
+
 **Critic-override rule (blockers):** When critic returns `PASS` and all reported blockers are explicitly described as pre-existing or unrelated to this phase's changes (e.g. a broken local test environment that affects all specs), treat the phase as ✅ and surface the pre-existing issue as a note. Do not gate. This prevents environment noise from blocking correct code changes.
 
 For simple/instructional phases (no critic): high/medium confidence → ✅, low confidence → ⚠️.
@@ -239,13 +246,13 @@ For simple/instructional phases (no critic): high/medium confidence → ✅, low
 - ✅ → write checkpoint (phase → `✓ complete`, copy agent's `summary`). Reset phase `retries` to 0.
   - **Gated**: output 2–3 line summary, announce `⏸ Ready for Phase N+1 — "go" · describe changes · "skip" (skip phase N+1, mark ✗ skipped, advance to N+2) · "abort"` and wait for user.
   - **Auto**: output `✓ Phase N — <summary>` (one line), then **immediately call the next Agent tool** — do NOT stop, do NOT output `⏸`, do NOT wait.
-- ⚠️ → increment phase `retries` in state file. Output `🔍 Gap: <what's missing>`. If retries reach 3, halt and declare a rabbit hole (see Rabbit hole prevention). Otherwise re-invoke the same phase as an agent immediately, appending the gap to the prompt. Retry upgrades apply as: retries==1 → original tier, retries==2 → first upgrade (Haiku→Sonnet, Sonnet→Opus), retries==3 → halt (rabbit hole). The Sonnet→Opus second upgrade is only reachable if the original tier was Haiku; for Sonnet-tier phases only one upgrade attempt is possible before halting. Return to Step A.
+- ⚠️ → increment phase `retries` in state file. Output `🔍 Gap: <what's missing>`. If retries reach threshold, halt and declare a rabbit hole (see Rabbit hole prevention). Otherwise re-invoke the same phase as an agent immediately, appending the gap to the prompt. Retry schedule: retries==1 → re-invoke at original tier; retries==2 → re-invoke at first upgrade (Haiku→Sonnet, Sonnet→Opus); retries==3 → re-invoke at second upgrade (Sonnet→Opus, if applicable); retries==4 → halt, declare rabbit hole. For Sonnet-tier phases: retries==1 → original; retries==2 → Opus; retries==3 → halt. Return to Step A.
 - ❌ → write checkpoint (phase → `✗ failed`). Output error + one-sentence diagnosis. Gate both modes: `⏸ retry · skip · replan · abort · instruct`.
   - **retry**: re-invoke the phase as-is.
-  - **skip**: mark phase `✗ skipped`. If any later phases `depends_on` this one, surface the full transitive closure of dependents (not just direct): "Phases X, Y, Z transitively depend on this — proceed anyway (they will run without this output) or replan?"
+  - **skip**: mark phase `✗ skipped`. Before skipping, surface the full transitive closure of dependents: "Phases X, Y, Z transitively depend on N+1 — proceed anyway or replan?" Surface all transitively dependent phases (not just direct dependents) and wait for confirmation before proceeding.
   - **replan**: present a revised plan for remaining phases only.
   - **abort**: delete state file, stop.
-  - **instruct**: user provides a corrective instruction — append it to the original phase prompt and re-invoke.
+  - **instruct**: user provides a corrective instruction — append it to the original phase prompt and re-invoke. Reset phase `retries` to 0 on instruct — the user's correction is treated as a fresh start.
 
 **Parallel batch mixed results:**
 When a parallel batch completes and phases have different verdicts:
@@ -263,20 +270,22 @@ LOOP:
   3. Launch ready phase(s) as Agent tool call(s) — parallel if multiple ready (max 6 at once)
   4. Run Feedback → Decision → Execute (Steps A/B/C above) for each
   5. On ✅ for all: goto LOOP immediately — no pause, no user prompt
-  6. On ⚠️: goto step 3 (re-launch phase agent with gap appended; if retries == 3 → declare rabbit hole, halt)
+  6. On ⚠️: reset phase status to `pending`, increment retries, then goto step 3 (re-launch; if retries ≥ threshold → declare rabbit hole, halt)
   7. On ❌: checkpoint all ✅ phases in this batch first, then halt and gate user
 ```
 The entire loop runs within a single turn. Never stop between steps 5 and 1.
 
 On completion: delete `.task-orchestrate-state-{N}.md`. Output: `TASK COMPLETE — <task>` · `✓/✗ Phase N [executor/model]` · `Outputs: <list>`. Always announce `▶ Phase N — <name>` before invoking each phase agent. On "replan": revised plan for remaining phases only; rewrite checkpoint with updated phases. Continue numbering from the highest completed phase number. Completed phase entries remain in the state file unchanged; failed/incomplete entries are replaced with the new plan.
 
-**Rabbit hole prevention:** Track retry count per phase. After **3 retries on the same phase** (or the same error repeating), halt and declare a rabbit hole:
+**Rabbit hole prevention:** Track retry count per phase. After **4 retries (or 3 for Sonnet-tier)** on the same phase (or the same error repeating), halt and declare a rabbit hole:
 > ⚠️ Phase N appears stuck (`<brief diagnosis of what's been tried and why it's not working>`).
 > Here is a revised plan for the remaining work:
 > [present re-planned phases for everything from Phase N onward]
 > ⏸ "go" to adopt · "abort" · describe changes
 
 Never silently retry a 4th time.
+
+Note: Distinguish compression-loss halt (context compressed 3+ times on this phase — suggest splitting the phase or shortening the prompt) from execution-stuck halt (same error repeating across retries).
 
 **Verification (optional):** After all phases complete in **gated** mode (`go`), ask: "Would you like to run a verification step? (skip to complete)". If confirmed, append a final verification phase, classify it using the phase type table above, and execute it. In **auto-run** mode (`go auto`), skip this prompt. Either way, proceed to the mandatory steps below before deleting the state file.
 
