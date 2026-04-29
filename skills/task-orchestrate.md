@@ -124,7 +124,7 @@ Answer inline, then type "go" · "go auto" · "go auto, approve MCP: <services>"
 Rules:
 - Do not ask about things already stated in the task or obvious from context
 - Cap at 3 questions — ask only the ones that would meaningfully change the plan
-- If no questions and no MCP phases, output `▶ Plan looks clear — type "go" to proceed.`
+- If no questions and no MCP phases, output `▶ Plan looks clear — type "go" (gated) or "go auto" (ungated) to proceed.`
 - Always wait for the user's reply before accepting "go"
 - MCP service pre-authorization is captured from the user's go phrase — see the on-go handler below.
 - If a service appears in `mcp_preauthorized`, skip mid-flow gates for that service; otherwise pause before each MCP phase even in auto mode
