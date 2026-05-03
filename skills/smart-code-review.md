@@ -2,6 +2,7 @@
 name: smart-code-review
 description: Ticket-aware code review. Fetches associated ticket/requirements (Linear, GitHub issue, PR description) and validates implementation against them. Falls back to a structured branch summary when no ticket is found. Always finishes with a standard BUG/FIX/AUTO/CONSIDER code review pass.
 version: 1.0.0
+inline: true
 ---
 
 # Smart Code Review
@@ -122,6 +123,21 @@ No ticket found — please verify the above matches your intended scope.
 ```
 
 Then proceed to **Phase 2**.
+
+---
+
+## Phase 1c — Changelog Check (always runs after Phase 1a or 1b)
+
+Check whether the branch includes an update to `CHANGELOG.md`:
+
+```bash
+git diff main...HEAD --name-only | grep -i changelog
+```
+
+- **Found** → confirm the entry covers the ticket/feature being merged. Report `✓ CHANGELOG.md updated`.
+- **Not found** → report as a `[FIX]` item: `CHANGELOG.md not updated — add an entry for this ticket before merging`.
+
+Do not auto-fix. Adding a changelog entry requires judgment about what to write.
 
 ---
 
