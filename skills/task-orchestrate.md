@@ -34,20 +34,22 @@ To grant:
 Type "grant" (project settings) · "grant global" (global settings) · "skip" (continue without)
 ```
 
-On **"grant"** / **"grant global"**: read, merge, write the settings file, confirm `✓ Permissions updated`, proceed to plan.
+On **"grant"** / **"grant global"**: read the settings file (create if absent). Validate that `permissions.allow` is an array — if `permissions` key is absent, create it; if `allow` is not an array, surface an error and do not write. Merge missing entries, write back, confirm `✓ Permissions updated`, proceed to plan.
 
 ---
 
 ## State File & Resume
 
-**Generate ID:** `YYYYMMDD-HHMMSS` from current datetime. Check no `.task-orchestrate-state-{ID}.md` exists in CWD; if collision, append `-2`, `-3`, …
+**New task path** (a task description was given, or first invocation with no state file):
+- Generate a collision-resistant ID: `YYYYMMDD-HHMMSS` from current datetime. Check no `.task-orchestrate-state-{ID}.md` exists in CWD; if collision, append `-2`, `-3`, …
+- Use that ID as `{N}` for this session, then proceed to Phase Classification.
 
 **Resume path** (`resume` keyword alone, or no task given):
 - Scan CWD for `.task-orchestrate-state-*.md`
 - None found → ask "What task would you like to orchestrate?"
 - One or more found → list `[ID] <task> — phase X/Y (<status>)`. State files with `mode: pending` older than 7 days are abandoned — list separately, offer "delete abandoned? (y/n)". **Always wait for user to pick an ID** — never auto-load.
 - On resume: restore `mode` from state file. If `mode: pending`, re-present phase list and wait for go/go-auto/abort (skip pre-execution questions). If `mode: auto`, continue executing immediately.
-- **`awaiting_critic` on resume:** check `captured_output` in state file. If present: skip re-invocation, go straight to critic/assessment. If absent: reset to `pending`, increment retries, re-invoke.
+- **`awaiting_critic` on resume:** check `captured_output` in state file. If present: announce `▶ Phase N — agent returned before compression, resuming from captured output`. Skip the pre-critic state write in Step A (status is already `awaiting_critic` and `captured_output` is already on disk) — go directly to the inline assessment using the stored fields. Do NOT re-invoke the phase. If `captured_output` is absent: reset status to `pending`, increment retries, re-invoke.
 
 **`resume` must be the full input.** Any input with other words is a new task.
 

@@ -2,7 +2,6 @@
 name: smart-code-review
 description: Ticket-aware code review. Fetches associated ticket/requirements (Linear, GitHub issue, PR description) and validates implementation against them. Falls back to a structured branch summary when no ticket is found. Always finishes with a standard BUG/FIX/AUTO/CONSIDER code review pass.
 version: 1.0.0
-inline: true
 ---
 
 # Smart Code Review
