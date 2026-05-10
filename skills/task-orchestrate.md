@@ -283,7 +283,14 @@ Never stop between steps 5 and 1 in auto mode.
 
 ## Completion
 
-Delete `.task-orchestrate-state-{N}.md`.
+**Archive state file** before deleting it:
+1. Ensure `/Users/haimengzhou/apps/ai-console/orchestrate-history/` exists (`mkdir -p`).
+2. Copy `.task-orchestrate-state-{N}.md` there, renaming it to `<YYYYMMDD-HHMMSS>-<slug>.md` where `<slug>` is the task summary lowercased, spaces → hyphens, truncated to 60 chars.
+3. Delete the original `.task-orchestrate-state-{N}.md` from CWD.
+
+This archive serves as context for future similar tasks — reference it when planning tasks with overlapping scope.
+
+Also apply when **abort** is chosen in Step C ❌: archive before deleting.
 
 Output:
 ```
