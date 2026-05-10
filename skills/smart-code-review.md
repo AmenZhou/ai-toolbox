@@ -1,7 +1,8 @@
 ---
 name: smart-code-review
-description: Ticket-aware code review. Fetches associated ticket/requirements (Linear, GitHub issue, PR description) and validates implementation against them. Falls back to a structured branch summary when no ticket is found. Always finishes with a standard BUG/FIX/AUTO/CONSIDER code review pass.
-version: 1.0.0
+description: Ticket-aware code review. Fetches associated ticket/requirements (Linear, GitHub issue, PR description) and validates implementation against them. Falls back to a structured branch summary when no ticket is found. Always finishes with an OWASP Top 10 security pass and a standard BUG/FIX/AUTO/CONSIDER code review pass.
+version: 1.2.0
+inline: true
 ---
 
 # Smart Code Review
@@ -83,7 +84,7 @@ Requirements check:
 Out of scope: none detected
 ```
 
-Then proceed to **Phase 2**.
+Then proceed to **Phase 1c**.
 
 ---
 
@@ -121,32 +122,73 @@ Summary:
 No ticket found — please verify the above matches your intended scope.
 ```
 
+Then proceed to **Phase 1c**.
+
+---
+
+## Phase 1c — Documentation & Context Check (always runs)
+
+Verify that the branch includes updates to relevant documentation to preserve context for future developers/AI. This is critical for maintaining the "Command Center" state.
+
+**Checks:**
+1. **Changelog:** Check for `CHANGELOG.md`.
+2. **Project Status/Index:** Check for files like `INDEX.md`, `PHASE2_PLAN.md`, or ticket-specific files in `tickets/` or `phase2_plan/`.
+3. **README/Technical Docs:** Check for `README.md` or files in `docs/`.
+
+**Commands:**
+```bash
+git diff main...HEAD --name-only | grep -iE "changelog\.md|index\.md|plan\.md|tickets/.*\.md|readme\.md|docs/.*\.md"
+```
+
+**Reporting:**
+- **Found** → confirm the documentation update is substantial and reflects the code changes (e.g., ticket marked as completed, new feature documented). Report `✓ <filename> updated`.
+- **Missing Documentation** → If the change adds features or fixes bugs but NO relevant documentation was updated, report as a `[FIX]` item: `[FIX] Documentation update missing — Ensure INDEX.md, relevant ticket files, or README.md are updated to preserve context.`
+- **Missing Changelog** → If `CHANGELOG.md` is missing, report as a `[FIX]` item: `[FIX] CHANGELOG.md not updated — add an entry for this change.`
+
+Do not auto-fix. Adding a changelog or documentation entry requires judgment.
+
 Then proceed to **Phase 2**.
 
 ---
 
-## Phase 1c — Changelog Check (always runs after Phase 1a or 1b)
+## Phase 2 — OWASP Top 10 Security Review (always runs)
 
-Check whether the branch includes an update to `CHANGELOG.md`:
+Scan all changed files against the OWASP Top 10 (2021). Flag findings as `[SECURITY]` — treated like `[BUG]`: report and wait. Skip categories clearly irrelevant to the diff (e.g. skip A06 if no dependency files changed).
 
-```bash
-git diff main...HEAD --name-only | grep -i changelog
+| # | Category | What to look for in the diff |
+|---|----------|------------------------------|
+| **A01** | Broken Access Control | Missing auth/permission checks on new routes or functions; IDOR patterns (user-supplied IDs used without ownership check); privilege escalation paths; exposed admin endpoints |
+| **A02** | Cryptographic Failures | Sensitive data (passwords, tokens, PII) stored or transmitted without encryption; weak algorithms (MD5, SHA1, DES); hardcoded secrets or keys; missing TLS enforcement; insecure random number generation |
+| **A03** | Injection | SQL/NoSQL queries built with string concatenation; OS command construction from user input; LDAP/XPath injection; template injection; eval() or exec() on untrusted input |
+| **A04** | Insecure Design | Business logic flaws (e.g. rate limits bypassable, price tampering); missing threat model considerations in new flows; trust boundary violations |
+| **A05** | Security Misconfiguration | Debug modes, verbose error messages, or stack traces exposed to clients; permissive CORS (`*`); default credentials; unnecessary features enabled; overly broad IAM/RBAC grants in config files |
+| **A06** | Vulnerable & Outdated Components | New dependencies added with known CVEs; pinned to outdated major versions; dev dependencies bundled into production |
+| **A07** | Auth & Session Failures | Weak password policies; missing brute-force protection; session tokens not invalidated on logout; JWT `alg:none` or weak secrets; remember-me tokens stored insecurely |
+| **A08** | Software & Data Integrity | Unsigned or unverified third-party scripts/plugins; deserialization of untrusted data without validation; CI/CD pipeline changes that bypass integrity checks |
+| **A09** | Security Logging & Monitoring | Security-relevant events (login, access denied, data export) not logged; logs containing sensitive data (passwords, full card numbers); no alerting on critical failures |
+| **A10** | SSRF | User-controlled URLs fetched server-side without allowlist; internal metadata endpoints reachable (e.g. `169.254.169.254`); redirect targets not validated |
+
+**Process:**
+1. Read the full diff
+2. For each OWASP category, assess whether any changed code introduces or worsens the risk
+3. Skip categories with no relevant surface in the diff — note them as `N/A`
+4. Assign severity: `critical` (exploitable as-is) · `high` (likely exploitable with moderate effort) · `medium` (requires specific conditions)
+
+**Output format for findings:**
 ```
-
-- **Found** → confirm the entry covers the ticket/feature being merged. Report `✓ CHANGELOG.md updated`.
-- **Not found** → report as a `[FIX]` item: `CHANGELOG.md not updated — add an entry for this ticket before merging`.
-
-Do not auto-fix. Adding a changelog entry requires judgment about what to write.
+[SECURITY][A03][critical] SQL injection — user input concatenated into query — `db/queries.js:42`
+[SECURITY][A02][high] JWT secret hardcoded in source — `config/auth.js:8`
+```
 
 ---
 
-## Phase 2 — Code Quality Review (always runs)
+## Phase 3 — Code Quality Review (always runs)
 
 Apply standard review categories to all changed files:
 
 | Category | What | Action |
 |----------|------|--------|
-| **[BUG]** | Logic errors, security, data loss, race conditions | Report → wait |
+| **[BUG]** | Logic errors, data loss, race conditions | Report → wait |
 | **[FIX]** | Type gaps, missing error handling, test gaps | Report → wait |
 | **[AUTO]** | Unused imports, dead code, console.log, typos | Fix immediately |
 | **[CONSIDER]** | Refactors, style opinions, nice-to-have | Mention only |
@@ -166,7 +208,6 @@ Apply standard review categories to all changed files:
 - Can this be simpler? Unnecessary abstraction, over-engineered error handling?
 - Dead code, unused exports, commented-out blocks?
 - Copy-paste that should be extracted (but avoid premature abstraction)?
-- Security: injection, XSS, exposed secrets, missing auth?
 - Missing tests for new logic?
 
 ---
@@ -174,24 +215,38 @@ Apply standard review categories to all changed files:
 ## Final Output
 
 ```
+## Security Review (OWASP Top 10)
+A01 Broken Access Control:   [SECURITY][critical] <finding> — `file:line`  |  N/A
+A02 Cryptographic Failures:  [SECURITY][high] <finding> — `file:line`       |  N/A
+A03 Injection:               N/A
+A04 Insecure Design:         N/A
+A05 Misconfiguration:        [SECURITY][medium] <finding> — `file:line`     |  N/A
+A06 Outdated Components:     N/A
+A07 Auth Failures:           N/A
+A08 Data Integrity:          N/A
+A09 Logging & Monitoring:    N/A
+A10 SSRF:                    N/A
+
 ## Code Review
-Total: BUG: X | FIX: X | CONSIDER: X  (auto-fixed: Y)
+Total: SECURITY: X | BUG: X | FIX: X | CONSIDER: X  (auto-fixed: Y)
 
 Issues:
-1. [BUG] <description> — `path/to/file:line`
-2. [FIX] <description> — `path/to/file:line`
-3. [CONSIDER] <description> — `path/to/file:line`
+1. [SECURITY][A01][critical] <description> — `path/to/file:line`
+2. [BUG] <description> — `path/to/file:line`
+3. [FIX] <description> — `path/to/file:line`
+4. [CONSIDER] <description> — `path/to/file:line`
 
 What to fix?
-  a) BUG + FIX [recommended]
-  b) BUG only
-  c) All including CONSIDER
-  d) Custom (e.g. "1,3")
+  a) SECURITY + BUG + FIX [recommended]
+  b) SECURITY only
+  c) BUG + FIX only
+  d) All including CONSIDER
+  e) Custom (e.g. "1,3")
 
 I'll assume a) if you don't specify.
 ```
 
-**STOP. Wait for user selection before applying any BUG/FIX changes.**
+**STOP. Wait for user selection before applying any SECURITY/BUG/FIX changes.**
 
 ---
 

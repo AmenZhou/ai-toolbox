@@ -145,8 +145,10 @@ phases:
 # Resume: always list files and wait for user pick — never auto-load.
 # Phase statuses: pending → in_progress → awaiting_critic → ✓ complete / ✗ failed.
 # Write awaiting_critic + captured_output before running critic.
+# CHECKPOINT RULE (canonical): write ✓ complete to state file immediately after each phase PASS — never batch-update. See "Inline phase execution" section for full enforcement rules.
 # Auto mode: after ✅ immediately scan for next ready phases — no pause, no prompt.
 # Rabbit hole: halt after 4 retries (3 for Sonnet-tier), replan.
+# Completion: archive state file to ~/apps/ai-console/orchestrate-history/ BEFORE deleting it. See Completion section for full steps.
 ```
 
 ---
@@ -182,6 +184,8 @@ blockers: [list or "none"]
 Then evaluate it yourself against the acceptance criteria (no critic agent). Assign: **PASS** · **PARTIAL: \<gap\>** · **FAIL: \<reason\>**.
 
 If `files_changed` is non-empty, run a quick inline sanity check (Bash lint/build/test commands). If that fails, downgrade to PARTIAL.
+
+**State file write is mandatory after every inline phase** (CHECKPOINT RULE — canonical here) — follow Steps A/B/C immediately. Never defer or batch. The OPERATING RULES in the state file carry a summary of this same constraint; if they ever conflict, this section governs.
 
 **Inline skill invocation:** For `[inline · /skill-name]` phases, Read the skill's SKILL.md, then follow its instructions directly — executing each step yourself using your own tools. Do not spawn an agent. Announce `▶ Phase N — <name> (inline)` before starting.
 
@@ -284,11 +288,14 @@ Never stop between steps 5 and 1 in auto mode.
 ## Completion
 
 **Archive state file** before deleting it:
-1. Ensure `/Users/haimengzhou/apps/ai-console/orchestrate-history/` exists (`mkdir -p`).
-2. Copy `.task-orchestrate-state-{N}.md` there, renaming it to `<YYYYMMDD-HHMMSS>-<slug>.md` where `<slug>` is the task summary lowercased, spaces → hyphens, truncated to 60 chars.
-3. Delete the original `.task-orchestrate-state-{N}.md` from CWD.
+1. Ensure `~/apps/ai-console/orchestrate-history/` exists (`mkdir -p`).
+2. Copy `.task-orchestrate-state-{N}.md` there, renaming it to `<YYYYMMDD-HHMMSS>-<ticket-id>-<slug>.md` where `<ticket-id>` is the leading ticket/step identifier (e.g. `exec-1`, `mon-3`, `k6-5`) and `<slug>` is the remainder of the task summary lowercased, spaces → hyphens, truncated so the total filename is ≤ 80 chars.
+3. Open the archive copy and add a `tags:` line to its frontmatter. Derive 4–8 tags from the task summary, project name, and phase summaries (ticket IDs, project names, key technologies, error keywords encountered).
+4. Append one plain-text line to `~/apps/ai-console/orchestrate-history/MANIFEST.md`:
+   `<YYYY-MM-DD> | <filename> | <task summary> | <tag1>, <tag2>, ...`
+5. Delete the original `.task-orchestrate-state-{N}.md` from CWD.
 
-This archive serves as context for future similar tasks — reference it when planning tasks with overlapping scope.
+This archive serves as context for future similar tasks — reference it when planning tasks with overlapping scope. Future agents find relevant archives via `grep "keyword" ~/apps/ai-console/orchestrate-history/MANIFEST.md` or `grep -rl "keyword" ~/apps/ai-console/orchestrate-history/`.
 
 Also apply when **abort** is chosen in Step C ❌: archive before deleting.
 
@@ -328,6 +335,28 @@ Skills invoked:
   • (none invoked)
 ──────────────────────────────────────────────────
 ```
+
+**Backlog persistence:** After printing suggestions, check if any suggestion is non-trivial (not "none"). If so, append to `~/apps/ai-console/skill-improvement-backlog.md`. If the file is absent, create it first with this header:
+
+```markdown
+# Skill Improvement Backlog
+
+Pending improvements captured from task-orchestrate completion suggestions.
+To apply: `/task-orchestrate apply skill improvement backlog`
+
+---
+```
+
+Then append one entry per run (multiple suggestions from the same run go under one header):
+
+```markdown
+## <YYYYMMDD> — <task-id>
+- [orchestrator] <suggestion text>
+- [/skill-name] <suggestion text>
+  Source: <archive filename>
+```
+
+This file is the durable backlog. A future `/task-orchestrate` run can be given "apply skill improvement backlog" as its task to batch-apply pending items. Do NOT write "none" entries — only substantive, actionable suggestions.
 
 ---
 
