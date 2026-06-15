@@ -19,7 +19,11 @@ Think of it as three things in one:
 **Install the heartbeat (once per machine):**
 
 ```bash
-cat > ~/Library/LaunchAgents/com.orchestrate.tend.plist << 'EOF'
+PROJECT_DIR="$HOME/apps/my-project"   # adjust to your project root
+LOG_DIR="$PROJECT_DIR/.orchestrate/logs"
+mkdir -p "$LOG_DIR"
+
+cat > ~/Library/LaunchAgents/com.orchestrate.tend.plist << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -32,11 +36,9 @@ cat > ~/Library/LaunchAgents/com.orchestrate.tend.plist << 'EOF'
     <string>tend</string>
   </array>
   <key>StartInterval</key><integer>300</integer>
-  <key>WorkingDirectory</key><string>/Users/haimengzhou/apps</string>
-  <key>StandardOutPath</key>
-  <string>/Users/haimengzhou/apps/ai-console/.orchestrate/logs/heartbeat.log</string>
-  <key>StandardErrorPath</key>
-  <string>/Users/haimengzhou/apps/ai-console/.orchestrate/logs/heartbeat-err.log</string>
+  <key>WorkingDirectory</key><string>$PROJECT_DIR</string>
+  <key>StandardOutPath</key><string>$LOG_DIR/heartbeat.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/heartbeat-err.log</string>
   <key>RunAtLoad</key><false/>
 </dict>
 </plist>
@@ -90,7 +92,7 @@ tail -f .orchestrate/logs/heartbeat.log   # what tend did
 Use gated mode when you want to review each phase before the next one starts — code review, database migrations, anything where a bad phase would be costly to undo.
 
 ```
-/task-orchestrate "add Stripe webhook handling to gjw-web-fe"
+/task-orchestrate "add Stripe webhook handling to the payments service"
 > go
 ```
 
@@ -118,7 +120,7 @@ The orchestrator runs all phases, handles critic assessments inline, and only st
 Run several tasks in the same project directory. Each shares the same `project.md` so they benefit from accumulated context.
 
 ```bash
-cd /Users/haimengzhou/apps/gjw-web-fe
+cd ~/apps/my-project
 
 /task-orchestrate "add dark mode support"
 > go auto
@@ -147,13 +149,13 @@ Next time tend fires (within 5 minutes): you get a push notification listing the
 
 ---
 
-### 5. Cross-project orchestration from ai-console
+### 5. Cross-project orchestration from a shared directory
 
-From the ai-console directory, the heartbeat processes all projects at once. You can queue tasks across multiple repos:
+From a parent directory, the heartbeat processes all projects at once. You can queue tasks across multiple repos:
 
 ```bash
-echo "refactor auth" > /Users/haimengzhou/apps/gjw-web-fe/.orchestrate/inbox/auth.md
-echo "add rate limiting" > /Users/haimengzhou/apps/ads/.orchestrate/inbox/rate-limit.md
+echo "refactor auth" > ~/apps/project-a/.orchestrate/inbox/auth.md
+echo "add rate limiting" > ~/apps/project-b/.orchestrate/inbox/rate-limit.md
 ```
 
 Both get picked up by the same tend cycle.
@@ -255,8 +257,8 @@ cat .orchestrate/project.md
 tail -f .orchestrate/logs/heartbeat.log
 
 # Search past tasks
-grep -r "keyword" ~/apps/ai-console/orchestrate-history/
-cat ~/apps/ai-console/orchestrate-history/MANIFEST.md
+grep -r "keyword" .orchestrate-history/
+cat .orchestrate-history/MANIFEST.md
 ```
 
 ---
