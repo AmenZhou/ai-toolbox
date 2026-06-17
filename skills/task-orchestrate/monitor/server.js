@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 
-const PORT = 7842;
+const PORT = Number(process.env.PORT) || 7842;
 const CWD = process.cwd();
 const DIR = __dirname;
 
@@ -189,6 +189,32 @@ function handleLogs(res, query) {
   send(res, 200, { files: matchingFiles, logs });
 }
 
+function handleInbox(res) {
+  const inboxDir = path.join(CWD, '.orchestrate', 'inbox');
+  let dirEntries;
+  try {
+    dirEntries = fs.readdirSync(inboxDir);
+  } catch (_) {
+    return send(res, 200, { items: [] });
+  }
+
+  const files = dirEntries.filter(f => f.endsWith('.md')).sort();
+  const items = [];
+
+  for (const filename of files) {
+    const content = readFileSafe(path.join(inboxDir, filename));
+    if (content === null) continue;
+    const titleMatch = content.match(/^# (.+)$/m);
+    items.push({
+      filename,
+      title: titleMatch ? titleMatch[1].trim() : filename,
+      content,
+    });
+  }
+
+  send(res, 200, { items });
+}
+
 function handleHeartbeat(res) {
   const heartbeatPath = path.join(CWD, '.orchestrate', 'logs', 'heartbeat.log');
   const content = readFileSafe(heartbeatPath);
@@ -220,6 +246,8 @@ const server = http.createServer((req, res) => {
     handleHistory(res);
   } else if (pathname === '/api/logs') {
     handleLogs(res, parsed.query);
+  } else if (pathname === '/api/inbox') {
+    handleInbox(res);
   } else if (pathname === '/api/heartbeat') {
     handleHeartbeat(res);
   } else {

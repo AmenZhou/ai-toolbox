@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<!--
+  launchagent-watchdog launchd agent
+  Runs /launchagent-watchdog via Claude Code every 30 minutes.
+
+  BEFORE INSTALLING — set PROJECT_DIR to your project root, then run:
+
+    PROJECT_DIR="$HOME/apps/my-project"   # <-- change this
+    sed "s|/Users/haimengzhou/apps/ai-console|$PROJECT_DIR|g" \
+      skills/launchagent-watchdog/com.orchestrate.launchagent-watchdog.plist \
+      > ~/Library/LaunchAgents/com.orchestrate.launchagent-watchdog.plist
+    launchctl load ~/Library/LaunchAgents/com.orchestrate.launchagent-watchdog.plist
+
+  To unload:
+    launchctl unload ~/Library/LaunchAgents/com.orchestrate.launchagent-watchdog.plist
+
+  Logs (relative to WorkingDirectory):
+    stdout -> .orchestrate/logs/launchagent-watchdog.log
+    stderr -> .orchestrate/logs/launchagent-watchdog-err.log
+-->
+
+<plist version="1.0">
+<dict>
+
+  <!-- Agent label — must match the filename -->
+  <key>Label</key>
+  <string>com.orchestrate.launchagent-watchdog</string>
+
+  <!-- Command: invoke Claude Code with the /launchagent-watchdog skill -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/haimengzhou/.local/bin/claude</string>
+    <string>-p</string>
+    <string>/launchagent-watchdog</string>
+  </array>
+
+  <!-- Run every 30 minutes (1800 seconds) -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <!--
+    WorkingDirectory: REPLACE /Users/haimengzhou/apps/ai-console with your actual project root.
+    The skill reads/writes .orchestrate/ relative to this directory.
+  -->
+  <key>WorkingDirectory</key>
+  <string>/Users/haimengzhou/apps/ai-console</string>
+
+  <!-- Capture stdout to a persistent log inside the control plane -->
+  <key>StandardOutPath</key>
+  <string>/Users/haimengzhou/apps/ai-console/.orchestrate/logs/launchagent-watchdog.log</string>
+
+  <!-- Capture stderr separately for easier triage -->
+  <key>StandardErrorPath</key>
+  <string>/Users/haimengzhou/apps/ai-console/.orchestrate/logs/launchagent-watchdog-err.log</string>
+
+  <!-- Do not run immediately on launchctl load — wait for first interval -->
+  <key>RunAtLoad</key>
+  <false/>
+
+</dict>
+</plist>

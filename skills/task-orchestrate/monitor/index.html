@@ -67,6 +67,13 @@
     font-size: 12px;
     white-space: nowrap;
   }
+  #analyzer-status {
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  #analyzer-status.ok    { color: var(--muted); }
+  #analyzer-status.warn  { color: #e3b341; }
+  #analyzer-status.never { color: var(--muted); }
   button {
     background: #21262d;
     border: 1px solid var(--border);
@@ -401,6 +408,40 @@
     min-height: 60px;
   }
 
+  /* ── inbox ── */
+  .inbox-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .inbox-card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+  }
+  .inbox-card-header:hover { background: #1c2128; }
+  .inbox-title {
+    flex: 1;
+    font-size: 13px;
+    color: #e6edf3;
+    font-weight: 500;
+  }
+  .inbox-filename {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .badge-bug     { background: #da3633; }
+  .badge-enhance { background: #d29922; color: #000; }
+  .badge-inbox   { background: #6e7681; }
+
   /* ── loader ── */
   .loading { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
 
@@ -419,11 +460,13 @@
   <h1>task-orchestrate monitor</h1>
   <span id="attention-badge">⚠ Needs Attention: <span id="attention-count">0</span></span>
   <span id="meta">loading…</span>
+  <span id="analyzer-status" class="never">Analyzer: —</span>
   <button id="refresh-btn" onclick="manualRefresh()">Refresh</button>
 </header>
 
 <nav>
   <button class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Active Tasks</button>
+  <button class="tab" data-tab="inbox" onclick="switchTab('inbox')">Inbox <span id="inbox-count-badge" style="display:none;background:#da3633;color:#fff;border-radius:8px;padding:1px 6px;font-size:11px;margin-left:4px;"></span></button>
   <button class="tab" data-tab="history" onclick="switchTab('history')">History</button>
 </nav>
 
@@ -432,6 +475,11 @@
     <div id="status-summary"></div>
     <div class="loading" id="tasks-loading">Loading tasks…</div>
     <div id="tasks-container"></div>
+  </div>
+
+  <div id="inbox-panel" class="tab-panel">
+    <div class="loading" id="inbox-loading">Loading inbox…</div>
+    <div id="inbox-container"></div>
   </div>
 
   <div id="history-panel" class="tab-panel">
@@ -457,6 +505,7 @@
 // ── state ─────────────────────────────────────────────────────────────────────
 let tasksData    = { registry: [], tasks: {} };
 let historyData  = { manifest: [], entries: {} };
+let inboxData    = { items: [] };
 let heartbeatLines = [];
 let logsCache    = {};   // taskId -> { files, logs }
 let countdown    = 15;
@@ -489,7 +538,7 @@ async function manualRefresh() {
 }
 
 async function doRefresh() {
-  await Promise.all([fetchTasks(), fetchHistory(), fetchHeartbeat()]);
+  await Promise.all([fetchTasks(), fetchInbox(), fetchHistory(), fetchHeartbeat()]);
   lastRefreshed = new Date();
   updateMeta();
 }
@@ -525,6 +574,72 @@ async function fetchTasks() {
   } finally {
     document.getElementById('tasks-loading').style.display = 'none';
   }
+}
+
+// ── fetch inbox ───────────────────────────────────────────────────────────────
+async function fetchInbox() {
+  try {
+    const r = await fetch('/api/inbox');
+    inboxData = await r.json();
+    renderInbox();
+  } catch (e) {
+    document.getElementById('inbox-container').innerHTML =
+      `<div class="empty">Failed to load inbox: ${esc(e.message)}</div>`;
+  } finally {
+    document.getElementById('inbox-loading').style.display = 'none';
+  }
+}
+
+function inboxTypeBadge(title) {
+  if (/\[BUG\]/i.test(title))     return `<span class="badge badge-bug">BUG</span>`;
+  if (/\[ENHANCE\]/i.test(title)) return `<span class="badge badge-enhance">ENHANCE</span>`;
+  return `<span class="badge badge-inbox">INBOX</span>`;
+}
+
+function renderInbox() {
+  const items = inboxData.items || [];
+  const container = document.getElementById('inbox-container');
+
+  // Update tab badge
+  const countBadge = document.getElementById('inbox-count-badge');
+  if (items.length > 0) {
+    countBadge.textContent = items.length;
+    countBadge.style.display = 'inline';
+  } else {
+    countBadge.style.display = 'none';
+  }
+
+  // Update attention badge to also reflect inbox
+  updateAttentionBadge(tasksData.registry || []);
+
+  if (items.length === 0) {
+    container.innerHTML = `
+      <div class="empty">
+        <span class="checkmark">✓</span>
+        Inbox is empty — no pending jobs
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = items.map((item, idx) => {
+    const safeIdx = 'inbox-' + idx;
+    return `
+<div class="inbox-card">
+  <div class="inbox-card-header" onclick="toggleInboxCard('${safeIdx}')">
+    ${inboxTypeBadge(item.title)}
+    <span class="inbox-title">${esc(item.title)}</span>
+    <span class="inbox-filename">${esc(item.filename)}</span>
+  </div>
+  <div class="expand-area" id="${safeIdx}">
+    <pre class="content-block">${esc(item.content)}</pre>
+  </div>
+</div>`;
+  }).join('');
+}
+
+function toggleInboxCard(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle('open');
 }
 
 // ── fetch history ─────────────────────────────────────────────────────────────
@@ -564,6 +679,28 @@ function renderHeartbeat() {
   const metaEl = document.getElementById('activity-feed-meta');
   if (lastRefreshed) {
     metaEl.textContent = `updated ${lastRefreshed.toLocaleTimeString()}`;
+  }
+
+  // Update analyzer last-run badge in header
+  const analyzerEl = document.getElementById('analyzer-status');
+  const analyzerLine = [...heartbeatLines].reverse().find(l => l.includes('inbox-analyzer'));
+  if (!analyzerLine) {
+    analyzerEl.className = 'never';
+    analyzerEl.textContent = 'Analyzer: never';
+  } else {
+    const tsMatch = analyzerLine.match(/\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]/);
+    if (tsMatch) {
+      const ageMs = Date.now() - new Date(tsMatch[1]).getTime();
+      const ageMins = Math.floor(ageMs / 60000);
+      const ageStr = ageMins < 1 ? 'just now' : ageMins === 1 ? '1m ago' : `${ageMins}m ago`;
+      if (ageMins > 20) {
+        analyzerEl.className = 'warn';
+        analyzerEl.textContent = `Analyzer: ${ageStr} ⚠`;
+      } else {
+        analyzerEl.className = 'ok';
+        analyzerEl.textContent = `Analyzer: ${ageStr}`;
+      }
+    }
   }
 }
 

@@ -23,7 +23,8 @@ Detect which mode applies from the input:
 
 | Input | Mode |
 |-------|------|
-| `tend` | Watchdog — scan registry, advance stalled tasks |
+| `tend` | Watchdog — scan registry, drain inbox, notify on pending tasks |
+| `tend go auto` | Watchdog + auto-execute — drain inbox, register tasks, execute all pending in auto mode |
 | `resume` alone | Resume — list active tasks and wait for user pick |
 | Any other non-empty string | New task — plan and execute |
 | Empty / no input | If project.md exists: show registry status. Else: ask for task. |
@@ -109,7 +110,16 @@ grep -qE "awaiting_critic|awaiting_go" "$PROJ" 2>/dev/null && NEED_ACTION=1
 
 # Inbox has items?
 ls .orchestrate/inbox/*.md 2>/dev/null | grep -q . && NEED_ACTION=1
+
+# Pending tasks in registry? (only relevant when mode is `tend go auto`)
+# In go-auto mode, registered-but-unstarted tasks should also trigger execution.
+# Check the invocation input: if it contains "go auto", scan for pending rows too.
+if echo "$INPUT" | grep -q "go auto"; then
+  grep -qE "\|\s*pending\s*\|" "$PROJ" 2>/dev/null && NEED_ACTION=1
+fi
 ```
+
+Where `$INPUT` is the full invocation string passed to the skill (e.g. `"tend go auto"`).
 
 If `NEED_ACTION=0`: append `[<ISO>] tend — idle` to `.orchestrate/logs/heartbeat.log` and exit.
 
@@ -140,7 +150,8 @@ For each `.md` file in `.orchestrate/inbox/`:
 2. Register it in the project registry (status: `pending`, no phase file yet).
 3. Move file to `.orchestrate/inbox/processed/`.
 4. Append to `.orchestrate/logs/heartbeat.log`: `[<ISO>] inbox — registered "<task title>" from <filename>`
-5. Do **not** start execution — queued tasks wait for `go`/`go auto`.
+5. **If mode is `tend`:** do not start execution — queued tasks wait for `go`/`go auto`.
+   **If mode is `tend go auto`:** proceed — tasks will be executed in T-4.
 
 When a background inbox task is later executed (via `go auto` in tend mode), write a per-task log file at `.orchestrate/logs/{ID}-tend.log`:
 ```
@@ -163,7 +174,11 @@ For each task in the registry:
 
 **`awaiting_go` (mode: gated):** Do NOT advance. Send `PushNotification`: `⏸ [{ID}] "{summary}" — phase ready, needs your "go"`. Log it.
 
-**`pending` tasks registered from inbox:** Send `PushNotification`: `📋 [{N} new task(s) queued — type "go" or "go auto" to start]`. Log.
+**`pending` tasks (from inbox drain this cycle OR already registered):**
+- **Mode `tend`:** Send `PushNotification`: `📋 [{N} new task(s) queued — type "go" or "go auto" to start]`. Log.
+- **Mode `tend go auto`:** Execute each pending task immediately in auto mode. For each task: create its `.orchestrate/tasks/{ID}.md` plan file if it doesn't exist, run the full execution loop (same as `go auto`), write per-task log to `.orchestrate/logs/{ID}-tend.log`. Do not send a push notification — execution is unattended. Append to heartbeat.log: `[<ISO>] tend-auto — executing "<task title>" ({ID})`.
+
+  **This applies to ALL pending tasks in the registry**, not only those drained this cycle — so tasks registered in a previous tend run that were never started are also picked up.
 
 **All other statuses:** skip.
 
@@ -542,7 +557,7 @@ cat > ~/Library/LaunchAgents/com.orchestrate.tend.plist << 'EOF'
   <array>
     <string>/usr/local/bin/claude</string>
     <string>-p</string>
-    <string>tend</string>
+    <string>tend go auto</string>
   </array>
   <key>StartInterval</key>
   <integer>300</integer>
