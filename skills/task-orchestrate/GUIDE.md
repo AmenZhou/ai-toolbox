@@ -257,8 +257,8 @@ cat .orchestrate/project.md
 tail -f .orchestrate/logs/heartbeat.log
 
 # Search past tasks
-grep -r "keyword" .orchestrate-history/
-cat .orchestrate-history/MANIFEST.md
+grep -r "keyword" ~/apps/my-project/orchestrate-history/
+cat ~/apps/my-project/orchestrate-history/MANIFEST.md
 ```
 
 ---
