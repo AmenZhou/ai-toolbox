@@ -123,6 +123,35 @@ That drops a file in `.orchestrate/inbox/`. The next `tend` cycle picks it up au
 
 ---
 
+## Monitor web UI
+
+A zero-dependency Node.js dashboard ships in `monitor/`:
+
+```bash
+# Start from your project root (where .orchestrate/ lives)
+node /path/to/skills/task-orchestrate/monitor/server.js
+# → http://localhost:7842
+```
+
+**Active Tasks tab** — live registry with status badges, phase progress, expandable task file detail, and per-phase log viewer. Auto-refreshes every 15 seconds.
+
+**History tab** — searchable list of all archived runs from `orchestrate-history/`, expandable to full archive content.
+
+---
+
+## Logs
+
+All runtime output is written to `.orchestrate/logs/`:
+
+| File | Contents |
+|------|----------|
+| `heartbeat.log` | One line per tend cycle; inbox drain entries |
+| `{ID}-phase{N}.log` | Full PHASE OUTPUT block for each phase |
+| `{ID}-verify.log` | Auto-verification run output (file checks + test runner) |
+| `{ID}-tend.log` | Full execution log for inbox-driven (background) tasks |
+
+---
+
 ## Files in this directory
 
 | File | Purpose |
@@ -130,3 +159,5 @@ That drops a file in `.orchestrate/inbox/`. The next `tend` cycle picks it up au
 | `SKILL.md` | Full skill instructions loaded by Claude Code |
 | `GUIDE.md` | Use cases, examples, and setup walkthrough |
 | `README.md` | This overview |
+| `monitor/server.js` | Zero-dependency Node.js monitor server |
+| `monitor/index.html` | Single-file dark-themed web UI |

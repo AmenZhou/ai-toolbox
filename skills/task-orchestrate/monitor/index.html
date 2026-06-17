@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>task-orchestrate monitor</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0d1117;
+    --card:      #161b22;
+    --border:    #30363d;
+    --text:      #c9d1d9;
+    --muted:     #8b949e;
+    --link:      #58a6ff;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+    --status-running:      #1f6feb;
+    --status-complete:     #238636;
+    --status-failed:       #da3633;
+    --status-needs_human:  #d29922;
+    --status-awaiting_go:  #8b949e;
+    --status-pending:      #6e7681;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ── header ── */
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: #e6edf3;
+    flex: 1;
+  }
+  #meta {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  button {
+    background: #21262d;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 4px 12px;
+    transition: background 0.15s;
+  }
+  button:hover { background: #30363d; }
+
+  /* ── tabs ── */
+  nav {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    padding: 0 20px;
+    background: var(--card);
+  }
+  .tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 10px 16px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab:hover { color: var(--text); background: none; }
+  .tab.active {
+    border-bottom-color: #f78166;
+    color: #e6edf3;
+  }
+
+  /* ── main ── */
+  main {
+    padding: 20px;
+    max-width: 960px;
+  }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── cards ── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .task-id {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: #e6edf3;
+    font-weight: 600;
+  }
+  .card-body { padding: 12px 16px; }
+  .summary { color: var(--text); margin-bottom: 8px; }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .meta-row strong { color: var(--text); }
+
+  /* ── badges ── */
+  .badge {
+    border-radius: 12px;
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #fff;
+  }
+  .badge-running      { background: var(--status-running); }
+  .badge-complete     { background: var(--status-complete); }
+  .badge-failed       { background: var(--status-failed); }
+  .badge-needs_human  { background: var(--status-needs_human); color: #000; }
+  .badge-awaiting_go  { background: var(--status-awaiting_go); }
+  .badge-pending      { background: var(--status-pending); }
+  .badge-auto  { background: #1c2f4f; border: 1px solid #1f6feb; color: #58a6ff; }
+  .badge-gated { background: #2d1f00; border: 1px solid #d29922; color: #d29922; }
+  .badge-mode  { background: #21262d; border: 1px solid var(--border); color: var(--muted); }
+
+  /* ── expandable sections ── */
+  .section-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--link);
+    cursor: pointer;
+    font-size: 12px;
+    margin-right: 8px;
+    padding: 2px 8px;
+  }
+  .section-toggle:hover { background: #1c2f4f; }
+  .expand-area {
+    display: none;
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .expand-area.open { display: block; }
+  pre.content-block {
+    background: #010409;
+    color: #c9d1d9;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    margin: 0;
+    overflow-x: auto;
+    padding: 14px 16px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .log-file-list { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .log-file-btn {
+    background: none;
+    border: none;
+    color: var(--link);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    margin: 2px 6px 2px 0;
+    padding: 2px 0;
+    text-decoration: underline;
+  }
+  .log-file-btn:hover { color: #79c0ff; background: none; }
+  .log-content {
+    background: #010409;
+    color: #c9d1d9;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 12px 16px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-top: 1px solid var(--border);
+    display: none;
+  }
+  .log-content.open { display: block; }
+
+  /* ── empty state ── */
+  .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+
+  /* ── history tab ── */
+  #search-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    margin-bottom: 16px;
+    padding: 8px 12px;
+    width: 100%;
+  }
+  #search-box:focus { outline: none; border-color: var(--link); }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: var(--card);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  tr:nth-child(even) td { background: #0e1117; }
+  tr:nth-child(odd) td  { background: var(--bg); }
+  .history-date { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+  .history-tags { color: var(--muted); font-size: 11px; }
+  .history-detail-row td {
+    padding: 0;
+    background: #010409 !important;
+  }
+  .expand-btn {
+    background: none;
+    border: none;
+    color: var(--link);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    padding: 0 4px;
+  }
+  .expand-btn:hover { background: none; color: #79c0ff; }
+
+  /* ── loader ── */
+  .loading { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
+
+  @media (max-width: 600px) {
+    header { padding: 10px 12px; }
+    main { padding: 12px; }
+    .card-header { gap: 8px; }
+    th, td { padding: 6px 8px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>task-orchestrate monitor</h1>
+  <span id="meta">loading…</span>
+  <button id="refresh-btn" onclick="refresh()">Refresh</button>
+</header>
+
+<nav>
+  <button class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Active Tasks</button>
+  <button class="tab" data-tab="history" onclick="switchTab('history')">History</button>
+</nav>
+
+<main>
+  <div id="tasks-panel" class="tab-panel active">
+    <div class="loading" id="tasks-loading">Loading tasks…</div>
+    <div id="tasks-container"></div>
+  </div>
+
+  <div id="history-panel" class="tab-panel">
+    <input id="search-box" type="search" placeholder="Search by summary or tags…" oninput="filterHistory()" />
+    <div class="loading" id="history-loading">Loading history…</div>
+    <div id="history-container"></div>
+  </div>
+</main>
+
+<script>
+// ── state ─────────────────────────────────────────────────────────────────────
+let tasksData   = { registry: [], tasks: {} };
+let historyData = { manifest: [], entries: {} };
+let logsCache   = {};   // taskId -> { files, logs }
+let countdown   = 15;
+let countdownTimer = null;
+
+// ── tabs ──────────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === name + '-panel'));
+}
+
+// ── refresh ───────────────────────────────────────────────────────────────────
+async function refresh() {
+  countdown = 15;
+  await Promise.all([fetchTasks(), fetchHistory()]);
+  updateMeta();
+}
+
+function updateMeta() {
+  const now = new Date().toLocaleTimeString();
+  document.getElementById('meta').textContent =
+    `last refreshed: ${now}  |  auto-refresh in ${countdown}s`;
+}
+
+function startCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = setInterval(() => {
+    countdown--;
+    if (countdown <= 0) {
+      countdown = 15;
+      refresh();
+    } else {
+      updateMeta();
+    }
+  }, 1000);
+}
+
+// ── fetch tasks ───────────────────────────────────────────────────────────────
+async function fetchTasks() {
+  try {
+    const r = await fetch('/api/tasks');
+    tasksData = await r.json();
+    renderTasks();
+  } catch (e) {
+    document.getElementById('tasks-container').innerHTML =
+      `<div class="empty">Failed to load tasks: ${e.message}</div>`;
+  } finally {
+    document.getElementById('tasks-loading').style.display = 'none';
+  }
+}
+
+// ── fetch history ─────────────────────────────────────────────────────────────
+async function fetchHistory() {
+  try {
+    const r = await fetch('/api/history');
+    historyData = await r.json();
+    renderHistory();
+  } catch (e) {
+    document.getElementById('history-container').innerHTML =
+      `<div class="empty">Failed to load history: ${e.message}</div>`;
+  } finally {
+    document.getElementById('history-loading').style.display = 'none';
+  }
+}
+
+// ── fetch logs ────────────────────────────────────────────────────────────────
+async function fetchLogs(taskId) {
+  if (logsCache[taskId]) return logsCache[taskId];
+  try {
+    const r = await fetch(`/api/logs?id=${encodeURIComponent(taskId)}`);
+    const data = await r.json();
+    logsCache[taskId] = data;
+    return data;
+  } catch (_) {
+    return { files: [], logs: {} };
+  }
+}
+
+// ── render tasks ──────────────────────────────────────────────────────────────
+function statusBadge(status) {
+  const cls = 'badge badge-' + (status || 'pending').toLowerCase().replace(/[^a-z_]/g, '_');
+  return `<span class="${cls}">${status || 'unknown'}</span>`;
+}
+
+function modeBadge(mode) {
+  const m = (mode || '').toLowerCase();
+  const cls = m === 'auto' ? 'badge badge-auto' : m === 'gated' ? 'badge badge-gated' : 'badge badge-mode';
+  return mode ? `<span class="${cls}">${mode}</span>` : '';
+}
+
+function renderTasks() {
+  const container = document.getElementById('tasks-container');
+  const { registry, tasks } = tasksData;
+
+  if (!registry || registry.length === 0) {
+    container.innerHTML = '<div class="empty">No tasks found in .orchestrate/project.md</div>';
+    return;
+  }
+
+  container.innerHTML = registry.map(row => {
+    const id = row.id || '(unknown)';
+    const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const taskMd = tasks[id] || null;
+    const hasDetails = !!taskMd;
+
+    return `
+<div class="card">
+  <div class="card-header">
+    <span class="task-id">${esc(id)}</span>
+    ${statusBadge(row.status)}
+    ${modeBadge(row.mode)}
+  </div>
+  <div class="card-body">
+    <div class="summary">${esc(row.summary || '(no summary)')}</div>
+    <div class="meta-row">
+      <span>Phase <strong>${esc(row.current_phase || '?')}</strong></span>
+      <span>Last activity: <strong>${esc(row.last_activity || '—')}</strong></span>
+    </div>
+    <div class="actions" style="margin-top:8px;">
+      ${hasDetails ? `<button class="section-toggle" onclick="toggleDetails('${safeId}')">Details</button>` : ''}
+      <button class="section-toggle" onclick="toggleLogs('${safeId}', '${esc(id)}')">Logs</button>
+    </div>
+    ${hasDetails ? `
+    <div class="expand-area" id="details-${safeId}">
+      <pre class="content-block">${esc(taskMd)}</pre>
+    </div>` : ''}
+    <div class="expand-area" id="logs-${safeId}">
+      <div class="log-file-list" id="log-files-${safeId}">
+        <span style="color:var(--muted);font-size:12px;">Loading logs…</span>
+      </div>
+      <div id="log-viewer-${safeId}"></div>
+    </div>
+  </div>
+</div>`;
+  }).join('');
+}
+
+function toggleDetails(safeId) {
+  const el = document.getElementById('details-' + safeId);
+  if (el) el.classList.toggle('open');
+}
+
+async function toggleLogs(safeId, taskId) {
+  const area = document.getElementById('logs-' + safeId);
+  if (!area) return;
+  const isOpen = area.classList.contains('open');
+  if (isOpen) { area.classList.remove('open'); return; }
+
+  area.classList.add('open');
+  const logData = await fetchLogs(taskId);
+  const fileListEl = document.getElementById('log-files-' + safeId);
+  const viewerEl   = document.getElementById('log-viewer-' + safeId);
+
+  if (!logData.files || logData.files.length === 0) {
+    fileListEl.innerHTML = '<span style="color:var(--muted);font-size:12px;">No log files found for this task.</span>';
+    return;
+  }
+
+  fileListEl.innerHTML = logData.files.map(f =>
+    `<button class="log-file-btn" onclick="showLog('${safeId}', '${esc(f)}')">${esc(f)}</button>`
+  ).join('');
+
+  // Pre-render all log contents hidden
+  viewerEl.innerHTML = logData.files.map(f =>
+    `<div class="log-content" id="log-${safeId}-${cssId(f)}">${esc(logData.logs[f] || '')}</div>`
+  ).join('');
+}
+
+function showLog(safeId, filename) {
+  const viewerEl = document.getElementById('log-viewer-' + safeId);
+  if (!viewerEl) return;
+  const targetId = 'log-' + safeId + '-' + cssId(filename);
+  viewerEl.querySelectorAll('.log-content').forEach(el => {
+    el.classList.toggle('open', el.id === targetId);
+  });
+}
+
+function cssId(str) {
+  return str.replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+// ── render history ────────────────────────────────────────────────────────────
+let historyFilter = '';
+
+function filterHistory() {
+  historyFilter = document.getElementById('search-box').value.toLowerCase();
+  renderHistory();
+}
+
+function renderHistory() {
+  const container = document.getElementById('history-container');
+  const { manifest, entries } = historyData;
+
+  if (!manifest || manifest.length === 0) {
+    container.innerHTML = '<div class="empty">No history entries found in orchestrate-history/MANIFEST.md</div>';
+    return;
+  }
+
+  const filtered = manifest.filter(e => {
+    if (!historyFilter) return true;
+    return (e.summary + ' ' + e.tags).toLowerCase().includes(historyFilter);
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="empty">No entries match your search.</div>';
+    return;
+  }
+
+  // Render as a table with expandable rows
+  let html = `
+<table>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Summary</th>
+      <th>Tags</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="history-tbody">`;
+
+  filtered.forEach((e, idx) => {
+    const rowId = 'hrow-' + idx;
+    const content = entries[e.filename] || '';
+    html += `
+    <tr>
+      <td class="history-date">${esc(e.date)}</td>
+      <td>${esc(e.summary)}</td>
+      <td class="history-tags">${esc(e.tags)}</td>
+      <td><button class="expand-btn" title="Expand" onclick="toggleHistoryRow('${rowId}')">▸</button></td>
+    </tr>
+    <tr id="${rowId}" class="history-detail-row" style="display:none;">
+      <td colspan="4"><pre class="content-block">${esc(content)}</pre></td>
+    </tr>`;
+  });
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function toggleHistoryRow(rowId) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+  const hidden = row.style.display === 'none';
+  row.style.display = hidden ? 'table-row' : 'none';
+  // Update the button icon
+  const btn = row.previousElementSibling.querySelector('.expand-btn');
+  if (btn) btn.textContent = hidden ? '▾' : '▸';
+}
+
+// ── utils ─────────────────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ── init ──────────────────────────────────────────────────────────────────────
+(async function init() {
+  await refresh();
+  startCountdown();
+})();
+</script>
+</body>
+</html>

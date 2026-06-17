@@ -119,7 +119,17 @@ For each `.md` file in `.orchestrate/inbox/`:
 1. Read the file — first line is the task prompt.
 2. Register it in the project registry (status: `pending`, no phase file yet).
 3. Move file to `.orchestrate/inbox/processed/`.
-4. Do **not** start execution — queued tasks wait for `go`/`go auto`.
+4. Append to `.orchestrate/logs/heartbeat.log`: `[<ISO>] inbox — registered "<task prompt>" from <filename>`
+5. Do **not** start execution — queued tasks wait for `go`/`go auto`.
+
+When a background inbox task is later executed (via `go auto` in tend mode), write a per-task log file at `.orchestrate/logs/{ID}-tend.log`:
+```
+=== Tend-driven execution — <ISO> ===
+source: inbox/<original-filename>
+task: <prompt>
+<append each PHASE OUTPUT block as phases complete>
+=== done ===
+```
 
 ### T-3 — Load tools
 
@@ -261,6 +271,13 @@ Evaluate against acceptance criteria inline. Assign: **PASS** · **PARTIAL: \<ga
 
 If `files_changed` non-empty: run Bash lint/build/test. Downgrade to PARTIAL if fails.
 
+**Phase log write (mandatory):** Append the full PHASE OUTPUT block to `.orchestrate/logs/{ID}-phase{N}.log`:
+```bash
+mkdir -p .orchestrate/logs
+echo "=== Phase N — <name> $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> .orchestrate/logs/{ID}-phase{N}.log
+echo "<full PHASE OUTPUT block>" >> .orchestrate/logs/{ID}-phase{N}.log
+```
+
 **State write is mandatory after every inline phase** — follow Steps A/B/C immediately. Never defer or batch.
 
 **Inline skill invocation:** For `[inline · /skill-name]` phases, read the skill's SKILL.md, follow its instructions directly. Announce `▶ Phase N — <name> (inline)`.
@@ -283,6 +300,8 @@ Announce `▶ Phase N — <name>`.
 
 After agent returns: extract `## PHASE OUTPUT`. If missing → treat as ⚠️ with gap "no PHASE OUTPUT block".
 
+**Phase log write (mandatory):** Append the full PHASE OUTPUT block (or the raw agent return text if block is missing) to `.orchestrate/logs/{ID}-phase{N}.log` — same format as inline phases above.
+
 ### Critic & micro-verifier (always inline)
 
 For execution and reasoning phases:
@@ -304,8 +323,9 @@ Skip assessment for simple and instructional phases.
 ```
 phase N status → awaiting_critic
 phase N captured_output → {summary, confidence, files_changed, blockers}
+phase N raw_output → <full PHASE OUTPUT block text>
 ```
-Update project.md registry: `status: awaiting_critic`.
+Append the raw output block to the task state file under the phase section (so `.orchestrate/tasks/{ID}.md` contains a full record of what Claude produced). Update project.md registry: `status: awaiting_critic`.
 
 **Step B — Verdict table:**
 
@@ -369,13 +389,47 @@ When all phases are `✓ complete`:
 
 **3. Update Shared Context** — see section below.
 
-**4. Job Verification:**
+**4. Auto-Verification Run:**
+
+Before producing the Job Verification summary, run automated checks and write results to `.orchestrate/logs/{ID}-verify.log`:
+
+```bash
+# Detect and run test/build commands (try each; skip if not found)
+VERIFY_LOG=".orchestrate/logs/${ID}-verify.log"
+echo "=== Verification run $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> "$VERIFY_LOG"
+
+# Check declared output files exist
+for f in <files_changed from all phases>; do
+  [ -f "$f" ] && echo "✓ $f" >> "$VERIFY_LOG" || echo "✗ MISSING: $f" >> "$VERIFY_LOG"
+done
+
+# Auto-detect and run test/build commands (try each in order; stop at first match)
+if [ -f "package.json" ]; then
+  (npm test 2>&1 | tail -20) >> "$VERIFY_LOG" || true
+  (npm run build 2>&1 | tail -20) >> "$VERIFY_LOG" || true
+elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+  (python -m pytest --tb=short -q 2>&1 | tail -20) >> "$VERIFY_LOG" || true
+elif [ -f "Makefile" ]; then
+  (make test 2>&1 | tail -20) >> "$VERIFY_LOG" || true
+elif [ -f "go.mod" ]; then
+  (go test ./... 2>&1 | tail -20) >> "$VERIFY_LOG" || true
+else
+  echo "no test runner detected — skipping" >> "$VERIFY_LOG"
+fi
+
+echo "=== done ===" >> "$VERIFY_LOG"
+```
+
+Classify verify result: **✓ passed** · **⚠ warnings** · **✗ failed**. Include result in Job Verification block. If `✗ failed` and failure is caused-by-change: gate before archiving.
+
+**5. Job Verification:**
 ```
 ── Job Verification ──────────────────────────────
 Task:           <original task>
 Phases:         X complete · Y failed/skipped
 ACs covered:    ✓ Phase N · ✗ Phase N · N/A Phase N
 Outputs exist:  <each declared output — present / missing>
+Verify run:     ✓ passed | ⚠ warnings | ✗ failed | skipped
 Regressions:    none · or <description>
 Confidence:     high | medium | low
 ──────────────────────────────────────────────────
@@ -383,7 +437,7 @@ Confidence:     high | medium | low
 
 If low confidence or any ✗ AC: gate with `⚠ Verification found gaps`.
 
-**5. Improvement Suggestions:**
+**6. Improvement Suggestions:**
 ```
 ── Suggestions ───────────────────────────────────
 Orchestrator:
