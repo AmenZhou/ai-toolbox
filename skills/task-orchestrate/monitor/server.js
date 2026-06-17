@@ -189,6 +189,17 @@ function handleLogs(res, query) {
   send(res, 200, { files: matchingFiles, logs });
 }
 
+function handleHeartbeat(res) {
+  const heartbeatPath = path.join(CWD, '.orchestrate', 'logs', 'heartbeat.log');
+  const content = readFileSafe(heartbeatPath);
+  if (!content) {
+    return send(res, 200, { lines: [] });
+  }
+  const lines = content.split('\n').filter(l => l.trim() !== '');
+  const last20 = lines.slice(-20);
+  send(res, 200, { lines: last20 });
+}
+
 // ── server ────────────────────────────────────────────────────────────────────
 
 const server = http.createServer((req, res) => {
@@ -209,6 +220,8 @@ const server = http.createServer((req, res) => {
     handleHistory(res);
   } else if (pathname === '/api/logs') {
     handleLogs(res, parsed.query);
+  } else if (pathname === '/api/heartbeat') {
+    handleHeartbeat(res);
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');

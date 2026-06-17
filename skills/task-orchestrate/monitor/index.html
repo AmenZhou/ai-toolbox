@@ -50,6 +50,18 @@
     color: #e6edf3;
     flex: 1;
   }
+  #attention-badge {
+    display: none;
+    background: var(--status-failed);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: 12px;
+    padding: 2px 10px;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+  #attention-badge.visible { display: inline-block; }
   #meta {
     color: var(--muted);
     font-size: 12px;
@@ -99,6 +111,54 @@
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
+  /* ── summary bar ── */
+  #status-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 16px;
+    align-items: center;
+  }
+  .status-chip {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .chip-running      { color: #58a6ff; border-color: #1f6feb; background: #0c2a4a; }
+  .chip-awaiting_go  { color: #8b949e; border-color: #444c56; background: #1c2128; }
+  .chip-needs_human  { color: #e3b341; border-color: #d29922; background: #2d1f00; }
+  .chip-pending      { color: #6e7681; border-color: #30363d; background: #161b22; }
+  .chip-failed       { color: #f85149; border-color: #da3633; background: #3d0e0e; }
+
+  /* ── phase progress bar ── */
+  .phase-bar {
+    display: flex;
+    gap: 3px;
+    margin: 8px 0;
+    align-items: center;
+  }
+  .phase-seg {
+    width: 18px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1;
+  }
+  .phase-seg-complete { background: #238636; }
+  .phase-seg-active   { background: #1f6feb; }
+  .phase-seg-empty    { background: #21262d; border: 1px solid #30363d; }
+  .phase-label {
+    font-size: 11px;
+    color: var(--muted);
+    margin-left: 6px;
+    font-family: var(--font-mono);
+  }
+
   /* ── cards ── */
   .card {
     background: var(--card);
@@ -117,21 +177,17 @@
   }
   .task-id {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: 12px;
     color: #e6edf3;
     font-weight: 600;
   }
+  .rel-time {
+    font-size: 11px;
+    color: var(--muted);
+    margin-left: auto;
+  }
   .card-body { padding: 12px 16px; }
   .summary { color: var(--text); margin-bottom: 8px; }
-  .meta-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    font-size: 12px;
-    color: var(--muted);
-    margin-bottom: 8px;
-  }
-  .meta-row strong { color: var(--text); }
 
   /* ── badges ── */
   .badge {
@@ -150,7 +206,7 @@
   .badge-needs_human  { background: var(--status-needs_human); color: #000; }
   .badge-awaiting_go  { background: var(--status-awaiting_go); }
   .badge-pending      { background: var(--status-pending); }
-  .badge-auto  { background: #1c2f4f; border: 1px solid #1f6feb; color: #58a6ff; }
+  .badge-auto  { background: #0c2a4a; border: 1px solid #1f6feb; color: #58a6ff; }
   .badge-gated { background: #2d1f00; border: 1px solid #d29922; color: #d29922; }
   .badge-mode  { background: #21262d; border: 1px solid var(--border); color: var(--muted); }
 
@@ -214,9 +270,26 @@
   .log-content.open { display: block; }
 
   /* ── empty state ── */
-  .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  .empty {
+    color: var(--muted);
+    padding: 40px 0;
+    text-align: center;
+    font-size: 14px;
+  }
+  .empty .checkmark {
+    display: block;
+    font-size: 28px;
+    margin-bottom: 8px;
+    color: #238636;
+  }
 
   /* ── history tab ── */
+  .history-stats {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+  .history-stats span { color: var(--text); font-weight: 600; }
   #search-box {
     background: var(--card);
     border: 1px solid var(--border);
@@ -246,25 +319,87 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
   }
+  th:hover { color: var(--text); }
+  th .sort-arrow { margin-left: 4px; opacity: 0.5; }
+  th.sort-active { color: var(--text); }
+  th.sort-active .sort-arrow { opacity: 1; }
   tr:nth-child(even) td { background: #0e1117; }
   tr:nth-child(odd) td  { background: var(--bg); }
   .history-date { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
-  .history-tags { color: var(--muted); font-size: 11px; }
+  .history-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag-chip {
+    background: #1c2128;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 10px;
+    padding: 1px 6px;
+  }
   .history-detail-row td {
     padding: 0;
     background: #010409 !important;
+  }
+  .history-detail-row pre {
+    max-height: 400px;
+    overflow-y: auto;
   }
   .expand-btn {
     background: none;
     border: none;
     color: var(--link);
     cursor: pointer;
-    font-size: 18px;
+    font-size: 16px;
     line-height: 1;
     padding: 0 4px;
   }
   .expand-btn:hover { background: none; color: #79c0ff; }
+
+  /* ── activity feed ── */
+  #activity-feed {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin: 20px 20px 20px;
+    overflow: hidden;
+    max-width: 960px;
+  }
+  #activity-feed-header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  #activity-feed-header:hover { background: #1c2128; }
+  #activity-feed-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e6edf3;
+    flex: 1;
+  }
+  #activity-feed-meta { font-size: 11px; color: var(--muted); }
+  #activity-toggle-arrow { font-size: 12px; color: var(--muted); transition: transform 0.2s; }
+  #activity-toggle-arrow.open { transform: rotate(90deg); }
+  #activity-body { display: none; }
+  #activity-body.open { display: block; }
+  #heartbeat-pre {
+    background: #010409;
+    color: #7ee787;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 14px 16px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 60px;
+  }
 
   /* ── loader ── */
   .loading { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
@@ -272,6 +407,7 @@
   @media (max-width: 600px) {
     header { padding: 10px 12px; }
     main { padding: 12px; }
+    #activity-feed { margin: 12px; }
     .card-header { gap: 8px; }
     th, td { padding: 6px 8px; }
   }
@@ -281,8 +417,9 @@
 
 <header>
   <h1>task-orchestrate monitor</h1>
+  <span id="attention-badge">⚠ Needs Attention: <span id="attention-count">0</span></span>
   <span id="meta">loading…</span>
-  <button id="refresh-btn" onclick="refresh()">Refresh</button>
+  <button id="refresh-btn" onclick="manualRefresh()">Refresh</button>
 </header>
 
 <nav>
@@ -292,24 +429,45 @@
 
 <main>
   <div id="tasks-panel" class="tab-panel active">
+    <div id="status-summary"></div>
     <div class="loading" id="tasks-loading">Loading tasks…</div>
     <div id="tasks-container"></div>
   </div>
 
   <div id="history-panel" class="tab-panel">
+    <div id="history-stats" class="history-stats"></div>
     <input id="search-box" type="search" placeholder="Search by summary or tags…" oninput="filterHistory()" />
     <div class="loading" id="history-loading">Loading history…</div>
     <div id="history-container"></div>
   </div>
 </main>
 
+<section id="activity-feed">
+  <div id="activity-feed-header" onclick="toggleActivityFeed()">
+    <span id="activity-toggle-arrow">▶</span>
+    <span id="activity-feed-title">Activity Feed</span>
+    <span id="activity-feed-meta">—</span>
+  </div>
+  <div id="activity-body">
+    <pre id="heartbeat-pre">Loading…</pre>
+  </div>
+</section>
+
 <script>
 // ── state ─────────────────────────────────────────────────────────────────────
-let tasksData   = { registry: [], tasks: {} };
-let historyData = { manifest: [], entries: {} };
-let logsCache   = {};   // taskId -> { files, logs }
-let countdown   = 15;
+let tasksData    = { registry: [], tasks: {} };
+let historyData  = { manifest: [], entries: {} };
+let heartbeatLines = [];
+let logsCache    = {};   // taskId -> { files, logs }
+let countdown    = 15;
 let countdownTimer = null;
+let lastRefreshed = null;
+let activityFeedOpen = false;
+
+// history sort state
+let histSortCol  = 'date';
+let histSortAsc  = false;   // default: newest first (desc)
+let historyFilter = '';
 
 // ── tabs ──────────────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -317,17 +475,29 @@ function switchTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === name + '-panel'));
 }
 
+// ── activity feed toggle ───────────────────────────────────────────────────────
+function toggleActivityFeed() {
+  activityFeedOpen = !activityFeedOpen;
+  document.getElementById('activity-body').classList.toggle('open', activityFeedOpen);
+  document.getElementById('activity-toggle-arrow').classList.toggle('open', activityFeedOpen);
+}
+
 // ── refresh ───────────────────────────────────────────────────────────────────
-async function refresh() {
+async function manualRefresh() {
   countdown = 15;
-  await Promise.all([fetchTasks(), fetchHistory()]);
+  await doRefresh();
+}
+
+async function doRefresh() {
+  await Promise.all([fetchTasks(), fetchHistory(), fetchHeartbeat()]);
+  lastRefreshed = new Date();
   updateMeta();
 }
 
 function updateMeta() {
-  const now = new Date().toLocaleTimeString();
+  const timeStr = lastRefreshed ? lastRefreshed.toLocaleTimeString() : '—';
   document.getElementById('meta').textContent =
-    `last refreshed: ${now}  |  auto-refresh in ${countdown}s`;
+    `last refreshed: ${timeStr}  |  auto-refresh in ${countdown}s`;
 }
 
 function startCountdown() {
@@ -336,7 +506,7 @@ function startCountdown() {
     countdown--;
     if (countdown <= 0) {
       countdown = 15;
-      refresh();
+      doRefresh();
     } else {
       updateMeta();
     }
@@ -351,7 +521,7 @@ async function fetchTasks() {
     renderTasks();
   } catch (e) {
     document.getElementById('tasks-container').innerHTML =
-      `<div class="empty">Failed to load tasks: ${e.message}</div>`;
+      `<div class="empty">Failed to load tasks: ${esc(e.message)}</div>`;
   } finally {
     document.getElementById('tasks-loading').style.display = 'none';
   }
@@ -365,9 +535,35 @@ async function fetchHistory() {
     renderHistory();
   } catch (e) {
     document.getElementById('history-container').innerHTML =
-      `<div class="empty">Failed to load history: ${e.message}</div>`;
+      `<div class="empty">Failed to load history: ${esc(e.message)}</div>`;
   } finally {
     document.getElementById('history-loading').style.display = 'none';
+  }
+}
+
+// ── fetch heartbeat ───────────────────────────────────────────────────────────
+async function fetchHeartbeat() {
+  try {
+    const r = await fetch('/api/heartbeat');
+    const data = await r.json();
+    heartbeatLines = data.lines || [];
+    renderHeartbeat();
+  } catch (_) {
+    heartbeatLines = [];
+    renderHeartbeat();
+  }
+}
+
+function renderHeartbeat() {
+  const pre = document.getElementById('heartbeat-pre');
+  if (heartbeatLines.length === 0) {
+    pre.textContent = '(no heartbeat data)';
+  } else {
+    pre.textContent = heartbeatLines.join('\n');
+  }
+  const metaEl = document.getElementById('activity-feed-meta');
+  if (lastRefreshed) {
+    metaEl.textContent = `updated ${lastRefreshed.toLocaleTimeString()}`;
   }
 }
 
@@ -384,32 +580,123 @@ async function fetchLogs(taskId) {
   }
 }
 
+// ── relative time ──────────────────────────────────────────────────────────────
+function relTime(str) {
+  if (!str || str === '—') return '';
+  // Try to parse ISO or common date strings
+  const d = new Date(str);
+  if (isNaN(d.getTime())) return str;
+  const diffMs = Date.now() - d.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return 'just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
+// ── parse total_phases from raw task markdown ──────────────────────────────────
+function parseTotalPhases(md) {
+  if (!md) return null;
+  const m = md.match(/^total_phases:\s*(\d+)/m);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// ── phase progress bar HTML ────────────────────────────────────────────────────
+function phaseBar(currentPhase, totalPhases) {
+  const cur = parseInt(currentPhase, 10) || 0;
+  const tot = parseInt(totalPhases, 10) || 0;
+  if (tot <= 0) return '';
+
+  const segs = [];
+  for (let i = 1; i <= tot; i++) {
+    let cls;
+    if (i < cur) cls = 'phase-seg-complete';
+    else if (i === cur) cls = 'phase-seg-active';
+    else cls = 'phase-seg-empty';
+    segs.push(`<span class="phase-seg ${cls}" title="Phase ${i}"></span>`);
+  }
+  return `<div class="phase-bar">${segs.join('')}<span class="phase-label">${cur}/${tot}</span></div>`;
+}
+
+// ── render attention badge ─────────────────────────────────────────────────────
+function updateAttentionBadge(registry) {
+  const count = registry.filter(r =>
+    r.status === 'needs_human' || r.status === 'failed'
+  ).length;
+  const badge = document.getElementById('attention-badge');
+  const countEl = document.getElementById('attention-count');
+  countEl.textContent = count;
+  badge.classList.toggle('visible', count > 0);
+}
+
+// ── status summary bar ─────────────────────────────────────────────────────────
+const STATUS_ORDER = ['running', 'needs_human', 'awaiting_go', 'pending', 'failed'];
+const STATUS_LABEL = {
+  running: 'running',
+  needs_human: 'needs human',
+  awaiting_go: 'awaiting go',
+  pending: 'pending',
+  failed: 'failed',
+};
+
+function renderStatusSummary(activeTasks) {
+  const counts = {};
+  for (const t of activeTasks) {
+    const s = (t.status || 'pending').toLowerCase();
+    counts[s] = (counts[s] || 0) + 1;
+  }
+
+  const chips = STATUS_ORDER
+    .filter(s => counts[s] > 0)
+    .map(s => {
+      const label = STATUS_LABEL[s] || s;
+      return `<span class="status-chip chip-${s}">● ${counts[s]} ${label}</span>`;
+    });
+
+  const el = document.getElementById('status-summary');
+  el.innerHTML = chips.join('');
+}
+
 // ── render tasks ──────────────────────────────────────────────────────────────
 function statusBadge(status) {
-  const cls = 'badge badge-' + (status || 'pending').toLowerCase().replace(/[^a-z_]/g, '_');
-  return `<span class="${cls}">${status || 'unknown'}</span>`;
+  const s = (status || 'pending').toLowerCase().replace(/[^a-z_]/g, '_');
+  return `<span class="badge badge-${s}">${esc(status || 'unknown')}</span>`;
 }
 
 function modeBadge(mode) {
   const m = (mode || '').toLowerCase();
   const cls = m === 'auto' ? 'badge badge-auto' : m === 'gated' ? 'badge badge-gated' : 'badge badge-mode';
-  return mode ? `<span class="${cls}">${mode}</span>` : '';
+  return mode ? `<span class="${cls}">${esc(mode)}</span>` : '';
 }
 
 function renderTasks() {
-  const container = document.getElementById('tasks-container');
   const { registry, tasks } = tasksData;
+  const allActive = (registry || []).filter(r => r.status !== 'complete');
 
-  if (!registry || registry.length === 0) {
-    container.innerHTML = '<div class="empty">No tasks found in .orchestrate/project.md</div>';
+  updateAttentionBadge(registry || []);
+  renderStatusSummary(allActive);
+
+  const container = document.getElementById('tasks-container');
+
+  if (allActive.length === 0) {
+    container.innerHTML = `
+      <div class="empty">
+        <span class="checkmark">✓</span>
+        No active tasks — all clear
+      </div>`;
     return;
   }
 
-  container.innerHTML = registry.map(row => {
+  container.innerHTML = allActive.map(row => {
     const id = row.id || '(unknown)';
     const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
     const taskMd = tasks[id] || null;
     const hasDetails = !!taskMd;
+    const totalPhases = parseTotalPhases(taskMd);
+    const relActivity = relTime(row.last_activity);
 
     return `
 <div class="card">
@@ -417,13 +704,11 @@ function renderTasks() {
     <span class="task-id">${esc(id)}</span>
     ${statusBadge(row.status)}
     ${modeBadge(row.mode)}
+    ${relActivity ? `<span class="rel-time">${esc(relActivity)}</span>` : ''}
   </div>
   <div class="card-body">
     <div class="summary">${esc(row.summary || '(no summary)')}</div>
-    <div class="meta-row">
-      <span>Phase <strong>${esc(row.current_phase || '?')}</strong></span>
-      <span>Last activity: <strong>${esc(row.last_activity || '—')}</strong></span>
-    </div>
+    ${phaseBar(row.current_phase, totalPhases)}
     <div class="actions" style="margin-top:8px;">
       ${hasDetails ? `<button class="section-toggle" onclick="toggleDetails('${safeId}')">Details</button>` : ''}
       <button class="section-toggle" onclick="toggleLogs('${safeId}', '${esc(id)}')">Logs</button>
@@ -468,7 +753,6 @@ async function toggleLogs(safeId, taskId) {
     `<button class="log-file-btn" onclick="showLog('${safeId}', '${esc(f)}')">${esc(f)}</button>`
   ).join('');
 
-  // Pre-render all log contents hidden
   viewerEl.innerHTML = logData.files.map(f =>
     `<div class="log-content" id="log-${safeId}-${cssId(f)}">${esc(logData.logs[f] || '')}</div>`
   ).join('');
@@ -488,57 +772,152 @@ function cssId(str) {
 }
 
 // ── render history ────────────────────────────────────────────────────────────
-let historyFilter = '';
+
+// Merge registry complete rows + manifest entries, dedup by task ID
+function buildHistoryRows() {
+  const { registry } = tasksData;
+  const { manifest, entries } = historyData;
+
+  // Map manifest entries by their filename
+  const manifestByFile = {};
+  for (const e of (manifest || [])) {
+    manifestByFile[e.filename] = e;
+  }
+
+  // Complete registry rows: try to find matching manifest entry by ID prefix
+  const rows = [];
+  const seenFiles = new Set();
+
+  for (const reg of (registry || [])) {
+    if (reg.status !== 'complete') continue;
+    // Find manifest entry whose filename starts with the task id
+    const matchEntry = (manifest || []).find(e => e.filename.startsWith(reg.id));
+    if (matchEntry) {
+      seenFiles.add(matchEntry.filename);
+      rows.push({
+        date: matchEntry.date,
+        filename: matchEntry.filename,
+        summary: matchEntry.summary || reg.summary,
+        tags: matchEntry.tags,
+        status: reg.status,
+        content: entries[matchEntry.filename] || '',
+      });
+    } else {
+      rows.push({
+        date: reg.last_activity || '',
+        filename: reg.id,
+        summary: reg.summary,
+        tags: '',
+        status: reg.status,
+        content: '',
+      });
+    }
+  }
+
+  // Add manifest entries not already covered
+  for (const e of (manifest || [])) {
+    if (seenFiles.has(e.filename)) continue;
+    rows.push({
+      date: e.date,
+      filename: e.filename,
+      summary: e.summary,
+      tags: e.tags,
+      status: 'complete',
+      content: entries[e.filename] || '',
+    });
+  }
+
+  return rows;
+}
+
+function sortHistoryRows(rows) {
+  return [...rows].sort((a, b) => {
+    let va = a[histSortCol] || '';
+    let vb = b[histSortCol] || '';
+    // numeric sort for phases; date string sort works lexically for ISO dates
+    const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+    return histSortAsc ? cmp : -cmp;
+  });
+}
+
+function filterHistoryRows(rows) {
+  if (!historyFilter) return rows;
+  return rows.filter(r =>
+    (r.summary + ' ' + r.tags + ' ' + r.filename).toLowerCase().includes(historyFilter)
+  );
+}
 
 function filterHistory() {
   historyFilter = document.getElementById('search-box').value.toLowerCase();
   renderHistory();
 }
 
+function setHistorySort(col) {
+  if (histSortCol === col) {
+    histSortAsc = !histSortAsc;
+  } else {
+    histSortCol = col;
+    histSortAsc = col !== 'date'; // date defaults desc; others asc
+  }
+  renderHistory();
+}
+
 function renderHistory() {
   const container = document.getElementById('history-container');
-  const { manifest, entries } = historyData;
+  const allRows = buildHistoryRows();
 
-  if (!manifest || manifest.length === 0) {
-    container.innerHTML = '<div class="empty">No history entries found in orchestrate-history/MANIFEST.md</div>';
+  // Stats
+  const totalCount = allRows.length;
+  const completeCount = allRows.filter(r => r.status === 'complete').length;
+  const failedCount = allRows.filter(r => r.status === 'failed').length;
+  const statsEl = document.getElementById('history-stats');
+  statsEl.innerHTML = `Total: <span>${totalCount}</span>  ·  Complete: <span>${completeCount}</span>  ·  Failed: <span>${failedCount}</span>`;
+
+  if (allRows.length === 0) {
+    container.innerHTML = '<div class="empty">No history entries found.</div>';
     return;
   }
 
-  const filtered = manifest.filter(e => {
-    if (!historyFilter) return true;
-    return (e.summary + ' ' + e.tags).toLowerCase().includes(historyFilter);
-  });
+  const filtered = filterHistoryRows(sortHistoryRows(allRows));
 
   if (filtered.length === 0) {
     container.innerHTML = '<div class="empty">No entries match your search.</div>';
     return;
   }
 
-  // Render as a table with expandable rows
-  let html = `
-<table>
-  <thead>
-    <tr>
-      <th>Date</th>
-      <th>Summary</th>
-      <th>Tags</th>
-      <th></th>
-    </tr>
-  </thead>
-  <tbody id="history-tbody">`;
+  const colDef = [
+    { key: 'date',     label: 'Date' },
+    { key: 'summary',  label: 'Summary' },
+    { key: 'tags',     label: 'Tags' },
+    { key: 'status',   label: 'Status' },
+    { key: '_expand',  label: '' },
+  ];
+
+  function thHtml(col) {
+    if (col.key === '_expand') return `<th></th>`;
+    const isActive = histSortCol === col.key;
+    const arrow = isActive ? (histSortAsc ? '▲' : '▼') : '▲';
+    return `<th class="${isActive ? 'sort-active' : ''}" onclick="setHistorySort('${col.key}')">
+      ${col.label}<span class="sort-arrow">${arrow}</span>
+    </th>`;
+  }
+
+  let html = `<table><thead><tr>${colDef.map(thHtml).join('')}</tr></thead><tbody>`;
 
   filtered.forEach((e, idx) => {
     const rowId = 'hrow-' + idx;
-    const content = entries[e.filename] || '';
+    const tags = (e.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+    const tagChips = tags.map(t => `<span class="tag-chip">${esc(t)}</span>`).join('');
     html += `
-    <tr>
+    <tr style="cursor:pointer" onclick="toggleHistoryRow('${rowId}', this)">
       <td class="history-date">${esc(e.date)}</td>
       <td>${esc(e.summary)}</td>
-      <td class="history-tags">${esc(e.tags)}</td>
-      <td><button class="expand-btn" title="Expand" onclick="toggleHistoryRow('${rowId}')">▸</button></td>
+      <td><div class="history-tags">${tagChips || '<span style="color:var(--muted)">—</span>'}</div></td>
+      <td>${statusBadge(e.status)}</td>
+      <td><button class="expand-btn" title="Expand">▸</button></td>
     </tr>
     <tr id="${rowId}" class="history-detail-row" style="display:none;">
-      <td colspan="4"><pre class="content-block">${esc(content)}</pre></td>
+      <td colspan="5"><pre class="content-block">${esc(e.content)}</pre></td>
     </tr>`;
   });
 
@@ -546,13 +925,13 @@ function renderHistory() {
   container.innerHTML = html;
 }
 
-function toggleHistoryRow(rowId) {
+function toggleHistoryRow(rowId, triggerRow) {
   const row = document.getElementById(rowId);
   if (!row) return;
   const hidden = row.style.display === 'none';
   row.style.display = hidden ? 'table-row' : 'none';
-  // Update the button icon
-  const btn = row.previousElementSibling.querySelector('.expand-btn');
+  // Update arrow in the clicked row
+  const btn = triggerRow ? triggerRow.querySelector('.expand-btn') : null;
   if (btn) btn.textContent = hidden ? '▾' : '▸';
 }
 
@@ -567,7 +946,7 @@ function esc(str) {
 
 // ── init ──────────────────────────────────────────────────────────────────────
 (async function init() {
-  await refresh();
+  await doRefresh();
   startCountdown();
 })();
 </script>

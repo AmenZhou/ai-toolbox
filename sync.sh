@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sync.sh — Wire ai-toolbox to Claude Code, Gemini CLI, and Cursor
+# sync.sh — Wire ai-toolbox to Claude Code, Gemini CLI, Cursor, and Hermes
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,6 +8,7 @@ INSTRUCTIONS_DIR="$REPO_DIR/instructions"
 
 CLAUDE_DIR="$HOME/.claude"
 GEMINI_DIR="$HOME/.gemini"
+HERMES_DIR="$HOME/.hermes"
 CURSOR_RULES="$HOME/.cursorrules"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -62,6 +63,16 @@ for skill_file in "$SKILLS_DIR"/*.md; do
   cp "$skill_file" "$skill_dest/SKILL.md"
   skill_count=$((skill_count + 1))
 done
+# Directory-format skills (*/SKILL.md) — copy SKILL.md into place
+for skill_dir in "$SKILLS_DIR"/*/; do
+  [[ -f "$skill_dir/SKILL.md" ]] || continue
+  skill_name="$(basename "$skill_dir")"
+  skill_dest="$CLAUDE_SKILLS/$skill_name"
+  [[ -L "$skill_dest" ]] && rm "$skill_dest"
+  mkdir -p "$skill_dest"
+  cp "$skill_dir/SKILL.md" "$skill_dest/SKILL.md"
+  skill_count=$((skill_count + 1))
+done
 info "~/.claude/skills/ — installed $skill_count skill(s) from $SKILLS_DIR"
 
 # Global CLAUDE.md
@@ -91,6 +102,15 @@ for skill_file in "$SKILLS_DIR"/*.md; do
   cp "$skill_file" "$skill_dest/SKILL.md"
   skill_count=$((skill_count + 1))
 done
+for skill_dir in "$SKILLS_DIR"/*/; do
+  [[ -f "$skill_dir/SKILL.md" ]] || continue
+  skill_name="$(basename "$skill_dir")"
+  skill_dest="$GEMINI_SKILLS/$skill_name"
+  [[ -L "$skill_dest" ]] && rm "$skill_dest"
+  mkdir -p "$skill_dest"
+  cp "$skill_dir/SKILL.md" "$skill_dest/SKILL.md"
+  skill_count=$((skill_count + 1))
+done
 info "~/.gemini/skills/ — installed $skill_count skill(s) from $SKILLS_DIR"
 
 # Global GEMINI.md
@@ -98,6 +118,34 @@ GEMINI_MD="$GEMINI_DIR/GEMINI.md"
 backup "$GEMINI_MD"
 build_instructions "Gemini CLI" > "$GEMINI_MD"
 info "~/.gemini/GEMINI.md written"
+
+# ── Hermes ────────────────────────────────────────────────────────────────────
+
+section "Hermes"
+
+# Skills: symlinks so Hermes always reflects the latest source
+# Flat *.md skills → symlink to ~/.claude/skills/<name> (the installed copy)
+# Directory skills → symlink directly to source dir in ai-toolbox
+HERMES_SKILLS="$HERMES_DIR/skills"
+mkdir -p "$HERMES_SKILLS"
+skill_count=0
+for skill_file in "$SKILLS_DIR"/*.md; do
+  [[ -f "$skill_file" ]] || continue
+  skill_name="$(basename "$skill_file" .md)"
+  skill_dest="$HERMES_SKILLS/$skill_name"
+  rm -rf "$skill_dest"
+  ln -s "$CLAUDE_SKILLS/$skill_name" "$skill_dest"
+  skill_count=$((skill_count + 1))
+done
+for skill_dir in "$SKILLS_DIR"/*/; do
+  [[ -f "$skill_dir/SKILL.md" ]] || continue
+  skill_name="$(basename "$skill_dir")"
+  skill_dest="$HERMES_SKILLS/$skill_name"
+  rm -rf "$skill_dest"
+  ln -s "${skill_dir%/}" "$skill_dest"
+  skill_count=$((skill_count + 1))
+done
+info "~/.hermes/skills/ — installed $skill_count skill(s) as symlinks from $SKILLS_DIR"
 
 # ── Cursor ────────────────────────────────────────────────────────────────────
 
@@ -110,5 +158,5 @@ info "~/.cursorrules written"
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo
-echo "Done. To add a skill: drop a .md file in $SKILLS_DIR"
+echo "Done. To add a skill: drop a .md file or directory in $SKILLS_DIR"
 echo "To update global instructions: edit files in $INSTRUCTIONS_DIR, then re-run sync.sh"
