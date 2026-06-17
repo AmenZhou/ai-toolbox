@@ -115,11 +115,31 @@ If `NEED_ACTION=0`: append `[<ISO>] tend — idle` to `.orchestrate/logs/heartbe
 
 ### T-2 — Drain inbox
 
+**Inbox file format** (required for all enqueued tasks — human or automated):
+
+```markdown
+# <short task title>
+
+## Goal
+<1–3 sentences: what must be true when this task is done. Be specific — name files, endpoints, or behaviors.>
+
+## Context
+<Relevant background: which files are involved, what's already been tried, constraints, related tasks by ID.>
+
+## Acceptance Criteria
+- <measurable done-statement 1>
+- <measurable done-statement 2>
+```
+
+When reading an inbox file:
+- If the file is plain text (no `## Goal` section): treat the entire content as the goal, but flag at registration: `⚠ inbox file <name> has no structured context — plan phase may need clarification`.
+- If the file has the structured format: extract Goal as task summary, Context as shared background for the plan phase, ACs as phase acceptance criteria seeds.
+
 For each `.md` file in `.orchestrate/inbox/`:
-1. Read the file — first line is the task prompt.
+1. Read the file — extract title/goal.
 2. Register it in the project registry (status: `pending`, no phase file yet).
 3. Move file to `.orchestrate/inbox/processed/`.
-4. Append to `.orchestrate/logs/heartbeat.log`: `[<ISO>] inbox — registered "<task prompt>" from <filename>`
+4. Append to `.orchestrate/logs/heartbeat.log`: `[<ISO>] inbox — registered "<task title>" from <filename>`
 5. Do **not** start execution — queued tasks wait for `go`/`go auto`.
 
 When a background inbox task is later executed (via `go auto` in tend mode), write a per-task log file at `.orchestrate/logs/{ID}-tend.log`:
@@ -561,8 +581,21 @@ To unload: `launchctl unload ~/Library/LaunchAgents/com.orchestrate.tend.plist`
 # Run watchdog manually
 /task-orchestrate tend
 
-# Drop a task into the inbox (picked up by next tend cycle)
-echo "add rate limiting to the ads API" > .orchestrate/inbox/rate-limit.md
+# Drop a task into the inbox — use structured format for best results
+cat > .orchestrate/inbox/rate-limit.md << 'EOF'
+# Add rate limiting to all API endpoints
+
+## Goal
+Add per-IP rate limiting (100 req/min) to every route in src/routes/. Return 429 with Retry-After header on breach.
+
+## Context
+No rate limiting exists today. The express app entry point is src/app.ts. We use express-rate-limit in ads_rate_limit already — same pattern applies here.
+
+## Acceptance Criteria
+- All routes return 429 after 100 req/min per IP
+- Retry-After header set correctly
+- Unit tests cover the limit boundary
+EOF
 
 # Check project status
 cat .orchestrate/project.md
