@@ -300,6 +300,7 @@ files_changed: [list or "none"]
 summary: <one sentence>
 confidence: high | medium | low
 blockers: [list or "none"]
+acceptance_criteria_met: [✓ criterion 1 | ✗ criterion 2] or "n/a (simple/instructional)"
 ```
 
 Evaluate against acceptance criteria inline. Assign: **PASS** · **PARTIAL: \<gap\>** · **FAIL: \<reason\>**.
@@ -309,7 +310,10 @@ If `files_changed` non-empty: run Bash lint/build/test. Downgrade to PARTIAL if 
 **Phase log write (mandatory):** Append the full PHASE OUTPUT block to `.orchestrate/logs/{ID}-phase{N}.log`:
 ```bash
 mkdir -p .orchestrate/logs
-echo "=== Phase N — <name> $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> .orchestrate/logs/{ID}-phase{N}.log
+# Include retry counter when R > 0 so retries are visually distinct from the original run
+LABEL="Phase N"
+[ "${RETRIES:-0}" -gt 0 ] && LABEL="Phase N (retry ${RETRIES})"
+echo "=== ${LABEL} — <name> $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> .orchestrate/logs/{ID}-phase{N}.log
 echo "<full PHASE OUTPUT block>" >> .orchestrate/logs/{ID}-phase{N}.log
 ```
 
@@ -326,7 +330,7 @@ Announce `▶ Phase N — <name>`.
 2. Absolute working directory
 3. `## Shared Context` from project.md (paste verbatim — gives agent project-level knowledge)
 4. Acceptance criteria: "This phase is complete when: 1. … 2. … 3. …"
-5. Required output: `## PHASE OUTPUT` block with files_changed / summary / confidence / blockers
+5. Required output: `## PHASE OUTPUT` block with files_changed / summary / confidence / blockers / acceptance_criteria_met
 6. If skill embedded: paste SKILL.md body directly — do NOT invoke Skill tool from within agent
 
 **Parallel phases:** launch as multiple Agent calls in one message (max 6). Wait for all before assessing.
@@ -335,7 +339,7 @@ Announce `▶ Phase N — <name>`.
 
 After agent returns: extract `## PHASE OUTPUT`. If missing → treat as ⚠️ with gap "no PHASE OUTPUT block".
 
-**Phase log write (mandatory):** Append the full PHASE OUTPUT block (or the raw agent return text if block is missing) to `.orchestrate/logs/{ID}-phase{N}.log` — same format as inline phases above.
+**Phase log write (mandatory):** Append the full PHASE OUTPUT block (or the raw agent return text if block is missing) to `.orchestrate/logs/{ID}-phase{N}.log` — same retry-aware format as inline phases above (`Phase N (retry R)` when R > 0).
 
 ### Critic & micro-verifier (always inline)
 
@@ -357,7 +361,7 @@ Skip assessment for simple and instructional phases.
 **Step A — Capture:**
 ```
 phase N status → awaiting_critic
-phase N captured_output → {summary, confidence, files_changed, blockers}
+phase N captured_output → {summary, confidence, files_changed, blockers, acceptance_criteria_met}
 phase N raw_output → <full PHASE OUTPUT block text>
 ```
 Append the raw output block to the task state file under the phase section (so `.orchestrate/tasks/{ID}.md` contains a full record of what Claude produced). Update project.md registry: `status: awaiting_critic`.

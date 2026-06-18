@@ -4,7 +4,7 @@
 
 <!--
   daily-inbox-digest launchd agent
-  Runs /daily-inbox-digest via Claude Code once daily at 5pm.
+  Runs /daily-inbox-digest via Cursor Agent once daily at 5pm.
 
   BEFORE INSTALLING — set PROJECT_DIR to your project root, then run:
 
@@ -29,11 +29,12 @@
   <key>Label</key>
   <string>com.orchestrate.daily-digest</string>
 
-  <!-- Command: invoke Claude Code with the /daily-inbox-digest skill -->
+  <!-- Command: invoke Cursor Agent with the /daily-inbox-digest skill -->
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/haimengzhou/.local/bin/claude</string>
+    <string>/Users/haimengzhou/.local/bin/cursor-agent</string>
     <string>-p</string>
+    <string>--trust</string>
     <string>/daily-inbox-digest</string>
   </array>
 

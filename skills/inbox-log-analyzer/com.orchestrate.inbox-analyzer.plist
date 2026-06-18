@@ -4,7 +4,7 @@
 
 <!--
   inbox-log-analyzer launchd agent
-  Runs /inbox-log-analyzer via Claude Code every 15 minutes.
+  Runs /inbox-log-analyzer via Cursor Agent once daily at 9am.
 
   BEFORE INSTALLING — set PROJECT_DIR to your project root, then run:
 
@@ -29,17 +29,23 @@
   <key>Label</key>
   <string>com.orchestrate.inbox-analyzer</string>
 
-  <!-- Command: invoke Claude Code with the /inbox-log-analyzer skill -->
+  <!-- Command: invoke Cursor Agent with the /inbox-log-analyzer skill -->
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/claude</string>
+    <string>/Users/haimengzhou/.local/bin/cursor-agent</string>
     <string>-p</string>
+    <string>--trust</string>
     <string>/inbox-log-analyzer</string>
   </array>
 
-  <!-- Run every 15 minutes (900 seconds) -->
-  <key>StartInterval</key>
-  <integer>900</integer>
+  <!-- Fire at 09:00 every day -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
 
   <!--
     WorkingDirectory: REPLACE ~/apps/my-project with your actual project root.
@@ -56,7 +62,7 @@
   <key>StandardErrorPath</key>
   <string>~/apps/my-project/.orchestrate/logs/inbox-analyzer-err.log</string>
 
-  <!-- Do not run immediately on launchctl load — wait for first interval -->
+  <!-- Do not run immediately on launchctl load — wait for 9am -->
   <key>RunAtLoad</key>
   <false/>
 

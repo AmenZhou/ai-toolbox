@@ -151,6 +151,20 @@ info "~/.hermes/skills/ — installed $skill_count skill(s) as symlinks from $SK
 
 section "Cursor"
 
+# Project skills for headless cursor-agent inbox jobs
+
+CURSOR_PROJECT_SKILLS="/Users/haimengzhou/apps/ai-console/.cursor/skills"
+ORCHESTRATE_INBOX_SKILLS=(inbox-log-analyzer daily-inbox-digest)
+mkdir -p "$CURSOR_PROJECT_SKILLS"
+for skill_name in "${ORCHESTRATE_INBOX_SKILLS[@]}"; do
+  skill_src="$SKILLS_DIR/$skill_name/SKILL.md"
+  [[ -f "$skill_src" ]] || continue
+  skill_dest="$CURSOR_PROJECT_SKILLS/$skill_name"
+  mkdir -p "$skill_dest"
+  cp "$skill_src" "$skill_dest/SKILL.md"
+done
+info "$CURSOR_PROJECT_SKILLS — synced ${#ORCHESTRATE_INBOX_SKILLS[@]} inbox skill(s) for cursor-agent"
+
 backup "$CURSOR_RULES"
 build_instructions "Cursor" > "$CURSOR_RULES"
 info "~/.cursorrules written"

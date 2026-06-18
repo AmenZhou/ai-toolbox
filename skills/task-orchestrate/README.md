@@ -152,6 +152,26 @@ All runtime output is written to `.orchestrate/logs/`:
 
 ---
 
+## Tests
+
+From the ai-console project root (where `.orchestrate/` lives):
+
+```bash
+make test
+# or: bash .orchestrate/tests/run-tests.sh
+```
+
+Suites covered:
+
+| Suite | File | What it checks |
+|-------|------|----------------|
+| Control plane | `test-task-orchestrate.sh` | `.orchestrate/` layout, SKILL.md invariants, cursor-agent inbox plist, skill sync |
+| Tend go auto | `test-tend-auto.sh` | `com.orchestrate.tend` plist, inbox pre-flight, heartbeat writability |
+| Monitor | `monitor/tests/server.test.js` | Dashboard API routes |
+| Launch agent | `test-launch-agent.js` | Tend plist binary path and launchd registration |
+
+---
+
 ## Files in this directory
 
 | File | Purpose |

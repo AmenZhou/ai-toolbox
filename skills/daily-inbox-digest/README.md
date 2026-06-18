@@ -19,7 +19,7 @@ launchctl load ~/Library/LaunchAgents/com.orchestrate.daily-digest.plist
 
 ```bash
 # From your project root (e.g. ~/apps/ai-console)
-claude -p /daily-inbox-digest
+cursor-agent -p --trust /daily-inbox-digest
 ```
 
 ## Uninstall

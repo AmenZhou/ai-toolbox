@@ -1,6 +1,6 @@
 ---
 name: inbox-log-analyzer
-description: Scans .orchestrate/logs/ for job logs, identifies bugs and enhancements, and writes structured inbox task files for each finding. Runs on a 15-minute launchd interval or manually via /inbox-log-analyzer.
+description: Scans .orchestrate/logs/ for job logs, identifies bugs and enhancements, and writes structured inbox task files for each finding. Runs once daily via launchd (9am, Cursor Agent) or manually via /inbox-log-analyzer.
 inline: true
 ---
 

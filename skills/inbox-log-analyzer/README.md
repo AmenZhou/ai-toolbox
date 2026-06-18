@@ -1,6 +1,6 @@
 # inbox-log-analyzer
 
-A self-contained Claude Code skill that runs on a 15-minute launchd schedule, scans `.orchestrate/logs/` for orchestration job logs, and files structured inbox tasks for every bug or enhancement opportunity it finds. It is the automatic quality layer for the task-orchestrate control plane: instead of errors silently rotting in log files, each actionable issue becomes a first-class `.orchestrate/inbox/` ticket with a Goal, Context block, and measurable Acceptance Criteria — ready to be picked up by the next orchestrate cycle.
+A self-contained Cursor Agent skill that runs once daily via launchd (9am), scans `.orchestrate/logs/` for orchestration job logs, and files structured inbox tasks for every bug or enhancement opportunity it finds. It is the automatic quality layer for the task-orchestrate control plane: instead of errors silently rotting in log files, each actionable issue becomes a first-class `.orchestrate/inbox/` ticket with a Goal, Context block, and measurable Acceptance Criteria — ready to be picked up by the next orchestrate cycle.
 
 ---
 
@@ -21,7 +21,7 @@ A self-contained Claude Code skill that runs on a 15-minute launchd schedule, sc
 
 ---
 
-## Install (launchd — runs every 15 minutes)
+## Install (launchd — runs once daily at 9am)
 
 ### 1. Set your project directory
 
@@ -59,7 +59,7 @@ launchctl unload ~/Library/LaunchAgents/com.orchestrate.inbox-analyzer.plist
 
 ## Run Manually
 
-From any Claude Code session with your project as the working directory:
+From any Cursor Agent session with your project as the working directory:
 
 ```
 /inbox-log-analyzer
