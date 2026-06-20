@@ -24,7 +24,11 @@ Detect which mode applies from the input:
 | Input | Mode |
 |-------|------|
 | `tend` | Watchdog — scan registry, drain inbox, notify on pending tasks |
-| `tend go auto` | Watchdog + auto-execute — drain inbox, register tasks, execute all pending in auto mode |
+| `tend go auto` | Watchdog + auto-execute — drain inbox, register tasks, execute all `pending` and `awaiting_go` in auto mode (launchd default) |
+| `inbox` | Show pending inbox items, wait for triage |
+| `inbox go` | Triage inbox, then execute approved items (gated — phase checkpoints) |
+| `inbox go auto` | Triage inbox, then execute all approved items unattended |
+| `inbox "<plain text>"` | Structure plain text into an inbox file, then show triage UI |
 | `resume` alone | Resume — list active tasks and wait for user pick |
 | Any other non-empty string | New task — plan and execute |
 | Empty / no input | If project.md exists: show registry status. Else: ask for task. |
@@ -89,27 +93,46 @@ Invoked by the word `tend` or by the OS-level heartbeat (see Heartbeat Setup). R
 
 ### T-0 — Lock
 
+When invoked via `run-job.sh` (launchd), the environment variable `TEND_LOCK_MANAGED=1` is set and the lock is already held by the shell wrapper — skip this block entirely. The shell wrapper guarantees correct timestamps and release-on-exit regardless of whether agent shell access is available.
+
+When invoked directly (e.g. `/task-orchestrate tend` in a Claude session), `TEND_LOCK_MANAGED` is unset — run the full block below.
+
 ```bash
-LOCK=.orchestrate/.tend.lock
-if [ -f "$LOCK" ]; then
-  AGE=$(( $(date +%s) - $(date -r "$LOCK" +%s) ))
-  [ $AGE -lt 360 ] && echo "Tend already running (${AGE}s). Exiting." && exit 0
+if [ -z "${TEND_LOCK_MANAGED:-}" ]; then
+  LOCK=.orchestrate/.tend.lock
+  if [ -f "$LOCK" ]; then
+    AGE=$(( $(date +%s) - $(date -r "$LOCK" +%s) ))
+    [ $AGE -lt 360 ] && echo "Tend already running (${AGE}s). Exiting." && exit 0
+    rm -f "$LOCK"
+  fi
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$LOCK"
+  trap 'rm -f "$LOCK"' EXIT
 fi
-date -u +%Y-%m-%dT%H:%M:%SZ > "$LOCK"
-trap 'rm -f "$LOCK"' EXIT
 ```
 
 ### T-1 — Pre-flight (bash, no LLM context on idle)
 
+**Stale inbox cleanup (run first):** Before NEED_ACTION scan, run `.orchestrate/bin/cleanup-stale-inbox.sh` (also invoked from `run-job.sh` before tend dispatch). It:
+- Moves root `inbox/*.md` to `processed/` when the same basename already exists in `processed/`
+- Moves root files whose embedded task ID (e.g. `Task ID:` line) matches a `complete` registry row
+- Removes stale `.orchestrate/tasks/{ID}.md` when registry row is `complete`
+
 ```bash
+bash .orchestrate/bin/cleanup-stale-inbox.sh "$(pwd)"
+
 PROJ=.orchestrate/project.md
 NEED_ACTION=0
 
-# Stalled tasks in registry?
-grep -qE "awaiting_critic|awaiting_go" "$PROJ" 2>/dev/null && NEED_ACTION=1
+# Stalled tasks in registry? (table rows only — not Shared Context prose)
+grep -qE '^\|[^|]+\|[^|]+\|[^|]+\| (awaiting_critic|awaiting_go) \|' "$PROJ" 2>/dev/null && NEED_ACTION=1
 
-# Inbox has items?
-ls .orchestrate/inbox/*.md 2>/dev/null | grep -q . && NEED_ACTION=1
+# Inbox has non-deferred items? (auto path or gated path)
+for f in .orchestrate/inbox/*.md .orchestrate/inbox/gated/*.md; do
+  [ -f "$f" ] || continue
+  grep -qE '^deferred_at:' "$f" 2>/dev/null && continue
+  NEED_ACTION=1
+  break
+done
 
 # Pending tasks in registry? (only relevant when mode is `tend go auto`)
 # In go-auto mode, registered-but-unstarted tasks should also trigger execution.
@@ -124,6 +147,10 @@ Where `$INPUT` is the full invocation string passed to the skill (e.g. `"tend go
 If `NEED_ACTION=0`: append `[<ISO>] tend — idle` to `.orchestrate/logs/heartbeat.log` and exit.
 
 ### T-2 — Drain inbox
+
+**Stale in-place markers (run first):** Scan `.orchestrate/inbox/*.md` (top level only). For any file whose content matches `^processed_as:` **or** that was registered in a prior cycle but never moved: `mv` it to `.orchestrate/inbox/processed/<filename>`. Never leave completed inbox files in the top-level inbox directory.
+
+**Registration rule:** After registering an inbox file in `project.md`, **physically move** it to `.orchestrate/inbox/processed/` using `mv` (or equivalent file move). **Do not** prepend `processed_as:` and leave the file in place — that pattern is deprecated and causes dashboard clutter.
 
 **Inbox file format** (required for all enqueued tasks — human or automated):
 
@@ -142,12 +169,30 @@ If `NEED_ACTION=0`: append `[<ISO>] tend — idle` to `.orchestrate/logs/heartbe
 ```
 
 When reading an inbox file:
+- **Skip** files containing a `deferred_at:` line (anywhere before `## Goal`) — user deferred via inbox triage; leave in place until explicitly approved.
+- If the file contains `source: self`: register as `mode: gated`, status `awaiting_go`. Under **`tend` only**: do not auto-execute. Under **`tend go auto`**: register in T-2, then execute in T-4 (same as other gated registry rows).
 - If the file is plain text (no `## Goal` section): treat the entire content as the goal, but flag at registration: `⚠ inbox file <name> has no structured context — plan phase may need clarification`.
 - If the file has the structured format: extract Goal as task summary, Context as shared background for the plan phase, ACs as phase acceptance criteria seeds.
+- If the file contains a line `mode: gated` (anywhere before `## Goal`), **or** the file lives under `.orchestrate/inbox/gated/`: register with `mode: gated`, status `awaiting_go`. Under **`tend` only**: notify and wait. Under **`tend go auto`**: register in T-2, execute in T-4.
 
-For each `.md` file in `.orchestrate/inbox/`:
-1. Read the file — extract title/goal.
-2. Register it in the project registry (status: `pending`, no phase file yet).
+**Inbox layout:**
+| Path | Default mode | `tend` | `tend go auto` (launchd) |
+|------|--------------|--------|-------------------------|
+| `.orchestrate/inbox/*.md` | auto unless `mode: gated` | drain → notify | drain → execute |
+| `.orchestrate/inbox/gated/*.md` | always gated | drain → notify | drain → execute |
+
+**Interactive gating:** Plain `tend` (no `go auto`) still skips execution — sends PushNotification. Use `/task-orchestrate inbox` to triage before drain, or `/task-orchestrate go auto <ID>` for one-off interactive runs.
+
+For each `.md` file in `.orchestrate/inbox/gated/` (process first):
+1. Skip if `deferred_at:` present — leave file in place.
+2. Read the file — extract title/goal. Force `mode: gated`, register with status `awaiting_go` (always, including `source: self`).
+3. Move file to `.orchestrate/inbox/processed/`.
+4. Append to heartbeat.log: `[<ISO>] inbox — registered (gated) "<task title>" from gated/<filename>`
+
+For each `.md` file in `.orchestrate/inbox/` (not in `gated/` subdirectory):
+1. Skip if `deferred_at:` present — leave file in place.
+2. Read the file — extract title/goal.
+3. Register it in the project registry (`pending` for auto, `awaiting_go` for gated or `source: self`).
 3. Move file to `.orchestrate/inbox/processed/`.
 4. Append to `.orchestrate/logs/heartbeat.log`: `[<ISO>] inbox — registered "<task title>" from <filename>`
 5. **If mode is `tend`:** do not start execution — queued tasks wait for `go`/`go auto`.
@@ -172,13 +217,21 @@ For each task in the registry:
 
 **`awaiting_critic` (mode: auto):** Read its task file (`.orchestrate/tasks/{ID}.md`). Re-read this SKILL.md's Critic section. Run critic assessment inline. Write verdict + checkpoint. If ✅ and mode auto: continue execution loop. Append action to heartbeat.log.
 
-**`awaiting_go` (mode: gated):** Do NOT advance. Send `PushNotification`: `⏸ [{ID}] "{summary}" — phase ready, needs your "go"`. Log it.
+**`awaiting_go` (mode: gated):**
+- **Mode `tend`:** Do NOT advance. Send `PushNotification`: `⏸ [{ID}] "{summary}" — phase ready, needs your "go"`. Log it.
+- **Mode `tend go auto`:** Execute immediately in auto mode (same path as `pending` below). Set task file `mode: auto` for the duration of execution. Append to heartbeat.log: `[<ISO>] tend-auto — executing gated "<task title>" ({ID})`.
 
 **`pending` tasks (from inbox drain this cycle OR already registered):**
 - **Mode `tend`:** Send `PushNotification`: `📋 [{N} new task(s) queued — type "go" or "go auto" to start]`. Log.
 - **Mode `tend go auto`:** Execute each pending task immediately in auto mode. For each task: create its `.orchestrate/tasks/{ID}.md` plan file if it doesn't exist, run the full execution loop (same as `go auto`), write per-task log to `.orchestrate/logs/{ID}-tend.log`. Do not send a push notification — execution is unattended. Append to heartbeat.log: `[<ISO>] tend-auto — executing "<task title>" ({ID})`.
 
-  **This applies to ALL pending tasks in the registry**, not only those drained this cycle — so tasks registered in a previous tend run that were never started are also picked up.
+  **This applies to ALL `pending` and `awaiting_go` tasks in the registry**, not only those drained this cycle.
+
+**`needs_human` tasks:**
+- Read task file at `.orchestrate/tasks/{ID}.md`. If the file is missing, skip.
+- Count phase sections (`### Phase N`). If **every** phase has `status: ✓ complete`, run the normal **Completion** sequence inline: update registry row to `complete`, archive task file to `orchestrate-history/`, append MANIFEST entry, delete task file from `.orchestrate/tasks/`.
+- Append to heartbeat.log: `[<ISO>] tend — auto-resolved needs_human "<task title>" ({ID}) — all phases complete`
+- If any phase is incomplete or missing `✓ complete`, skip — leave registry at `needs_human`.
 
 **All other statuses:** skip.
 
@@ -189,6 +242,69 @@ If any tasks moved to `complete` this cycle: see **Shared Context Update** secti
 ### T-6 — Release lock
 
 Lock is released by the `trap` from T-0.
+
+---
+
+## Inbox Mode
+
+Invoked by `inbox`, `inbox go`, `inbox go auto`, or `inbox "<plain text>"`. Operates on live files in `.orchestrate/inbox/` and `.orchestrate/inbox/gated/` — **not** on registry rows already in `awaiting_go` (use `resume` + `go auto <ID>` for those).
+
+### Scan and display
+
+Collect all `.md` files in `inbox/` and `inbox/gated/`, excluding files with `deferred_at:`.
+
+Split into two lists:
+1. **General inbox** — files without `source: self`
+2. **Skill improvements** — files with `source: self`
+
+Display:
+```
+── Inbox (N pending) ────────────────────────────────
+[1] <filename>
+    <title from first # line>
+    mode: auto|gated  complexity: lightweight|moderate|complex (infer from Goal length/scope)
+
+── Skill Improvements (M pending) ───────────────────
+[4] improvement-<slug>-<ISO>.md
+    <title>
+    triggered_by: <task ID>
+
+── Commands ─────────────────────────────────────────
+approve [n…]   skip [n…]   edit [n]   all   improvements-only
+or type plain text to add a new item
+```
+
+Number items sequentially across both sections (general first, then improvements).
+
+If `inbox` alone (no `go`): display and wait for triage input — do not execute.
+
+If `inbox go` or `inbox go auto`: after triage (or if user passed `all` implicitly with `inbox go auto`), register approved items and execute per their mode.
+
+### Triage commands
+
+| Command | Action |
+|---------|--------|
+| `all` | Approve every non-deferred pending item |
+| `approve 1 3` | Approve listed numbers — move to registration + execution queue |
+| `skip 2` | Prepend `deferred_at: <ISO>` as first line of file; item stays in inbox, hidden from display |
+| `edit 1` | User revises item in natural language; rewrite file body; re-display updated item |
+| `improvements-only` | Show only `source: self` section; triage commands apply to that subset |
+| Plain text (no command prefix) | Structure into inbox format (see below), show preview, ask `[1] approve [2] edit [3] abort` |
+
+**After approve:** for each approved file — run T-2 registration (move to `processed/`, register in `project.md`), then execute:
+- `inbox go`: gated items → plan + `mode: gated` execution; auto items → plan + ask for go/go auto
+- `inbox go auto`: execute all approved items in auto mode (including gated files once registered)
+
+### Plain-text structuring (lightweight inline)
+
+When user provides plain text (via `inbox "..."` or bare text after display):
+1. Infer `# title` from first sentence.
+2. Infer `## Goal` from user text (1–3 sentences).
+3. Infer `## Context` from `.orchestrate/project.md ## Shared Context` if relevant.
+4. Generate 2 `## Acceptance Criteria` bullets.
+5. Show structured preview; on approve, write to `.orchestrate/inbox/<slug>-<ISO>.md` (or `inbox/gated/` if user requests gated).
+
+Default new human items to `mode: gated` unless user says "auto".
 
 ---
 
@@ -231,7 +347,7 @@ Precedence: reasoning > execution > simple > instructional.
 | skill phase where skill declares `inline: true` | **inline · /skill-name** |
 | research / investigation / challenging analysis | **agent/premium** |
 | execution — moderate or broad (3+ files, iterative) | **agent/Sonnet** |
-| reasoning phase | **agent/Sonnet** |
+| reasoning phase | **agent/premium** |
 | any phase that must run in parallel | **agent/*** |
 | skill phase without `inline: true` | **agent/** at tier |
 
@@ -246,12 +362,15 @@ Precedence: reasoning > execution > simple > instructional.
 
 Read `## Shared Context` from `project.md` before planning — it contains durable decisions and constraints from prior tasks. Incorporate relevant context into the plan (phase design, executor choices, acceptance criteria).
 
+**Mandatory final phase:** Every plan must include a final `Test & Verify` phase `[inline · execution]`, numbered as Phase N (= total phases). Its acceptance criteria: (1) all output files declared in prior phases exist on disk, (2) detected test suite passes or "no test runner detected". Omit only for tasks that produce zero file changes (pure queries, documentation with no outputs).
+
 ```
 TASK PLAN — `<summary>`  Complexity: Lightweight|Moderate|Complex (N phases)
 Phase 1: `<name>` [inline · simple] → `<output>`
 Phase 2: `<name>` [inline · execution] → `<output>`
 Phase 3: `<name>` [/skill-name · agent/Sonnet] [parallel with 4] → `<output>`
 Phase 5: `<name>` [agent/premium] → `<output>`   ← research/investigation
+Phase N: `Test & Verify` [inline · execution] → `verify.log`   ← always final
 ```
 
 Surface pre-execution questions:
@@ -352,7 +471,7 @@ If `files_changed` non-empty: run Bash verify (build, lint, fast tests). Overrid
 
 Classify blockers: `pre-existing` or `caused-by-change`. Pre-existing → note only, do not downgrade.
 
-Skip assessment for simple and instructional phases.
+For **simple** and **instructional** phases: apply a lightweight confidence-only gate (no full criteria assessment). If `confidence: low`, downgrade to ⚠️ per the Step B verdict table; high or medium confidence → ✅.
 
 ---
 
@@ -418,19 +537,43 @@ Never stop between steps 5 and 1 in auto mode.
 
 When all phases are `✓ complete`:
 
+**Timestamp contract (mandatory — History tab depends on this):**
+
+Capture **once** at the start of Completion — never invent or round timestamps (forbidden: `T22:00:00Z`, `T12:00:00Z` unless that is the actual wall time):
+
+```bash
+COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ARCHIVE_STAMP="$(date -u +%Y%m%d-%H%M%S)"
+```
+
+Use the **same** `COMPLETED_AT` for:
+- registry `last_activity` (exact ISO, not the word `now`)
+- heartbeat lines: `[${COMPLETED_AT}] tend-auto — completed …`
+- verify log header: `=== Verification run ${COMPLETED_AT} ===`
+
+Use the **same** `ARCHIVE_STAMP` for the archive filename prefix: `orchestrate-history/${ARCHIVE_STAMP}-${ID}-${slug}.md`
+
+Use `date -u +%Y-%m-%d` (from `COMPLETED_AT`) for the MANIFEST date column.
+
+On each phase checkpoint (Step C ✅), also set registry `last_activity` to `$(date -u +%Y-%m-%dT%H:%M:%SZ)` so partial progress is accurate.
+
 **1. Archive task file:**
 - Ensure `~/apps/ai-console/orchestrate-history/` exists.
-- Copy `.orchestrate/tasks/{ID}.md` → `orchestrate-history/<YYYYMMDD-HHMMSS>-<ticket-id>-<slug>.md`
-- Add `tags:` line to archive copy. Append one line to `orchestrate-history/MANIFEST.md`.
+- Copy `.orchestrate/tasks/{ID}.md` → `orchestrate-history/${ARCHIVE_STAMP}-${ID}-<slug>.md` (use `ARCHIVE_STAMP` from timestamp contract above — not a separate guessed time)
+- Add `tags:` line to archive copy.
+- **Mandatory:** Append one line to `orchestrate-history/MANIFEST.md` using exact format `YYYY-MM-DD | filename | summary | tag1, tag2`. Skipping MANIFEST breaks History tab tags/search; the monitor also scans on-disk archives as a safety net, but MANIFEST is the canonical index — never omit it.
 - Delete original task file from `.orchestrate/tasks/`.
+- **Self-check before marking complete:** archive file exists on disk AND matching MANIFEST line was appended (grep `filename` in MANIFEST.md).
+- **No duplicate registry rows** for the same inbox execution — if a job is re-registered under a new ID, remove or alias the stale row; use `HISTORY_REGISTRY_ALIASES` in monitor when IDs must coexist temporarily.
+- **Cross-project task summaries** (and archive MANIFEST lines) must include the project slug (e.g. `sy-promotion`) so History search finds them.
 
-**2. Update project.md registry:** set `status: complete`, `last_activity: now`.
+**2. Update project.md registry:** set `status: complete`, `last_activity: <COMPLETED_AT>` (the exact ISO from timestamp contract — never a rounded placeholder).
 
 **3. Update Shared Context** — see section below.
 
 **4. Auto-Verification Run:**
 
-Before producing the Job Verification summary, run automated checks and write results to `.orchestrate/logs/{ID}-verify.log`:
+If the plan included a Test & Verify phase and its log (`.orchestrate/logs/{ID}-verify.log`) was already written by that phase, use its results directly — skip re-running. Otherwise, run automated checks now and write results to `.orchestrate/logs/{ID}-verify.log`:
 
 ```bash
 # Detect and run test/build commands (try each; skip if not found)
@@ -477,6 +620,8 @@ Confidence:     high | medium | low
 If low confidence or any ✗ AC: gate with `⚠ Verification found gaps`.
 
 **6. Improvement Suggestions:**
+
+Print the suggestions block to the user:
 ```
 ── Suggestions ───────────────────────────────────
 Orchestrator:
@@ -486,7 +631,44 @@ Skills invoked:
 ──────────────────────────────────────────────────
 ```
 
-If non-trivial: append to `~/apps/ai-console/skill-improvement-backlog.md`.
+For each **non-trivial** suggestion (not "none"), write an inbox file instead of any external backlog:
+
+**Dedup before writing** — skip if ANY of:
+- An existing file in `inbox/`, `inbox/gated/`, or `inbox/processed/` has ≥70% word overlap with the normalized suggestion title (lowercase, strip punctuation, compare token sets)
+- An existing file has the same `triggered_by: <this task ID>` value
+
+**Path:** `.orchestrate/inbox/gated/improvement-<slug>-<YYYYMMDDTHHMMSS>.md`
+
+**Template:**
+```markdown
+mode: gated
+source: self
+triggered_by: <task ID>
+
+# <improvement title>
+
+## Goal
+<specific change — name the file, section, behavior>
+
+## Context
+Triggered by task `<ID>` — <task summary>.
+Observation: <what was seen — retry count, gap text, repeated partial verdict>
+Applies to: <path in ai-toolbox>  ·  Installed at: ~/.claude/skills/<name>/SKILL.md
+
+## Acceptance Criteria
+- SKILL.md section "<X>" updated as described
+- sync.sh run; installed copy reflects the change
+- make test passes (or "no test runner detected")
+```
+
+**Categories** (set `Applies to:` accordingly):
+- Orchestrator → `ai-toolbox/skills/task-orchestrate/SKILL.md`
+- Invoked skill → `ai-toolbox/skills/<name>/SKILL.md`
+- Project → project-specific paths (tests, `.orchestrate/`, docs)
+
+Append to heartbeat.log: `[<ISO>] self-improve — filed improvement-<slug> from task <ID>`
+
+Do **not** append to `skill-improvement-backlog.md` — inbox is the canonical improvement queue.
 
 **Output:**
 ```
@@ -549,42 +731,37 @@ Annotate MCP phases `[MCP: service-name]`. Pre-authorize at plan time via `"go a
 The tend watchdog runs on an OS-level schedule so it can't be forgotten. Install once per machine (not per project):
 
 ```bash
-# Create the launchd plist
-cat > ~/Library/LaunchAgents/com.orchestrate.tend.plist << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.orchestrate.tend</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/claude</string>
-    <string>-p</string>
-    <string>tend go auto</string>
-  </array>
-  <key>StartInterval</key>
-  <integer>300</integer>
-  <key>WorkingDirectory</key>
-  <string>/Users/haimengzhou/apps</string>
-  <key>StandardOutPath</key>
-  <string>/Users/haimengzhou/apps/ai-console/.orchestrate/logs/heartbeat.log</string>
-  <key>StandardErrorPath</key>
-  <string>/Users/haimengzhou/apps/ai-console/.orchestrate/logs/heartbeat-err.log</string>
-  <key>RunAtLoad</key>
-  <false/>
-</dict>
-</plist>
-EOF
-
-# Load it
-launchctl load ~/Library/LaunchAgents/com.orchestrate.tend.plist
+PROJECT_DIR="$HOME/apps/my-project"   # adjust to your project root
+bash skills/task-orchestrate/bin/install-launchd.sh
 ```
+
+This installs `com.orchestrate.tend` and `com.orchestrate.inbox-analyzer`, copies `.orchestrate/bin/run-job.sh`, and creates `.orchestrate/agent.conf` if missing.
+
+**Switch runner (cursor ↔ claude):** use the monitor LaunchD tab (flip buttons) or CLI — no launchctl reload needed:
+
+```bash
+bash .orchestrate/bin/set-runner.sh claude   # or cursor
+```
+
+Or POST `{"runner":"claude"}` to `/api/agent-conf` on the monitor (`http://127.0.0.1:7842`).
+
+**Cursor IDE dependency:** When `RUNNER=cursor`, `cursor-agent` requires **Cursor IDE running** (`pgrep -xq Cursor`). Set in `.orchestrate/agent.conf`:
+
+```bash
+RUNNER=cursor
+CURSOR_FALLBACK=auto    # default — IDE closed → fall back to claude
+# CURSOR_FALLBACK=never # IDE closed → defer tend (heartbeat note, exit 0)
+# CURSOR_AUTO_OPEN=true # optional: `open -a Cursor` once before IDE check
+```
+
+`run-job.sh` still falls back to the alternate runner on session limit / connection errors when `CURSOR_FALLBACK=auto`.
+
+Requires skills synced to `$PROJECT_DIR/.cursor/skills/` when using `RUNNER=cursor` (run `sync.sh` from ai-toolbox).
 
 To run tend manually at any time: type `tend` in any session.
 To unload: `launchctl unload ~/Library/LaunchAgents/com.orchestrate.tend.plist`
 
-**Note:** The heartbeat runs `tend` from `/Users/haimengzhou/apps` — the top-level apps directory. Tend scans for `.orchestrate/` directories one level deep and processes each project's registry in one pass. For a project-specific tend, `cd` into the project and type `tend` manually.
+**Note:** The heartbeat runs from `WorkingDirectory` (your project root). Tend reads `.orchestrate/` relative to that directory. For a project-specific tend, `cd` into the project and type `tend` manually.
 
 ---
 
