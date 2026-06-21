@@ -20,7 +20,7 @@
     --status-complete:     #238636;
     --status-failed:       #da3633;
     --status-needs_human:  #d29922;
-    --status-awaiting_go:  #8b949e;
+    --status-awaiting_go:  #d29922;
     --status-pending:      #6e7681;
   }
 
@@ -62,6 +62,26 @@
     white-space: nowrap;
   }
   #attention-badge.visible { display: inline-block; }
+  #attention-badge.approval {
+    background: #9e6a03;
+    animation: attention-pulse 2s ease-in-out infinite;
+  }
+  @keyframes attention-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.85; }
+  }
+  .tab-badge {
+    display: none;
+    background: #9e6a03;
+    color: #fff;
+    border-radius: 8px;
+    padding: 1px 6px;
+    font-size: 11px;
+    margin-left: 4px;
+    font-weight: 700;
+  }
+  .tab-badge.visible { display: inline; }
+  .tab-badge.urgent { background: #da3633; }
   #meta {
     color: var(--muted);
     font-size: 12px;
@@ -74,6 +94,52 @@
   #analyzer-status.ok    { color: var(--muted); }
   #analyzer-status.warn  { color: #e3b341; }
   #analyzer-status.never { color: var(--muted); }
+  #runner-status {
+    font-size: 12px;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+  }
+  #runner-status.ok    { color: var(--muted); }
+  #runner-status.warn  { color: #e3b341; }
+  #runner-status.neutral { color: var(--muted); }
+
+  .agent-conf-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+  }
+  .agent-conf-card h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .agent-conf-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px 16px;
+    font-size: 12px;
+    margin-bottom: 10px;
+  }
+  .agent-conf-grid dt { color: var(--muted); margin: 0; }
+  .agent-conf-grid dd { margin: 0; font-family: var(--font-mono); }
+  .agent-conf-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .agent-conf-actions button {
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #21262d;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .agent-conf-actions button:hover { background: #30363d; }
+  .agent-conf-actions button.active {
+    border-color: #388bfd;
+    background: #1f3a5f;
+  }
+  .agent-conf-msg { font-size: 11px; color: var(--muted); margin-left: 8px; }
   button {
     background: #21262d;
     border: 1px solid var(--border);
@@ -135,7 +201,7 @@
     white-space: nowrap;
   }
   .chip-running      { color: #58a6ff; border-color: #1f6feb; background: #0c2a4a; }
-  .chip-awaiting_go  { color: #8b949e; border-color: #444c56; background: #1c2128; }
+  .chip-awaiting_go  { color: #e3b341; border-color: #d29922; background: #2d1f00; }
   .chip-needs_human  { color: #e3b341; border-color: #d29922; background: #2d1f00; }
   .chip-pending      { color: #6e7681; border-color: #30363d; background: #161b22; }
   .chip-failed       { color: #f85149; border-color: #da3633; background: #3d0e0e; }
@@ -211,7 +277,7 @@
   .badge-complete     { background: var(--status-complete); }
   .badge-failed       { background: var(--status-failed); }
   .badge-needs_human  { background: var(--status-needs_human); color: #000; }
-  .badge-awaiting_go  { background: var(--status-awaiting_go); }
+  .badge-awaiting_go  { background: var(--status-awaiting_go); color: #000; }
   .badge-pending      { background: var(--status-pending); }
   .badge-auto  { background: #0c2a4a; border: 1px solid #1f6feb; color: #58a6ff; }
   .badge-gated { background: #2d1f00; border: 1px solid #d29922; color: #d29922; }
@@ -297,6 +363,38 @@
     margin-bottom: 12px;
   }
   .history-stats span { color: var(--text); font-weight: 600; }
+  .history-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .history-filter-btn {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 4px 12px;
+  }
+  .history-filter-btn.active {
+    background: #1f6feb33;
+    border-color: var(--link);
+    color: var(--link);
+    font-weight: 600;
+  }
+  .history-daily-badge {
+    background: #8957e5;
+    border-radius: 4px;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    margin-right: 6px;
+    padding: 1px 6px;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
   #search-box {
     background: var(--card);
     border: 1px solid var(--border);
@@ -441,6 +539,93 @@
   .badge-bug     { background: #da3633; }
   .badge-enhance { background: #d29922; color: #000; }
   .badge-inbox   { background: #6e7681; }
+  .badge-approval {
+    background: #9e6a03;
+    color: #fff;
+    border: 1px solid #d29922;
+  }
+  .badge-blocked {
+    background: #da3633;
+    color: #fff;
+  }
+
+  /* ── approval highlight ── */
+  #approval-banner {
+    display: none;
+    background: #2d1f00;
+    border: 1px solid #d29922;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+  }
+  #approval-banner.visible { display: block; }
+  #approval-banner h2 {
+    color: #e3b341;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  #approval-banner ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  #approval-banner li {
+    font-size: 13px;
+    padding: 4px 0;
+    border-top: 1px solid #3d2e00;
+  }
+  #approval-banner li:first-child { border-top: none; }
+  #tend-health-banner {
+    display: none;
+    background: #3d1300;
+    border: 1px solid #da3633;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+  }
+  #tend-health-banner.visible { display: block; }
+  #tend-health-banner h2 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    color: #ffa657;
+  }
+  #tend-health-banner p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .approval-item-id {
+    font-family: var(--font-mono);
+    color: #e6edf3;
+    font-weight: 600;
+  }
+  .approval-item-label {
+    color: #e3b341;
+    font-size: 12px;
+    margin-left: 8px;
+  }
+  .card-needs-approval {
+    border-color: #d29922;
+    box-shadow: 0 0 0 1px #9e6a03;
+  }
+  .card-needs-approval .card-header {
+    background: #2d1f00;
+  }
+  .card-needs-approval.card-blocked {
+    border-color: #da3633;
+    box-shadow: 0 0 0 1px #da3633;
+  }
+  .card-needs-approval.card-blocked .card-header {
+    background: #3d0e0e;
+  }
+  .inbox-card-needs-approval {
+    border-color: #d29922;
+    box-shadow: 0 0 0 1px #9e6a03;
+  }
+  .inbox-card-needs-approval .inbox-card-header {
+    background: #2d1f00;
+  }
 
   /* ── loader ── */
   .loading { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
@@ -460,18 +645,22 @@
   <h1>task-orchestrate monitor</h1>
   <span id="attention-badge">⚠ Needs Attention: <span id="attention-count">0</span></span>
   <span id="meta">loading…</span>
+  <span id="runner-status" class="neutral" title="Agent runner from .orchestrate/agent.conf">Runner: —</span>
   <span id="analyzer-status" class="never">Analyzer: —</span>
   <button id="refresh-btn" onclick="manualRefresh()">Refresh</button>
 </header>
 
 <nav>
-  <button class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Active Tasks</button>
-  <button class="tab" data-tab="inbox" onclick="switchTab('inbox')">Inbox <span id="inbox-count-badge" style="display:none;background:#da3633;color:#fff;border-radius:8px;padding:1px 6px;font-size:11px;margin-left:4px;"></span></button>
+  <button class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Active Tasks <span id="tasks-approval-badge" class="tab-badge"></span></button>
+  <button class="tab" data-tab="inbox" onclick="switchTab('inbox')">Inbox <span id="inbox-count-badge" class="tab-badge"></span></button>
   <button class="tab" data-tab="history" onclick="switchTab('history')">History</button>
+  <button class="tab" data-tab="launchd" onclick="switchTab('launchd')">LaunchD Jobs</button>
 </nav>
 
 <main>
   <div id="tasks-panel" class="tab-panel active">
+    <div id="tend-health-banner"></div>
+    <div id="approval-banner"></div>
     <div id="status-summary"></div>
     <div class="loading" id="tasks-loading">Loading tasks…</div>
     <div id="tasks-container"></div>
@@ -484,9 +673,22 @@
 
   <div id="history-panel" class="tab-panel">
     <div id="history-stats" class="history-stats"></div>
-    <input id="search-box" type="search" placeholder="Search by summary or tags…" oninput="filterHistory()" />
+    <div class="history-filters" id="history-filters">
+      <button type="button" class="history-filter-btn active" data-range="today" onclick="setHistoryDateRange('today')">Today</button>
+      <button type="button" class="history-filter-btn" data-range="7d" onclick="setHistoryDateRange('7d')">7 days</button>
+      <button type="button" class="history-filter-btn" data-range="30d" onclick="setHistoryDateRange('30d')">30 days</button>
+      <button type="button" class="history-filter-btn" data-range="all" onclick="setHistoryDateRange('all')">All</button>
+      <button type="button" class="history-filter-btn" data-range="daily" onclick="setHistoryDateRange('daily')">Daily jobs</button>
+    </div>
+    <input id="search-box" type="search" placeholder="Search summary, tags, task ID, or archive content" oninput="filterHistory()" />
     <div class="loading" id="history-loading">Loading history…</div>
     <div id="history-container"></div>
+  </div>
+
+  <div id="launchd-panel" class="tab-panel">
+    <div id="agent-conf-card" class="agent-conf-card"></div>
+    <div class="loading" id="launchd-loading">Loading launchd agents…</div>
+    <div id="launchd-container"></div>
   </div>
 </main>
 
@@ -503,9 +705,10 @@
 
 <script>
 // ── state ─────────────────────────────────────────────────────────────────────
-let tasksData    = { registry: [], tasks: {} };
-let historyData  = { manifest: [], entries: {} };
-let inboxData    = { items: [] };
+let tasksData    = { registry: [], tasks: {}, tendHealth: { ok: true }, attention: { taskCount: 0, tasks: [], tendIssues: [] } };
+let historyData  = { manifest: [], entries: {}, rows: [] };
+let inboxData    = { items: [], attention: { inboxCount: 0, approvalCount: 0, approvalItems: [] } };
+let agentStatus  = { runner: 'cursor', tendMode: 'go auto', cursorFallback: 'auto', cursorAutoOpen: false, cursorIdeRunning: false };
 let heartbeatLines = [];
 let logsCache    = {};   // taskId -> { files, logs }
 let countdown    = 15;
@@ -517,6 +720,7 @@ let activityFeedOpen = false;
 let histSortCol  = 'date';
 let histSortAsc  = false;   // default: newest first (desc)
 let historyFilter = '';
+let historyDateRange = 'today'; // today | 7d | 30d | all | daily
 
 // ── tabs ──────────────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -538,7 +742,7 @@ async function manualRefresh() {
 }
 
 async function doRefresh() {
-  await Promise.all([fetchTasks(), fetchInbox(), fetchHistory(), fetchHeartbeat()]);
+  await Promise.all([fetchTasks(), fetchInbox(), fetchHistory(), fetchHeartbeat(), fetchLaunchd(), fetchAgentStatus()]);
   lastRefreshed = new Date();
   updateMeta();
 }
@@ -600,17 +804,24 @@ function renderInbox() {
   const items = inboxData.items || [];
   const container = document.getElementById('inbox-container');
 
-  // Update tab badge
-  const countBadge = document.getElementById('inbox-count-badge');
-  if (items.length > 0) {
-    countBadge.textContent = items.length;
-    countBadge.style.display = 'inline';
+  // Update tab badge — show approval count (amber) or total queued (muted)
+  const inboxBadge = document.getElementById('inbox-count-badge');
+  const approvalInbox = (inboxData.attention && inboxData.attention.approvalCount) || 0;
+  if (approvalInbox > 0) {
+    inboxBadge.textContent = approvalInbox;
+    inboxBadge.className = 'tab-badge visible';
+    inboxBadge.title = `${approvalInbox} gated inbox item(s) need approval`;
+  } else if (items.length > 0) {
+    inboxBadge.textContent = items.length;
+    inboxBadge.className = 'tab-badge visible';
+    inboxBadge.style.background = '#6e7681';
+    inboxBadge.title = `${items.length} item(s) queued for tend`;
   } else {
-    countBadge.style.display = 'none';
+    inboxBadge.className = 'tab-badge';
+    inboxBadge.textContent = '';
   }
 
-  // Update attention badge to also reflect inbox
-  updateAttentionBadge(tasksData.registry || []);
+  updateAttentionBadge();
 
   if (items.length === 0) {
     container.innerHTML = `
@@ -623,10 +834,20 @@ function renderInbox() {
 
   container.innerHTML = items.map((item, idx) => {
     const safeIdx = 'inbox-' + idx;
+    const needsApproval = item.needsApproval;
+    const cardCls = needsApproval ? 'inbox-card inbox-card-needs-approval' : 'inbox-card';
+    const approvalBadge = needsApproval
+      ? `<span class="badge badge-approval">${esc(item.approvalLabel || 'Approval required')}</span>`
+      : '';
+    const modeBadgeHtml = item.mode === 'gated'
+      ? `<span class="badge badge-gated">gated</span>`
+      : `<span class="badge badge-auto">auto</span>`;
     return `
-<div class="inbox-card">
+<div class="${cardCls}">
   <div class="inbox-card-header" onclick="toggleInboxCard('${safeIdx}')">
     ${inboxTypeBadge(item.title)}
+    ${approvalBadge}
+    ${modeBadgeHtml}
     <span class="inbox-title">${esc(item.title)}</span>
     <span class="inbox-filename">${esc(item.filename)}</span>
   </div>
@@ -655,6 +876,155 @@ async function fetchHistory() {
     document.getElementById('history-loading').style.display = 'none';
   }
 }
+
+// ── fetch & render launchd ───────────────────────────────────────────────────
+let launchdData = [];
+
+async function fetchLaunchd() {
+  try {
+    const r = await fetch('/api/launchd');
+    launchdData = await r.json();
+    renderLaunchd();
+  } catch (e) {
+    document.getElementById('launchd-container').innerHTML =
+      `<div class="empty">Failed to load launchd agents: ${esc(e.message)}</div>`;
+  } finally {
+    document.getElementById('launchd-loading').style.display = 'none';
+  }
+}
+
+function launchdStatusBadge(status) {
+  const base = (status || '').split(' ')[0];
+  const map = {
+    ok:        'background:#238636;color:#fff',
+    failed:    'background:#da3633;color:#fff',
+    running:   'background:#1f6feb;color:#fff',
+    throttled: 'background:#9e6a03;color:#fff',
+    degraded:  'background:#9e6a03;color:#fff',
+    blocked:   'background:#da3633;color:#fff',
+    misconfigured: 'background:#da3633;color:#fff',
+    stuck:     'background:#da3633;color:#fff',
+    unknown:   'background:#6e7681;color:#fff',
+  };
+  const style = map[base] || map.unknown;
+  return `<span class="badge" style="${style}" title="${esc(status)}">${esc(status)}</span>`;
+}
+
+function renderLaunchd() {
+  const container = document.getElementById('launchd-container');
+  if (!launchdData.length) {
+    container.innerHTML = '<div class="empty">No com.orchestrate.* launchd agents found.</div>';
+    return;
+  }
+  let html = `<table>
+    <thead><tr>
+      <th>Label</th>
+      <th>Interval</th>
+      <th>Last Run</th>
+      <th>Status</th>
+    </tr></thead>
+    <tbody>`;
+  for (const a of launchdData) {
+    const lastRun = a.lastRun
+      ? new Date(a.lastRun).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+      : '—';
+    html += `<tr>
+      <td style="font-family:var(--font-mono);font-size:12px">${esc(a.label)}</td>
+      <td>${esc(a.interval)}</td>
+      <td style="font-family:var(--font-mono);font-size:12px;white-space:nowrap">${esc(lastRun)}</td>
+      <td>${launchdStatusBadge(a.status)}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// ── fetch agent status (runner + Cursor IDE) ─────────────────────────────────
+async function fetchAgentStatus() {
+  try {
+    const r = await fetch('/api/agent-status');
+    agentStatus = await r.json();
+    renderRunnerStatus();
+  } catch (_) {
+    const el = document.getElementById('runner-status');
+    if (el) {
+      el.className = 'warn';
+      el.textContent = 'Runner: unavailable';
+      el.title = 'Failed to load .orchestrate/agent.conf';
+    }
+  }
+}
+
+function renderRunnerStatus() {
+  const el = document.getElementById('runner-status');
+  if (!el) return;
+  const runner = (agentStatus.runner || 'cursor').toLowerCase();
+  const tendMode = agentStatus.tendMode || 'go auto';
+  const fallback = agentStatus.cursorFallback || 'auto';
+  const ideUp = Boolean(agentStatus.cursorIdeRunning);
+  if (runner === 'cursor') {
+    const ideLabel = ideUp ? 'IDE ✓' : 'IDE ✗';
+    el.className = ideUp ? 'ok' : 'warn';
+    el.textContent = `Runner: cursor · ${tendMode} · ${ideLabel} · fb:${fallback}`;
+    el.title = ideUp
+      ? `RUNNER=cursor — Cursor IDE running. CURSOR_FALLBACK=${fallback}`
+      : `RUNNER=cursor but IDE not running — ${fallback === 'never' ? 'tend deferred' : 'falls back to claude'}`;
+  } else {
+    el.className = 'neutral';
+    el.textContent = `Runner: claude · ${tendMode}`;
+    el.title = 'RUNNER=claude — Cursor IDE not required for tend';
+  }
+  renderAgentConfCard();
+}
+
+function renderAgentConfCard() {
+  const card = document.getElementById('agent-conf-card');
+  if (!card) return;
+  const runner = (agentStatus.runner || 'cursor').toLowerCase();
+  const tendMode = agentStatus.tendMode || 'go auto';
+  const fallback = agentStatus.cursorFallback || 'auto';
+  const ideUp = Boolean(agentStatus.cursorIdeRunning);
+  const ideCell = runner === 'cursor'
+    ? (ideUp ? '<span style="color:#3fb950">running</span>' : '<span style="color:#e3b341">not running</span>')
+    : '<span style="color:var(--muted)">n/a</span>';
+  card.innerHTML = `
+    <h3>Agent runner (.orchestrate/agent.conf)</h3>
+    <dl class="agent-conf-grid">
+      <div><dt>RUNNER</dt><dd>${esc(runner)}</dd></div>
+      <div><dt>TEND_MODE</dt><dd>${esc(tendMode)}</dd></div>
+      <div><dt>Cursor IDE</dt><dd>${ideCell}</dd></div>
+      <div><dt>CURSOR_FALLBACK</dt><dd>${esc(fallback)}</dd></div>
+    </dl>
+    <div class="agent-conf-actions">
+      <button class="${runner === 'cursor' ? 'active' : ''}" onclick="setRunner('cursor')">Use cursor</button>
+      <button class="${runner === 'claude' ? 'active' : ''}" onclick="setRunner('claude')">Use claude</button>
+      <button class="${fallback === 'auto' ? 'active' : ''}" onclick="setCursorFallback('auto')">Fallback: auto</button>
+      <button class="${fallback === 'never' ? 'active' : ''}" onclick="setCursorFallback('never')">Fallback: never</button>
+      <span id="agent-conf-msg" class="agent-conf-msg"></span>
+    </div>`;
+}
+
+async function postAgentConf(body) {
+  const msg = document.getElementById('agent-conf-msg');
+  if (msg) msg.textContent = 'saving…';
+  try {
+    const r = await fetch('/api/agent-conf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    agentStatus = data;
+    renderRunnerStatus();
+    if (msg) msg.textContent = 'saved (no launchctl reload needed)';
+  } catch (e) {
+    if (msg) msg.textContent = `error: ${e.message}`;
+  }
+}
+
+function setRunner(runner) { postAgentConf({ runner }); }
+function setCursorFallback(cursorFallback) { postAgentConf({ cursorFallback }); }
 
 // ── fetch heartbeat ───────────────────────────────────────────────────────────
 async function fetchHeartbeat() {
@@ -758,15 +1128,98 @@ function phaseBar(currentPhase, totalPhases) {
   return `<div class="phase-bar">${segs.join('')}<span class="phase-label">${cur}/${tot}</span></div>`;
 }
 
-// ── render attention badge ─────────────────────────────────────────────────────
-function updateAttentionBadge(registry) {
-  const count = registry.filter(r =>
-    r.status === 'needs_human' || r.status === 'failed'
-  ).length;
+// ── render attention badge + approval banner ───────────────────────────────────
+function isBlockedStatus(status) {
+  const s = (status || '').toLowerCase();
+  return s === 'needs_human' || s === 'failed';
+}
+
+function updateAttentionBadge() {
+  const taskApproval = (tasksData.attention && tasksData.attention.tasks) || [];
+  const inboxApproval = (inboxData.attention && inboxData.attention.approvalItems) || [];
+  const tendIssues = (tasksData.attention && tasksData.attention.tendIssues) || [];
+  const total = taskApproval.length + inboxApproval.length + tendIssues.length;
+  const blockedCount = taskApproval.filter(t => isBlockedStatus(t.status)).length
+    + tendIssues.filter(t => ['failed', 'stuck', 'misconfigured'].includes(t.status)).length;
+
   const badge = document.getElementById('attention-badge');
   const countEl = document.getElementById('attention-count');
-  countEl.textContent = count;
-  badge.classList.toggle('visible', count > 0);
+  countEl.textContent = total;
+  badge.classList.toggle('visible', total > 0);
+  badge.classList.toggle('approval', total > 0 && blockedCount === 0);
+  badge.style.background = blockedCount > 0 ? '' : (total > 0 ? '#9e6a03' : '');
+  const parts = [];
+  if (taskApproval.length) parts.push(`${taskApproval.length} task(s)`);
+  if (inboxApproval.length) parts.push(`${inboxApproval.length} inbox item(s)`);
+  if (tendIssues.length) parts.push(`${tendIssues.length} tend issue(s)`);
+  badge.title = total > 0 ? parts.join(' + ') + ' need attention' : '';
+
+  // Tasks tab badge
+  const tasksBadge = document.getElementById('tasks-approval-badge');
+  if (taskApproval.length > 0) {
+    tasksBadge.textContent = taskApproval.length;
+    tasksBadge.className = 'tab-badge visible' + (taskApproval.some(t => isBlockedStatus(t.status)) ? ' urgent' : '');
+    tasksBadge.title = `${taskApproval.length} task(s) need approval`;
+  } else {
+    tasksBadge.className = 'tab-badge';
+    tasksBadge.textContent = '';
+  }
+
+  renderTendHealthBanner(tendIssues);
+  renderApprovalBanner(taskApproval, inboxApproval);
+}
+
+function renderTendHealthBanner(tendIssues) {
+  const banner = document.getElementById('tend-health-banner');
+  if (!tendIssues.length) {
+    banner.className = '';
+    banner.innerHTML = '';
+    return;
+  }
+  const issue = tendIssues[0];
+  const hint = issue.resetHint ? ` Reset: ${issue.resetHint}.` : '';
+  banner.className = 'visible';
+  banner.innerHTML = `
+    <h2>⚠ Tend ${esc(issue.status)}</h2>
+    <p>${esc(issue.message || '')}${esc(hint)} Runner: ${esc(issue.runner || '—')}.</p>`;
+}
+
+function renderApprovalBanner(taskApproval, inboxApproval) {
+  const banner = document.getElementById('approval-banner');
+  const all = [
+    ...taskApproval.map(t => ({
+      kind: 'task',
+      key: t.id,
+      label: t.approvalLabel || t.status,
+      summary: t.summary,
+      blocked: isBlockedStatus(t.status),
+    })),
+    ...inboxApproval.map(i => ({
+      kind: 'inbox',
+      key: i.filename,
+      label: i.approvalLabel || 'Gated inbox',
+      summary: i.title,
+      blocked: false,
+    })),
+  ];
+
+  if (all.length === 0) {
+    banner.className = '';
+    banner.innerHTML = '';
+    return;
+  }
+
+  banner.className = 'visible';
+  banner.innerHTML = `
+    <h2>⏸ ${all.length} job${all.length === 1 ? '' : 's'} blocked or waiting for your approval</h2>
+    <ul>
+      ${all.map(item => `
+        <li>
+          <span class="approval-item-id">${esc(item.key)}</span>
+          <span class="badge ${item.blocked ? 'badge-blocked' : 'badge-approval'}">${esc(item.label)}</span>
+          <span style="color:var(--muted);margin-left:6px;">${esc(item.summary || '')}</span>
+        </li>`).join('')}
+    </ul>`;
 }
 
 // ── status summary bar ─────────────────────────────────────────────────────────
@@ -813,7 +1266,15 @@ function renderTasks() {
   const { registry, tasks } = tasksData;
   const allActive = (registry || []).filter(r => r.status !== 'complete');
 
-  updateAttentionBadge(registry || []);
+  // Approval-needed tasks first, then blocked before awaiting_go
+  const sortRank = (r) => {
+    if (isBlockedStatus(r.status)) return 0;
+    if (r.needsApproval) return 1;
+    return 2;
+  };
+  allActive.sort((a, b) => sortRank(a) - sortRank(b) || (a.id || '').localeCompare(b.id || ''));
+
+  updateAttentionBadge();
   renderStatusSummary(allActive);
 
   const container = document.getElementById('tasks-container');
@@ -834,11 +1295,20 @@ function renderTasks() {
     const hasDetails = !!taskMd;
     const totalPhases = parseTotalPhases(taskMd);
     const relActivity = relTime(row.last_activity);
+    const needsApproval = row.needsApproval;
+    const blocked = isBlockedStatus(row.status);
+    const cardCls = needsApproval
+      ? `card card-needs-approval${blocked ? ' card-blocked' : ''}`
+      : 'card';
+    const approvalBadge = needsApproval
+      ? `<span class="badge ${blocked ? 'badge-blocked' : 'badge-approval'}">${esc(row.approvalLabel || 'Approval required')}</span>`
+      : '';
 
     return `
-<div class="card">
+<div class="${cardCls}">
   <div class="card-header">
     <span class="task-id">${esc(id)}</span>
+    ${approvalBadge}
     ${statusBadge(row.status)}
     ${modeBadge(row.mode)}
     ${relActivity ? `<span class="rel-time">${esc(relActivity)}</span>` : ''}
@@ -910,56 +1380,113 @@ function cssId(str) {
 
 // ── render history ────────────────────────────────────────────────────────────
 
+function parseDateFromFilename(filename) {
+  const ts = (filename || '').match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+  if (ts) return new Date(`${ts[1]}-${ts[2]}-${ts[3]}T${ts[4]}:${ts[5]}:${ts[6]}Z`);
+  if (!/\.md$/i.test(filename || '')) return null;
+  const day = (filename || '').match(/^(\d{4})(\d{2})(\d{2})-/);
+  if (day) return new Date(`${day[1]}-${day[2]}-${day[3]}T12:00:00Z`);
+  return null;
+}
+
+function parseDate(str) {
+  if (!str) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return new Date(`${str}T12:00:00Z`);
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** Parse server dateIso as UTC — never interpret timezone-less ISO as local. */
+function parseIsoUtc(iso) {
+  if (!iso) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return new Date(`${iso}T12:00:00Z`);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso) && !/[Z+-]/.test(iso)) return new Date(`${iso}Z`);
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function formatEastern(d) {
+  return d.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
 // Merge registry complete rows + manifest entries, dedup by task ID
+function manifestMatchesRegistry(filename, regId) {
+  if (!filename || !regId) return false;
+  const base = filename.replace(/\.md$/i, '');
+  if (base.startsWith(regId)) return true;
+  const escapedId = regId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`-${escapedId}(?:-|$)`).test(base)) return true;
+  const idMatch = regId.match(/^(\d{8})-(.+)$/);
+  if (!idMatch) return base.includes(regId);
+  const [, datePart, idSuffix] = idMatch;
+  if (!base.startsWith(datePart)) return false;
+  const escaped = idSuffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${datePart}(?:-\\d{6})?-${escaped}(?:-|$)`).test(base);
+}
+
 function buildHistoryRows() {
+  if (Array.isArray(historyData.rows) && historyData.rows.length > 0) {
+    return historyData.rows;
+  }
+
   const { registry } = tasksData;
   const { manifest, entries } = historyData;
 
-  // Map manifest entries by their filename
-  const manifestByFile = {};
-  for (const e of (manifest || [])) {
-    manifestByFile[e.filename] = e;
-  }
-
-  // Complete registry rows: try to find matching manifest entry by ID prefix
   const rows = [];
   const seenFiles = new Set();
 
   for (const reg of (registry || [])) {
     if (reg.status !== 'complete') continue;
-    // Find manifest entry whose filename starts with the task id
-    const matchEntry = (manifest || []).find(e => e.filename.startsWith(reg.id));
+    const matchEntry = (manifest || []).find(e => manifestMatchesRegistry(e.filename, reg.id));
     if (matchEntry) {
       seenFiles.add(matchEntry.filename);
       rows.push({
         date: matchEntry.date,
+        dateIso: reg.last_activity || matchEntry.date || '',
         filename: matchEntry.filename,
         summary: matchEntry.summary || reg.summary,
         tags: matchEntry.tags,
+        taskId: reg.id,
         status: reg.status,
+        hasArchive: !!(entries[matchEntry.filename] || '').trim(),
         content: entries[matchEntry.filename] || '',
       });
     } else {
       rows.push({
         date: reg.last_activity || '',
+        dateIso: reg.last_activity || '',
         filename: reg.id,
         summary: reg.summary,
         tags: '',
+        taskId: reg.id,
         status: reg.status,
+        hasArchive: false,
         content: '',
       });
     }
   }
 
-  // Add manifest entries not already covered
   for (const e of (manifest || [])) {
     if (seenFiles.has(e.filename)) continue;
+    seenFiles.add(e.filename);
+    const taskId = (e.filename || '').match(/\d{8}-inbox-[A-Za-z0-9]+/)?.[0] || '';
     rows.push({
       date: e.date,
+      dateIso: e.date || '',
       filename: e.filename,
       summary: e.summary,
       tags: e.tags,
+      taskId,
       status: 'complete',
+      hasArchive: !!(entries[e.filename] || '').trim(),
       content: entries[e.filename] || '',
     });
   }
@@ -967,21 +1494,100 @@ function buildHistoryRows() {
   return rows;
 }
 
+function enrichHistoryRows(rows) {
+  for (const row of rows) {
+    const d = row.dateIso
+      ? parseIsoUtc(row.dateIso)
+      : parseDate(row.date);
+    row.dateSort = d && !isNaN(d.getTime()) ? d.getTime() : 0;
+    row.dateDisplay = d && !isNaN(d.getTime()) ? formatEastern(d) : (row.date || '—');
+  }
+  return rows;
+}
+
 function sortHistoryRows(rows) {
   return [...rows].sort((a, b) => {
-    let va = a[histSortCol] || '';
-    let vb = b[histSortCol] || '';
-    // numeric sort for phases; date string sort works lexically for ISO dates
+    let va, vb;
+    if (histSortCol === 'date') {
+      va = a.dateSort || 0;
+      vb = b.dateSort || 0;
+    } else {
+      va = a[histSortCol] || '';
+      vb = b[histSortCol] || '';
+    }
     const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+    if (cmp === 0 && histSortCol === 'date') {
+      const ta = a.taskId || a.filename || '';
+      const tb = b.taskId || b.filename || '';
+      const tie = ta < tb ? -1 : ta > tb ? 1 : 0;
+      return histSortAsc ? tie : -tie;
+    }
     return histSortAsc ? cmp : -cmp;
   });
 }
 
+function todayEasternYmd() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
+
+function easternYmdFromIso(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
+
+function isDailyHistoryRow(row) {
+  const hay = `${row.summary || ''} ${row.tags || ''} ${row.taskId || ''} ${row.filename || ''}`.toLowerCase();
+  return /inbox-log-analyzer|wiki-ingest|daily-digest|daily enqueue|orchestrate-daily|analyzer-daily|0 new findings|daily scan|daily run/.test(hay);
+}
+
+function historyDailyBadge(row) {
+  if (!isDailyHistoryRow(row)) return '';
+  return '<span class="history-daily-badge" title="Recurring daily launchd / enqueue job">daily</span>';
+}
+
+function setHistoryDateRange(range) {
+  historyDateRange = range;
+  document.querySelectorAll('.history-filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.range === range);
+  });
+  renderHistory();
+}
+
+function filterHistoryByRange(rows) {
+  if (historyDateRange === 'all') return rows;
+  if (historyDateRange === 'daily') return rows.filter(isDailyHistoryRow);
+  const todayYmd = todayEasternYmd();
+  if (historyDateRange === 'today') {
+    return rows.filter(r => easternYmdFromIso(r.dateIso) === todayYmd);
+  }
+  const days = historyDateRange === '30d' ? 30 : 7;
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  return rows.filter(r => (r.dateSort || 0) >= cutoff);
+}
+
 function filterHistoryRows(rows) {
   if (!historyFilter) return rows;
-  return rows.filter(r =>
-    (r.summary + ' ' + r.tags + ' ' + r.filename).toLowerCase().includes(historyFilter)
-  );
+  const norm = (s) => (s || '').toLowerCase().replace(/[_-]/g, ' ');
+  const tokens = norm(historyFilter).split(/\s+/).filter(Boolean);
+  return rows.filter(r => {
+    const contentSnippet = (r.content || '').slice(0, 2000);
+    const hay = norm(`${r.summary} ${r.tags} ${r.filename} ${r.taskId || ''} ${contentSnippet}`);
+    return tokens.every(t => hay.includes(t));
+  });
+}
+
+function historyTaskBadge(taskId) {
+  if (!taskId) return '';
+  const m = taskId.match(/inbox-(.+)$/);
+  const label = m ? m[1] : taskId;
+  return `<span class="tag-chip" title="${esc(taskId)}">${esc(label)}</span> `;
+}
+
+function historyArchiveBadge(hasArchive) {
+  if (hasArchive !== false) return '';
+  return `<span class="badge" style="background:#6e7681;color:#fff;margin-right:6px" title="No orchestrate-history archive — content synthesized from registry/logs">logs only</span>`;
 }
 
 function filterHistory() {
@@ -1001,21 +1607,33 @@ function setHistorySort(col) {
 
 function renderHistory() {
   const container = document.getElementById('history-container');
-  const allRows = buildHistoryRows();
+  const allRows = enrichHistoryRows(buildHistoryRows());
+  const rangedRows = filterHistoryByRange(allRows);
 
   // Stats
-  const totalCount = allRows.length;
-  const completeCount = allRows.filter(r => r.status === 'complete').length;
-  const failedCount = allRows.filter(r => r.status === 'failed').length;
+  const stats = historyData.stats || {};
+  const totalCount = stats.total != null ? stats.total : allRows.length;
+  const archiveCount = stats.withArchive != null ? stats.withArchive : allRows.filter(r => r.hasArchive !== false).length;
+  const registryOnlyCount = stats.registryOnly != null ? stats.registryOnly : allRows.filter(r => r.hasArchive === false).length;
+  const missingIds = Array.isArray(stats.missingCompleteIds) ? stats.missingCompleteIds : [];
   const statsEl = document.getElementById('history-stats');
-  statsEl.innerHTML = `Total: <span>${totalCount}</span>  ·  Complete: <span>${completeCount}</span>  ·  Failed: <span>${failedCount}</span>`;
+  const rangeLabel = { today: 'today', '7d': '7 days', '30d': '30 days', all: 'all time', daily: 'daily jobs' }[historyDateRange] || historyDateRange;
+  statsEl.innerHTML = `Showing: <span>${rangedRows.length}</span> of <span>${totalCount}</span> (${rangeLabel})  ·  Archives: <span>${archiveCount}</span>  ·  Logs only: <span>${registryOnlyCount}</span>`;
+  if (missingIds.length > 0) {
+    statsEl.innerHTML += `  ·  <span style="color:#f85149" title="${esc(missingIds.join(', '))}">Missing: ${missingIds.length}</span>`;
+  }
 
   if (allRows.length === 0) {
     container.innerHTML = '<div class="empty">No history entries found.</div>';
     return;
   }
 
-  const filtered = filterHistoryRows(sortHistoryRows(allRows));
+  if (rangedRows.length === 0) {
+    container.innerHTML = `<div class="empty">No entries for <strong>${esc(rangeLabel)}</strong>. Try <button type="button" class="history-filter-btn active" onclick="setHistoryDateRange('all')">All</button> or <button type="button" class="history-filter-btn active" onclick="setHistoryDateRange('daily')">Daily jobs</button>.</div>`;
+    return;
+  }
+
+  const filtered = filterHistoryRows(sortHistoryRows(rangedRows));
 
   if (filtered.length === 0) {
     container.innerHTML = '<div class="empty">No entries match your search.</div>';
@@ -1047,8 +1665,8 @@ function renderHistory() {
     const tagChips = tags.map(t => `<span class="tag-chip">${esc(t)}</span>`).join('');
     html += `
     <tr style="cursor:pointer" onclick="toggleHistoryRow('${rowId}', this)">
-      <td class="history-date">${esc(e.date)}</td>
-      <td>${esc(e.summary)}</td>
+      <td class="history-date">${esc(e.dateDisplay || e.date)}</td>
+      <td>${historyDailyBadge(e)}${historyTaskBadge(e.taskId)}${historyArchiveBadge(e.hasArchive)}${esc(e.summary)}</td>
       <td><div class="history-tags">${tagChips || '<span style="color:var(--muted)">—</span>'}</div></td>
       <td>${statusBadge(e.status)}</td>
       <td><button class="expand-btn" title="Expand">▸</button></td>

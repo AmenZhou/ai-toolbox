@@ -69,32 +69,10 @@ Install a launchd job to run `tend` every 5 minutes:
 
 ```bash
 PROJECT_DIR="$HOME/apps/my-project"  # adjust to your project root
-LOG_DIR="$PROJECT_DIR/.orchestrate/logs"
-mkdir -p "$LOG_DIR"
-
-cat > ~/Library/LaunchAgents/com.orchestrate.tend.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.orchestrate.tend</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/claude</string>
-    <string>-p</string>
-    <string>tend</string>
-  </array>
-  <key>StartInterval</key><integer>300</integer>
-  <key>WorkingDirectory</key><string>$PROJECT_DIR</string>
-  <key>StandardOutPath</key><string>$LOG_DIR/heartbeat.log</string>
-  <key>StandardErrorPath</key><string>$LOG_DIR/heartbeat-err.log</string>
-  <key>RunAtLoad</key><false/>
-</dict>
-</plist>
-EOF
-
-launchctl load ~/Library/LaunchAgents/com.orchestrate.tend.plist
+bash skills/task-orchestrate/bin/install-launchd.sh
 ```
+
+Switch between `cursor-agent` and `claude` by editing `.orchestrate/agent.conf` (`RUNNER=cursor` or `RUNNER=claude`). No plist reload needed.
 
 After this, the watchdog runs permanently in the background — no loop to start or maintain.
 
@@ -165,8 +143,9 @@ Suites covered:
 
 | Suite | File | What it checks |
 |-------|------|----------------|
-| Control plane | `test-task-orchestrate.sh` | `.orchestrate/` layout, SKILL.md invariants, cursor-agent inbox plist, skill sync |
+| Control plane | `test-task-orchestrate.sh` | `.orchestrate/` layout, SKILL.md invariants, launchd wrapper + agent.conf |
 | Tend go auto | `test-tend-auto.sh` | `com.orchestrate.tend` plist, inbox pre-flight, heartbeat writability |
+| Run-job dispatch | `test-run-job.sh` | Mock cursor/claude — verifies `RUNNER=cursor\|claude` dispatch args |
 | Monitor | `monitor/tests/server.test.js` | Dashboard API routes |
 | Launch agent | `test-launch-agent.js` | Tend plist binary path and launchd registration |
 

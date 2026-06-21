@@ -237,6 +237,37 @@ cleanup_stale_inbox() {
   fi
 }
 
+drain_inbox() {
+  local script="$ROOT/.orchestrate/bin/drain-inbox.sh"
+  if [[ -x "$script" ]]; then
+    bash "$script" "$ROOT" || log_heartbeat "run-job — drain-inbox.sh failed (continuing tend)"
+  fi
+}
+
+tend_need_action() {
+  local script="$ROOT/.orchestrate/bin/tend-need-action.sh"
+  local need=1
+  if [[ -x "$script" ]]; then
+    # Capture raw output first (ignoring exit code with || true) before filtering.
+    # The inline pipeline '| grep | cut || echo 1' misfires under set -o pipefail:
+    # when the script exits 1 (action needed), pipefail marks the pipe failed so
+    # '|| echo 1' fires AND cut's output is already captured, yielding need="1\n1"
+    # which fails the '== "1"' check — causing false idle reports.
+    local raw
+    raw="$(bash "$script" "$ROOT" 2>/dev/null)" || true
+    need="$(printf '%s\n' "$raw" | grep '^NEED_ACTION=' | cut -d= -f2)" || true
+    [[ -z "$need" ]] && need=1
+  fi
+  [[ "$need" == "1" ]]
+}
+
+log_tend_idle() {
+  case "$TEND_MODE" in
+    go\ auto|go_auto) log_heartbeat "tend go auto — idle" ;;
+    *)                log_heartbeat "tend — idle" ;;
+  esac
+}
+
 # Acquire the tend lock at the shell level so it is always released on exit,
 # regardless of whether the agent session can execute shell commands.
 # Sets TEND_LOCK_MANAGED=1 so the SKILL's T-0 skips its own lock logic.
@@ -263,9 +294,15 @@ case "$JOB" in
   tend)
     acquire_tend_lock
     cleanup_stale_inbox
-    cursor_prompt="$(tend_prompt)" || exit 1
-    claude_prompt="$(tend_prompt_claude)" || exit 1
-    dispatch "$cursor_prompt" "$claude_prompt"
+    drain_inbox
+    if tend_need_action; then
+      cursor_prompt="$(tend_prompt)" || exit 1
+      claude_prompt="$(tend_prompt_claude)" || exit 1
+      dispatch "$cursor_prompt" "$claude_prompt"
+    else
+      log_tend_idle
+      exit 0
+    fi
     ;;
   inbox-log-analyzer)
     dispatch "/inbox-log-analyzer" "/inbox-log-analyzer"

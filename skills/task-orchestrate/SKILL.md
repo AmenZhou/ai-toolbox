@@ -24,7 +24,7 @@ Detect which mode applies from the input:
 | Input | Mode |
 |-------|------|
 | `tend` | Watchdog — scan registry, drain inbox, notify on pending tasks |
-| `tend go auto` | Watchdog + auto-execute — drain inbox, register tasks, execute all `pending` and `awaiting_go` in auto mode (launchd default) |
+| `tend go auto` | Watchdog + auto-execute — drain inbox, register tasks, execute all `pending` tasks in auto mode; `awaiting_go` (gated) tasks always require explicit human "go" (launchd default) |
 | `inbox` | Show pending inbox items, wait for triage |
 | `inbox go` | Triage inbox, then execute approved items (gated — phase checkpoints) |
 | `inbox go auto` | Triage inbox, then execute all approved items unattended |
@@ -112,7 +112,14 @@ fi
 
 ### T-1 — Pre-flight (bash, no LLM context on idle)
 
-**Stale inbox cleanup (run first):** Before NEED_ACTION scan, run `.orchestrate/bin/cleanup-stale-inbox.sh` (also invoked from `run-job.sh` before tend dispatch). It:
+**Stale inbox cleanup (run first):** Before NEED_ACTION scan, `run-job.sh` invokes (in order):
+1. `.orchestrate/bin/cleanup-stale-inbox.sh` — stale root inbox + task files
+2. `.orchestrate/bin/drain-inbox.sh` — **bash T-2 drain** (gated/ first, then root); registers rows and `mv` to `processed/`
+3. `.orchestrate/bin/tend-need-action.sh` — if `NEED_ACTION=0`, logs idle and **skips agent dispatch**
+
+When the agent session runs (NEED_ACTION=1), T-2 inbox drain may already be done — skip re-registration; proceed to T-4 registry scan.
+
+`cleanup-stale-inbox.sh` behavior:
 - Moves root `inbox/*.md` to `processed/` when the same basename already exists in `processed/`
 - Moves root files whose embedded task ID (e.g. `Task ID:` line) matches a `complete` registry row
 - Removes stale `.orchestrate/tasks/{ID}.md` when registry row is `complete`
@@ -170,16 +177,16 @@ If `NEED_ACTION=0`: append `[<ISO>] tend — idle` to `.orchestrate/logs/heartbe
 
 When reading an inbox file:
 - **Skip** files containing a `deferred_at:` line (anywhere before `## Goal`) — user deferred via inbox triage; leave in place until explicitly approved.
-- If the file contains `source: self`: register as `mode: gated`, status `awaiting_go`. Under **`tend` only**: do not auto-execute. Under **`tend go auto`**: register in T-2, then execute in T-4 (same as other gated registry rows).
+- If the file contains `source: self`: register as `mode: gated`, status `awaiting_go`. Under **`tend`** or **`tend go auto`**: register in T-2, send PushNotification — never auto-execute.
 - If the file is plain text (no `## Goal` section): treat the entire content as the goal, but flag at registration: `⚠ inbox file <name> has no structured context — plan phase may need clarification`.
 - If the file has the structured format: extract Goal as task summary, Context as shared background for the plan phase, ACs as phase acceptance criteria seeds.
-- If the file contains a line `mode: gated` (anywhere before `## Goal`), **or** the file lives under `.orchestrate/inbox/gated/`: register with `mode: gated`, status `awaiting_go`. Under **`tend` only**: notify and wait. Under **`tend go auto`**: register in T-2, execute in T-4.
+- If the file contains a line `mode: gated` (anywhere before `## Goal`), **or** the file lives under `.orchestrate/inbox/gated/`: register with `mode: gated`, status `awaiting_go`. Under **`tend`** or **`tend go auto`**: register in T-2, send PushNotification — never auto-execute.
 
 **Inbox layout:**
 | Path | Default mode | `tend` | `tend go auto` (launchd) |
 |------|--------------|--------|-------------------------|
 | `.orchestrate/inbox/*.md` | auto unless `mode: gated` | drain → notify | drain → execute |
-| `.orchestrate/inbox/gated/*.md` | always gated | drain → notify | drain → execute |
+| `.orchestrate/inbox/gated/*.md` | always gated | drain → notify | drain → notify (never auto-executes) |
 
 **Interactive gating:** Plain `tend` (no `go auto`) still skips execution — sends PushNotification. Use `/task-orchestrate inbox` to triage before drain, or `/task-orchestrate go auto <ID>` for one-off interactive runs.
 
@@ -196,7 +203,7 @@ For each `.md` file in `.orchestrate/inbox/` (not in `gated/` subdirectory):
 3. Move file to `.orchestrate/inbox/processed/`.
 4. Append to `.orchestrate/logs/heartbeat.log`: `[<ISO>] inbox — registered "<task title>" from <filename>`
 5. **If mode is `tend`:** do not start execution — queued tasks wait for `go`/`go auto`.
-   **If mode is `tend go auto`:** proceed — tasks will be executed in T-4.
+   **If mode is `tend go auto`:** proceed — auto tasks (`pending`) will be executed in T-4; gated tasks (`awaiting_go`) will only be notified, not executed.
 
 When a background inbox task is later executed (via `go auto` in tend mode), write a per-task log file at `.orchestrate/logs/{ID}-tend.log`:
 ```
@@ -218,14 +225,15 @@ For each task in the registry:
 **`awaiting_critic` (mode: auto):** Read its task file (`.orchestrate/tasks/{ID}.md`). Re-read this SKILL.md's Critic section. Run critic assessment inline. Write verdict + checkpoint. If ✅ and mode auto: continue execution loop. Append action to heartbeat.log.
 
 **`awaiting_go` (mode: gated):**
-- **Mode `tend`:** Do NOT advance. Send `PushNotification`: `⏸ [{ID}] "{summary}" — phase ready, needs your "go"`. Log it.
-- **Mode `tend go auto`:** Execute immediately in auto mode (same path as `pending` below). Set task file `mode: auto` for the duration of execution. Append to heartbeat.log: `[<ISO>] tend-auto — executing gated "<task title>" ({ID})`.
+- **Always (both `tend` and `tend go auto`):** Do NOT advance. Send `PushNotification`: `⏸ [{ID}] "{summary}" — gated, needs your "go"`. Log it. Gated tasks never auto-execute regardless of tend mode — they require explicit human `go <ID>` or `go auto <ID>`.
 
 **`pending` tasks (from inbox drain this cycle OR already registered):**
 - **Mode `tend`:** Send `PushNotification`: `📋 [{N} new task(s) queued — type "go" or "go auto" to start]`. Log.
 - **Mode `tend go auto`:** Execute each pending task immediately in auto mode. For each task: create its `.orchestrate/tasks/{ID}.md` plan file if it doesn't exist, run the full execution loop (same as `go auto`), write per-task log to `.orchestrate/logs/{ID}-tend.log`. Do not send a push notification — execution is unattended. Append to heartbeat.log: `[<ISO>] tend-auto — executing "<task title>" ({ID})`.
 
-  **This applies to ALL `pending` and `awaiting_go` tasks in the registry**, not only those drained this cycle.
+  **This applies to ALL `pending` tasks in the registry**, not only those drained this cycle. `awaiting_go` tasks are never auto-executed — skip them during T-4 queue drain.
+
+  **Queue drain (tend-auto only):** After each task finishes — whether `complete`, `needs_human`, or `failed` — always continue to the next `pending` task. A stuck task must never block remaining queue items. Log each skip: `[<ISO>] tend-auto — task <ID> blocked (needs_human); continuing queue`.
 
 **`needs_human` tasks:**
 - Read task file at `.orchestrate/tasks/{ID}.md`. If the file is missing, skip.
@@ -362,7 +370,7 @@ Precedence: reasoning > execution > simple > instructional.
 
 Read `## Shared Context` from `project.md` before planning — it contains durable decisions and constraints from prior tasks. Incorporate relevant context into the plan (phase design, executor choices, acceptance criteria).
 
-**Mandatory final phase:** Every plan must include a final `Test & Verify` phase `[inline · execution]`, numbered as Phase N (= total phases). Its acceptance criteria: (1) all output files declared in prior phases exist on disk, (2) detected test suite passes or "no test runner detected". Omit only for tasks that produce zero file changes (pure queries, documentation with no outputs).
+**Mandatory final phase:** Every plan must include a final `Test & Verify` phase `[inline · execution]`, numbered as Phase N (= total phases). Its acceptance criteria: (1) all output files declared in prior phases exist on disk, (2) detected test suite passes or "no test runner detected", (3) for any background script or launchd job changed: dry-run against a controlled environment passes in both happy-path and failure/recovery scenarios (see Background Job Dry-Run). Omit only for tasks that produce zero file changes (pure queries, documentation with no outputs).
 
 ```
 TASK PLAN — `<summary>`  Complexity: Lightweight|Moderate|Complex (N phases)
@@ -420,9 +428,12 @@ summary: <one sentence>
 confidence: high | medium | low
 blockers: [list or "none"]
 acceptance_criteria_met: [✓ criterion 1 | ✗ criterion 2] or "n/a (simple/instructional)"
+test_evidence: <commands actually run to verify behavior, e.g. "7/7 dry-run pass; make test ALL SUITES PASSED; launchctl list: LastExitStatus=0"> or "n/a (no code changes)"
 ```
 
 Evaluate against acceptance criteria inline. Assign: **PASS** · **PARTIAL: \<gap\>** · **FAIL: \<reason\>**.
+
+**AC gate:** any `✗` in `acceptance_criteria_met` classifies the phase as PARTIAL or FAIL — never PASS, regardless of confidence.
 
 If `files_changed` non-empty: run Bash lint/build/test. Downgrade to PARTIAL if fails.
 
@@ -449,7 +460,7 @@ Announce `▶ Phase N — <name>`.
 2. Absolute working directory
 3. `## Shared Context` from project.md (paste verbatim — gives agent project-level knowledge)
 4. Acceptance criteria: "This phase is complete when: 1. … 2. … 3. …"
-5. Required output: `## PHASE OUTPUT` block with files_changed / summary / confidence / blockers / acceptance_criteria_met
+5. Required output: `## PHASE OUTPUT` block with files_changed / summary / confidence / blockers / acceptance_criteria_met / test_evidence
 6. If skill embedded: paste SKILL.md body directly — do NOT invoke Skill tool from within agent
 
 **Parallel phases:** launch as multiple Agent calls in one message (max 6). Wait for all before assessing.
@@ -463,15 +474,40 @@ After agent returns: extract `## PHASE OUTPUT`. If missing → treat as ⚠️ w
 ### Critic & micro-verifier (always inline)
 
 For execution and reasoning phases:
-- **PASS** — all criteria met
-- **PARTIAL: \<gap\>** — most criteria met, one gap
+- **PASS** — all criteria met AND no `✗` in `acceptance_criteria_met` AND `test_evidence` shows behavioral confirmation (not just file existence)
+- **PARTIAL: \<gap\>** — most criteria met but one unmet; OR one or more `✗` in `acceptance_criteria_met`; OR `test_evidence` is absent/weak for an execution phase
 - **FAIL: \<reason\>** — key criterion not met or blocker caused by this change
+
+**Rule:** any `✗` in `acceptance_criteria_met` disqualifies PASS — minimum PARTIAL.
+**Rule:** for execution phases, `test_evidence: n/a` or missing = PARTIAL unless the phase made zero file changes.
 
 If `files_changed` non-empty: run Bash verify (build, lint, fast tests). Override to PARTIAL if fails.
 
 Classify blockers: `pre-existing` or `caused-by-change`. Pre-existing → note only, do not downgrade.
 
 For **simple** and **instructional** phases: apply a lightweight confidence-only gate (no full criteria assessment). If `confidence: low`, downgrade to ⚠️ per the Step B verdict table; high or medium confidence → ✅.
+
+### Background Job Dry-Run (mandatory when applicable)
+
+**When required:** The Test & Verify phase MUST include a dry-run for any task that creates or modifies:
+- Shell scripts in `.orchestrate/bin/` (rescue.sh, run-job.sh, drain-inbox.sh, etc.)
+- LaunchD plist files (`*.plist`)
+- Any script that runs unattended or is invoked by launchd
+
+**What a dry-run is:** run the script against a `mktemp -d` controlled temp directory with the minimum required state (mock project.md, stale heartbeat, seed inbox file, etc.) — not against the live project directory.
+
+**Minimum scenarios (cover at least 2):**
+- **Happy path:** correct inputs → expected output (correct log entries, correct file moves)
+- **Failure/recovery:** stuck/error state → script detects and recovers (e.g. stale lock cleared, inbox drained, run-job kicked)
+
+**LaunchD changes:** additionally run `launchctl list <label>` and assert `LastExitStatus = 0`.
+
+**test_evidence format for background jobs:**
+```
+test_evidence: dry-run 3/3 scenarios pass; launchctl list com.orchestrate.rescue: LastExitStatus=0; make test ALL SUITES PASSED
+```
+
+If a script has no controllable inputs (reads only live system state), document why dry-run is not feasible and use `launchctl list` + log inspection instead.
 
 ---
 
@@ -480,7 +516,7 @@ For **simple** and **instructional** phases: apply a lightweight confidence-only
 **Step A — Capture:**
 ```
 phase N status → awaiting_critic
-phase N captured_output → {summary, confidence, files_changed, blockers, acceptance_criteria_met}
+phase N captured_output → {summary, confidence, files_changed, blockers, acceptance_criteria_met, test_evidence}
 phase N raw_output → <full PHASE OUTPUT block text>
 ```
 Append the raw output block to the task state file under the phase section (so `.orchestrate/tasks/{ID}.md` contains a full record of what Claude produced). Update project.md registry: `status: awaiting_critic`.
@@ -510,7 +546,10 @@ Simple/instructional: high/medium confidence → ✅, low → ⚠️.
   - Inline phases: after 2 retries, escalate to agent/Haiku on retry 3, halt on retry 4.
 
 - **❌** → write `✗ failed`. Update project.md: `status: needs_human`.
-  - Gate both modes: `⏸ retry · skip · replan · abort · instruct`
+  - **Gated / interactive auto:** Gate: `⏸ retry · skip · replan · abort · instruct`
+  - **Tend-auto (invoked from `tend go auto`):** Do NOT gate. Log the block and move on:
+    `[<ISO>] tend-auto — task <ID> blocked (needs_human); continuing queue`
+    Exit the current task's execution loop and proceed to the next `pending` task in T-4.
 
 ---
 
@@ -524,12 +563,17 @@ LOOP:
   4. Run Steps A/B/C for each
   5. All ✅ → goto LOOP immediately
   6. ⚠️ → Step C ⚠️ branch, goto LOOP
-  7. ❌ → checkpoint all ✅ in batch, halt and gate user
+  7. ❌ →
+       Gated/interactive: checkpoint all ✅ in batch, halt and gate user
+       Tend-auto: checkpoint all ✅, mark task needs_human, log block, exit loop
+                  (T-4 continues to next pending task)
 ```
 
 Never stop between steps 5 and 1 in auto mode.
 
-**Parallel batch mixed results:** checkpoint ✅ immediately; re-invoke ⚠️; on any ❌ halt and gate.
+**Parallel batch mixed results:** checkpoint ✅ immediately; re-invoke ⚠️; on any ❌:
+- **Gated/interactive:** halt and gate.
+- **Tend-auto:** mark failed task `needs_human`, log, do not block the parallel batch — remaining parallel tasks that complete ✅ are checkpointed normally, then T-4 continues queue drain.
 
 ---
 
@@ -599,6 +643,30 @@ else
   echo "no test runner detected — skipping" >> "$VERIFY_LOG"
 fi
 
+# Background job behavioral verification (when applicable)
+# For any modified script in .orchestrate/bin/ or launchd plist: dry-run + launchctl check
+for f in <files_changed from all phases>; do
+  case "$f" in
+    */.orchestrate/bin/*.sh)
+      # Dry-run: run against a temp dir and assert clean exit
+      TMP_DRY="$(mktemp -d)"
+      if bash "$f" "$TMP_DRY" >/dev/null 2>&1; then
+        echo "✓ dry-run $f (temp env)" >> "$VERIFY_LOG"
+      else
+        echo "⚠ dry-run $f exited non-zero (check if it requires specific env)" >> "$VERIFY_LOG"
+      fi
+      rm -rf "$TMP_DRY"
+      ;;
+    */LaunchAgents/com.orchestrate.*.plist|*.plist)
+      LABEL="$(grep -A1 '<key>Label</key>' "$f" 2>/dev/null | tail -1 | sed 's/<[^>]*>//g;s/[[:space:]]//g' || true)"
+      if [ -n "$LABEL" ]; then
+        STATUS="$(launchctl list "$LABEL" 2>/dev/null | grep 'LastExitStatus' | tr -d '[:space:]"' || echo 'not loaded')"
+        echo "launchctl $LABEL: $STATUS" >> "$VERIFY_LOG"
+      fi
+      ;;
+  esac
+done
+
 echo "=== done ===" >> "$VERIFY_LOG"
 ```
 
@@ -619,19 +687,87 @@ Confidence:     high | medium | low
 
 If low confidence or any ✗ AC: gate with `⚠ Verification found gaps`.
 
-**6. Improvement Suggestions:**
+**6. Goal Self-Assessment:**
+
+After verification, assess whether the original task goal was fully met by reviewing all phase outcomes.
+
+**Trigger:** run always at completion. Declare a gap if ANY of:
+- A phase has `✗ criterion` in `acceptance_criteria_met`
+- A phase had a `PARTIAL` verdict that was accepted without re-run
+- Overall job confidence is `low`
+
+**Output block:**
+```
+── Goal Self-Assessment ──────────────────────────
+Goal:      <original task prompt>
+Delivered: <one-line summary of what was actually completed>
+Verdict:   ✓ goal met | ⚠ partial | ✗ gap detected
+Gap:       <concise description of what was not delivered>  ← omit if met
+Follow-up: enqueued → inbox/<filename> | none
+──────────────────────────────────────────────────
+```
+
+**If gap detected** — enqueue a follow-up inbox file automatically:
+
+**Dedup before writing** — skip if ANY of:
+- An existing file anywhere in `inbox/`, `inbox/gated/`, or `inbox/processed/` has a `parent_task: <this-task-ID>` line
+- An existing file title has ≥70% word overlap with the proposed follow-up title
+
+**Path:** `.orchestrate/inbox/followup-<slug>-<YYYYMMDDTHHMMSS>.md` (auto mode, inherits parent runner)
+
+**Template:**
+```markdown
+parent_task: <parent-task-ID>
+
+# Follow-up: <original task summary> — <gap in 3-5 words>
+
+## Goal
+<What remains to be done. Be specific — name files, endpoints, or behaviors that are still undelivered.>
+
+## Context
+Follow-up to task `<parent-ID>` — `<original task summary>`.
+Delivered: <what the parent task completed>
+Gap: <what was left undelivered or only partially done>
+
+## Acceptance Criteria
+- <unmet AC from parent, verbatim or refined>
+- <additional AC if the gap introduces new requirements>
+```
+
+Append to heartbeat.log: `[<ISO>] follow-up — enqueued followup-<slug> from task <ID>`
+
+**7. Improvement Suggestions:**
 
 Print the suggestions block to the user:
 ```
 ── Suggestions ───────────────────────────────────
 Orchestrator:
-  • <one suggestion — or "none">
+  • <suggestion — or "none (reason: <one line>)">
 Skills invoked:
-  • [/skill-name] <suggestion — or "none">
+  • [/skill-name] <suggestion — or "none (reason: <one line>)">
 ──────────────────────────────────────────────────
 ```
 
-For each **non-trivial** suggestion (not "none"), write an inbox file instead of any external backlog:
+**Default: write an improvement file.** "None" requires an explicit stated reason. Dedup prevents noise — let dedup be the gate, not your judgment.
+
+**Write an improvement file when ANY of the following are true:**
+- A phase required a retry (even retry 1)
+- A phase was accepted as PARTIAL without re-run
+- A blocker was noted (pre-existing or caused-by-change)
+- A gap was declared in the Goal Self-Assessment block
+- A new failure mode, workaround, or non-obvious constraint was discovered
+- A SKILL.md rule was ambiguous, missing, or required interpretation during this task
+- The task surfaced a pattern that would make future tasks faster if documented
+
+**"None" is valid only when ALL of the following hold:**
+- Zero retries across all phases
+- All phases: PASS, high or medium confidence, no blockers
+- No new patterns or failure modes observed
+- No ambiguity required interpretation
+
+When outputting "none", always append a one-line reason: `none (reason: 0 retries, all PASS, nothing new observed)`.
+
+For each qualifying suggestion, write an inbox file instead of any external backlog:
 
 **Dedup before writing** — skip if ANY of:
 - An existing file in `inbox/`, `inbox/gated/`, or `inbox/processed/` has ≥70% word overlap with the normalized suggestion title (lowercase, strip punctuation, compare token sets)
@@ -666,7 +802,10 @@ Applies to: <path in ai-toolbox>  ·  Installed at: ~/.claude/skills/<name>/SKIL
 - Invoked skill → `ai-toolbox/skills/<name>/SKILL.md`
 - Project → project-specific paths (tests, `.orchestrate/`, docs)
 
-Append to heartbeat.log: `[<ISO>] self-improve — filed improvement-<slug> from task <ID>`
+Append to heartbeat.log:
+- Filed: `[<ISO>] self-improve — filed improvement-<slug> from task <ID>`
+- Dedup skipped: `[<ISO>] self-improve — skipped (dedup) improvement-<slug> from task <ID>`
+- None: `[<ISO>] self-improve — none from task <ID> (reason: <one line>)`
 
 Do **not** append to `skill-improvement-backlog.md` — inbox is the canonical improvement queue.
 

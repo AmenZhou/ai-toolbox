@@ -154,7 +154,7 @@ section "Cursor"
 # Project skills for headless cursor-agent inbox jobs
 
 CURSOR_PROJECT_SKILLS="/Users/haimengzhou/apps/ai-console/.cursor/skills"
-ORCHESTRATE_INBOX_SKILLS=(inbox-log-analyzer daily-inbox-digest)
+ORCHESTRATE_INBOX_SKILLS=(inbox-log-analyzer daily-inbox-digest task-orchestrate orchestrate-daily-wiki-ingest)
 mkdir -p "$CURSOR_PROJECT_SKILLS"
 for skill_name in "${ORCHESTRATE_INBOX_SKILLS[@]}"; do
   skill_src="$SKILLS_DIR/$skill_name/SKILL.md"

@@ -20,31 +20,10 @@ Think of it as three things in one:
 
 ```bash
 PROJECT_DIR="$HOME/apps/my-project"   # adjust to your project root
-LOG_DIR="$PROJECT_DIR/.orchestrate/logs"
-mkdir -p "$LOG_DIR"
-
-cat > ~/Library/LaunchAgents/com.orchestrate.tend.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.orchestrate.tend</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/claude</string>
-    <string>-p</string>
-    <string>tend</string>
-  </array>
-  <key>StartInterval</key><integer>300</integer>
-  <key>WorkingDirectory</key><string>$PROJECT_DIR</string>
-  <key>StandardOutPath</key><string>$LOG_DIR/heartbeat.log</string>
-  <key>StandardErrorPath</key><string>$LOG_DIR/heartbeat-err.log</string>
-  <key>RunAtLoad</key><false/>
-</dict>
-</plist>
-EOF
-launchctl load ~/Library/LaunchAgents/com.orchestrate.tend.plist
+bash skills/task-orchestrate/bin/install-launchd.sh
 ```
+
+Set `RUNNER=cursor` or `RUNNER=claude` in `.orchestrate/agent.conf` to choose the headless agent.
 
 After this, you never need to start a loop or supervisor again. The watchdog runs in the background permanently.
 
@@ -279,3 +258,9 @@ mv .task-orchestrate-state-*.md .orchestrate/tasks/ 2>/dev/null
 ```
 
 If you were using `task-supervisor`: that skill is deprecated. The `.supervisor-state.md` file can be deleted — active tasks should be re-registered via inbox or direct invocation.
+
+---
+
+## Related
+
+- [Orchestrate inbox workflow](../../../ai-console/docs/orchestrate-inbox-workflow.md) — mermaid diagram, gated vs auto paths, ranked improvements

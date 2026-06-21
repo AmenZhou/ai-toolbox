@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<!--
+  orchestrate-daily-wiki-ingest daily enqueue launchd agent
+  Writes an inbox task at 6pm; tend executes /orchestrate-daily-wiki-ingest.
+
+  Install:
+    PROJECT_DIR="$HOME/apps/my-project" bash skills/task-orchestrate/bin/install-launchd.sh
+-->
+
+<plist version="1.0">
+<dict>
+
+  <key>Label</key>
+  <string>com.orchestrate.wiki-ingest-daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ENQUEUE_WIKI_INGEST__</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>18</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>~/apps/my-project</string>
+
+  <key>StandardOutPath</key>
+  <string>~/apps/my-project/.orchestrate/logs/wiki-ingest-daily.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>~/apps/my-project/.orchestrate/logs/wiki-ingest-daily-err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+</dict>
+</plist>

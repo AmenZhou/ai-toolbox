@@ -7,11 +7,11 @@ A self-contained Cursor Agent skill that runs once daily via launchd (9am), scan
 ## What It Looks For
 
 ### Bugs
-- Lines containing `✗`, `MISSING:`, `FAIL`, `error`, `Error`, or `fatal`
+- Lines containing `✗` (excluding `acceptance_criteria_met:` checklist lines), `MISSING:`, `FAIL`, `error`, `Error`, or `fatal`
 - Non-zero exit codes (`exit code 1`, `exit code 2`, etc.)
 - Phases that ended with `confidence: low`
 - Verify runs that ended with `✗ failed`
-- Stuck phase patterns — same phase retried 2 or more times
+- Stuck phase patterns — same phase retried 2+ times (excluding intentional `Phase N (retry R)` headers)
 
 ### Enhancements
 - A phase section with no Acceptance Criteria block defined
