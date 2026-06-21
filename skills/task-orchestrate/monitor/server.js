@@ -242,13 +242,7 @@ function isTendGoAuto(tendMode) {
 function taskApprovalInfo(row, tendMode) {
   const status = (row.status || '').toLowerCase().trim();
   if (status === 'awaiting_go') {
-    if (isTendGoAuto(tendMode)) {
-      return {
-        needsApproval: false,
-        approvalReason: null,
-        approvalLabel: 'Queued for tend (auto)',
-      };
-    }
+    // Gated tasks always need explicit human approval — tend go auto never auto-executes them.
     return {
       needsApproval: true,
       approvalReason: 'awaiting_go',
@@ -296,14 +290,7 @@ function parseInboxMeta(content, tendMode) {
   }
   const gated = /^mode:\s*gated\s*$/m.test(text);
   const mode = gated ? 'gated' : 'auto';
-  if (gated && isTendGoAuto(tendMode)) {
-    return {
-      mode,
-      needsApproval: false,
-      approvalReason: null,
-      approvalLabel: 'Queued for tend (auto)',
-    };
-  }
+  // Gated inbox items always need approval — tend go auto never auto-executes them.
   const approval = gated
     ? {
         needsApproval: true,
@@ -369,6 +356,19 @@ function isPlaceholderTimestamp(iso) {
 }
 
 /**
+ * True when iso is more than 5 minutes in the future.
+ * Completion agents sometimes invent future timestamps; treat them as unreliable.
+ */
+function isFutureTimestamp(iso) {
+  if (!iso) return false;
+  try {
+    return new Date(iso).getTime() > Date.now() + 5 * 60 * 1000;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * Parse ISO timestamp from phase/tend log headers.
  */
 function parseIsoFromLogContent(content) {
@@ -425,9 +425,17 @@ function buildCompletionHints(logsDir, heartbeatContent) {
  * archive filename HHMMSS (same day only) > filename HHMMSS > MANIFEST date noon.
  */
 function resolveHistoryDatetime(filename, dateStr, lastActivity, completionHint) {
-  const hint = completionHint && !isPlaceholderTimestamp(completionHint) ? completionHint : '';
+  const hint =
+    completionHint && !isPlaceholderTimestamp(completionHint) && !isFutureTimestamp(completionHint)
+      ? completionHint
+      : '';
 
-  if (lastActivity && !isPlaceholderTimestamp(lastActivity) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(lastActivity)) {
+  if (
+    lastActivity &&
+    !isPlaceholderTimestamp(lastActivity) &&
+    !isFutureTimestamp(lastActivity) &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(lastActivity)
+  ) {
     return lastActivity.endsWith('Z') ? lastActivity : `${lastActivity}Z`;
   }
 
@@ -440,11 +448,16 @@ function resolveHistoryDatetime(filename, dateStr, lastActivity, completionHint)
 
   if (lastActivity && isPlaceholderTimestamp(lastActivity) && /^\d{4}-\d{2}-\d{2}T/.test(lastActivity)) {
     const lastDay = lastActivity.slice(0, 10);
-    if (filenameIso && filenameIso.slice(0, 10) === lastDay) return filenameIso;
+    if (filenameIso && !isFutureTimestamp(filenameIso) && filenameIso.slice(0, 10) === lastDay) {
+      return filenameIso;
+    }
     return lastActivity.endsWith('Z') ? lastActivity : `${lastActivity}Z`;
   }
 
-  if (filenameIso) return filenameIso;
+  if (filenameIso) {
+    if (!isFutureTimestamp(filenameIso)) return filenameIso;
+    return '';
+  }
 
   if (isDateOnlyArchiveFilename(filename)) {
     const day = filename.match(/^(\d{4})(\d{2})(\d{2})-/);
@@ -746,6 +759,85 @@ function parseManifest(content) {
   return entries;
 }
 
+// ── gated task helpers ────────────────────────────────────────────────────────
+
+/**
+ * Find the processed inbox file content for a gated task.
+ * Parses heartbeat.log for the registration line, then reads inbox/processed/.
+ * @param {string} logsDir
+ * @param {string} inboxDir
+ * @param {string} summary — task summary as it appears in heartbeat log
+ * @returns {{ content: string, filename: string } | null}
+ */
+function findInboxSourceForTask(logsDir, inboxDir, summary) {
+  if (!summary) return null;
+  const heartbeatContent = readFileSafe(path.join(logsDir, 'heartbeat.log')) || '';
+  const esc = summary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\] inbox — registered \\(gated\\) "${esc}" from (?:gated/)?(.+\\.md)`, 'i');
+  const lines = heartbeatContent.split('\n').reverse();
+  for (const line of lines) {
+    const m = line.match(re);
+    if (!m) continue;
+    const basename = path.basename(m[1]);
+    // Try processed/ first (typical after drain), then gated/ and root
+    for (const subdir of ['processed', 'gated', '']) {
+      const candidate = subdir ? path.join(inboxDir, subdir, basename) : path.join(inboxDir, basename);
+      const content = readFileSafe(candidate);
+      if (content) return { content, filename: basename };
+    }
+  }
+  return null;
+}
+
+/**
+ * Approve or cancel a gated (awaiting_go) registry task.
+ * - mode 'auto': status → pending, mode → auto (tend go auto will execute it)
+ * - mode 'cancel': status → failed
+ * @param {string} cwd
+ * @param {string} taskId
+ * @param {'auto'|'cancel'} goMode
+ * @returns {{ success: boolean, id: string, status: string } | { error: string }}
+ */
+function approveRegistryTask(cwd, taskId, goMode) {
+  const projectMdPath = path.join(cwd, '.orchestrate', 'project.md');
+  let content = readFileSafe(projectMdPath);
+  if (!content) return { error: 'project.md not found' };
+
+  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  let foundRow = null;
+
+  const newLines = content.split('\n').map(line => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) return line;
+    const rawCells = trimmed.split('|');
+    const cells = rawCells.slice(1, rawCells.length - 1).map(c => c.trim());
+    if (cells.length < 6) return line;
+    if (cells[0] !== taskId) return line;
+    if (cells[4] !== 'awaiting_go') return line;
+    foundRow = { id: cells[0], summary: cells[1], originalMode: cells[2] };
+    const newMode = goMode === 'cancel' ? cells[2] : 'auto';
+    const newStatus = goMode === 'cancel' ? 'failed' : 'pending';
+    return `| ${cells[0]} | ${cells[1]} | ${newMode} | ${cells[3]} | ${newStatus} | ${now} |`;
+  });
+
+  if (!foundRow) return { error: `task ${taskId} not found or not in awaiting_go state` };
+
+  fs.writeFileSync(projectMdPath, newLines.join('\n'));
+
+  const verb = goMode === 'cancel' ? 'cancelled' : 'approved go auto';
+  try {
+    const hbPath = path.join(cwd, '.orchestrate', 'logs', 'heartbeat.log');
+    fs.appendFileSync(hbPath, `[${now}] dashboard — ${verb} gated task ${taskId} "${foundRow.summary}"\n`);
+  } catch (_) {}
+
+  return {
+    success: true,
+    id: taskId,
+    status: goMode === 'cancel' ? 'failed' : 'pending',
+    mode: goMode === 'cancel' ? foundRow.originalMode : 'auto',
+  };
+}
+
 // ── route handlers ────────────────────────────────────────────────────────────
 
 function handleTasks(res) {
@@ -975,6 +1067,54 @@ function handleHeartbeat(res) {
   const lines = content.split('\n').filter(l => l.trim() !== '');
   const last20 = lines.slice(-20);
   send(res, 200, { lines: last20 });
+}
+
+function handleTaskDetails(res, query) {
+  const taskId = (query.id || '').trim();
+  if (!taskId) return send(res, 400, { error: 'id required' });
+
+  const logsDir = path.join(CWD, '.orchestrate', 'logs');
+  const inboxDir = path.join(CWD, '.orchestrate', 'inbox');
+  const taskPath = path.join(CWD, '.orchestrate', 'tasks', `${taskId}.md`);
+  const taskContent = readFileSafe(taskPath);
+
+  const projectContent = readFileSafe(path.join(CWD, '.orchestrate', 'project.md'));
+  const registry = projectContent ? parseRegistry(projectContent) : [];
+  const row = registry.find(r => r.id === taskId);
+
+  let inboxContent = null;
+  let inboxFilename = null;
+  if (row && row.summary) {
+    const found = findInboxSourceForTask(logsDir, inboxDir, row.summary);
+    if (found) {
+      inboxContent = found.content;
+      inboxFilename = found.filename;
+    }
+  }
+
+  send(res, 200, { taskContent, inboxContent, inboxFilename });
+}
+
+async function handleTaskApprove(req, res) {
+  let payload;
+  try {
+    payload = await readJsonBody(req);
+  } catch (_) {
+    send(res, 400, { error: 'invalid JSON body' });
+    return;
+  }
+  const taskId = (payload.id || '').trim();
+  const goMode = payload.mode === 'cancel' ? 'cancel' : 'auto';
+  if (!taskId) {
+    send(res, 400, { error: 'id required' });
+    return;
+  }
+  try {
+    const result = approveRegistryTask(CWD, taskId, goMode);
+    send(res, result.error ? 404 : 200, result);
+  } catch (e) {
+    send(res, 500, { error: e.message || 'internal error' });
+  }
 }
 
 // ── launchd ───────────────────────────────────────────────────────────────────
@@ -1400,6 +1540,10 @@ const server = http.createServer(async (req, res) => {
     await handleAgentConfPost(req, res);
     return;
   }
+  if (pathname === '/api/task-approve' && req.method === 'POST') {
+    await handleTaskApprove(req, res);
+    return;
+  }
 
   if (req.method !== 'GET') {
     res.writeHead(405, { 'Content-Type': 'text/plain' });
@@ -1425,6 +1569,8 @@ const server = http.createServer(async (req, res) => {
     handleHeartbeat(res);
   } else if (pathname === '/api/agent-status') {
     handleAgentStatus(res);
+  } else if (pathname === '/api/task-details') {
+    handleTaskDetails(res, parsed.query);
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
@@ -1476,6 +1622,7 @@ module.exports = {
   resolveRegistryIds,
   resolveHistoryDatetime,
   isPlaceholderTimestamp,
+  isFutureTimestamp,
   buildCompletionHints,
   parseIsoFromLogContent,
   HISTORY_REGISTRY_ALIASES,
@@ -1489,4 +1636,6 @@ module.exports = {
   collectTaskLogContent,
   synthesizeHistoryStub,
   APPROVAL_STATUSES,
+  findInboxSourceForTask,
+  approveRegistryTask,
 };

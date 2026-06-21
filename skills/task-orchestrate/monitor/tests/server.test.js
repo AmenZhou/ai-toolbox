@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
-const { intervalLabel, buildLaunchdAgents, tendThrottleHint, parseTendHealth, readTendMode, readAgentConf, readRunner, readAgentStatus, isCursorIdeRunning, isTendGoAuto, taskApprovalInfo, parseInboxMeta, isCompletedInboxFile, manifestMatchesRegistry, archiveDateFromFilename, resolveHistoryDatetime, isPlaceholderTimestamp, buildCompletionHints, findHistoryEntry, loadHistoryEntries, buildHistoryRows, historyStats, historyCoverage, extractTaskIdFromFilename, collectTaskLogContent, synthesizeHistoryStub } = require('../server');
+const { intervalLabel, buildLaunchdAgents, tendThrottleHint, parseTendHealth, readTendMode, readAgentConf, readRunner, readAgentStatus, isCursorIdeRunning, isTendGoAuto, taskApprovalInfo, parseInboxMeta, isCompletedInboxFile, manifestMatchesRegistry, archiveDateFromFilename, resolveHistoryDatetime, isPlaceholderTimestamp, isFutureTimestamp, buildCompletionHints, findHistoryEntry, loadHistoryEntries, buildHistoryRows, historyStats, historyCoverage, extractTaskIdFromFilename, collectTaskLogContent, synthesizeHistoryStub, findInboxSourceForTask, approveRegistryTask } = require('../server');
 
 const TEST_PORT = 7843;
 let tmpDir;
@@ -165,6 +165,9 @@ test('/ serves index.html', async () => {
   assert.ok(typeof body === 'string' && body.includes('task-orchestrate monitor'),
     'index.html should contain page title');
   assert.ok(body.includes('approval-banner'), 'index should include approval banner');
+  assert.ok(body.includes('function approveGatedTask'), 'index should include gated approval handler');
+  assert.ok(body.includes('await fetchTasks();'), 'approveGatedTask should refresh via fetchTasks()');
+  assert.ok(!body.includes('await loadTasks();'), 'approveGatedTask must not call undefined loadTasks()');
 });
 
 test('/api/tasks returns registry rows and task content', async () => {
@@ -178,16 +181,30 @@ test('/api/tasks returns registry rows and task content', async () => {
   assert.equal(body.registry[0].needsApproval, false);
   const gated = body.registry.find(r => r.id === 'test-gated');
   assert.ok(gated);
-  assert.equal(gated.needsApproval, false);
-  assert.equal(gated.approvalLabel, 'Queued for tend (auto)');
+  // Gated fix 2026-06-21: awaiting_go always needs approval regardless of tend mode
+  assert.equal(gated.needsApproval, true);
+  assert.equal(gated.approvalReason, 'awaiting_go');
   const blocked = body.registry.find(r => r.id === 'test-blocked');
   assert.ok(blocked);
   assert.equal(blocked.needsApproval, true);
   assert.equal(blocked.approvalReason, 'needs_human');
   assert.ok(body.attention);
-  assert.equal(body.attention.taskCount, 1);
-  assert.equal(body.attention.tasks.length, 1);
+  assert.equal(body.attention.taskCount, 2); // now includes gated + blocked
+  assert.equal(body.attention.tasks.length, 2);
   assert.ok(body.tasks['test-001'].includes('phase 1 details'));
+});
+
+test('POST /api/task-approve auto promotes awaiting_go to pending', async () => {
+  const { status, body } = await post('/api/task-approve', { id: 'test-gated', mode: 'auto' });
+  assert.equal(status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.status, 'pending');
+  assert.equal(body.mode, 'auto');
+  const tasks = await get('/api/tasks');
+  const gated = tasks.body.registry.find(r => r.id === 'test-gated');
+  assert.ok(gated);
+  assert.equal(gated.status, 'pending');
+  assert.equal(gated.needsApproval, false);
 });
 
 test('/api/inbox returns pending inbox files excluding processed/', async () => {
@@ -203,11 +220,12 @@ test('/api/inbox returns pending inbox files excluding processed/', async () => 
   assert.equal(pending.mode, 'auto');
   const gated = body.items.find(i => i.filename === 'gated/gated-job.md');
   assert.ok(gated);
-  assert.equal(gated.needsApproval, false);
+  // Gated fix 2026-06-21: gated inbox items always need approval
+  assert.equal(gated.needsApproval, true);
   assert.equal(gated.mode, 'gated');
-  assert.equal(gated.approvalLabel, 'Queued for tend (auto)');
+  assert.equal(gated.approvalReason, 'inbox_gated');
   assert.ok(body.attention);
-  assert.equal(body.attention.approvalCount, 0);
+  assert.equal(body.attention.approvalCount, 1); // gated-job.md now requires approval
   assert.ok(!body.items.some(i => i.filename.includes('processed/')),
     'processed/ subdirectory files must not appear in /api/inbox');
   assert.ok(!body.items.some(i => i.filename === 'stale-processed-as.md'),
@@ -288,10 +306,10 @@ describe('taskApprovalInfo', () => {
     assert.equal(info.needsApproval, true);
     assert.equal(info.approvalReason, 'awaiting_go');
   });
-  test('awaiting_go auto-queued when TEND_MODE=go auto', () => {
+  test('awaiting_go always needs approval even when TEND_MODE=go auto (gated fix 2026-06-21)', () => {
     const info = taskApprovalInfo({ status: 'awaiting_go' }, 'go auto');
-    assert.equal(info.needsApproval, false);
-    assert.equal(info.approvalLabel, 'Queued for tend (auto)');
+    assert.equal(info.needsApproval, true);
+    assert.equal(info.approvalReason, 'awaiting_go');
   });
   test('running does not need approval', () => {
     const info = taskApprovalInfo({ status: 'running' });
@@ -310,10 +328,11 @@ describe('parseInboxMeta', () => {
     assert.equal(meta.mode, 'gated');
     assert.equal(meta.needsApproval, true);
   });
-  test('gated inbox auto-queued under go auto tend', () => {
+  test('gated inbox always needs approval even under go auto tend (gated fix 2026-06-21)', () => {
     const meta = parseInboxMeta('mode: gated\n\n# Title', 'go auto');
     assert.equal(meta.mode, 'gated');
-    assert.equal(meta.needsApproval, false);
+    assert.equal(meta.needsApproval, true);
+    assert.equal(meta.approvalReason, 'inbox_gated');
   });
   test('deferred_at always needs approval', () => {
     const meta = parseInboxMeta('deferred_at: 2026-01-01T00:00:00Z\nmode: gated\n', 'go auto');
@@ -882,6 +901,52 @@ describe('resolveHistoryDatetime', () => {
     assert.equal(isPlaceholderTimestamp('2026-06-20'), true);
     assert.equal(isPlaceholderTimestamp('2026-06-20T15:30:00Z'), false);
   });
+
+  test('isFutureTimestamp detects timestamps more than 5 minutes ahead', () => {
+    const future = new Date(Date.now() + 10 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const past = '2020-01-01T12:00:00Z';
+    assert.equal(isFutureTimestamp(future), true);
+    assert.equal(isFutureTimestamp(past), false);
+  });
+
+  test('skips future archive filename timestamp when last_activity absent', () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000);
+    const y = future.getUTCFullYear();
+    const m = String(future.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(future.getUTCDate()).padStart(2, '0');
+    const h = String(future.getUTCHours()).padStart(2, '0');
+    const min = String(future.getUTCMinutes()).padStart(2, '0');
+    const sec = String(future.getUTCSeconds()).padStart(2, '0');
+    const fn = `${y}${m}${d}-${h}${min}${sec}-20260621-inbox-AA6C.md`;
+    assert.equal(resolveHistoryDatetime(fn, `${y}-${m}-${d}`, ''), '');
+  });
+
+  test('rejects future last_activity and uses non-future completion hint', () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    assert.equal(
+      resolveHistoryDatetime('20260621-160200-20260621-inbox-AA6C.md', '2026-06-21', future, '2026-06-21T15:45:14Z'),
+      '2026-06-21T15:45:14Z',
+    );
+  });
+
+  test('AA6C/7510 batch archive: prefers real last_activity over filename ts', () => {
+    assert.equal(
+      resolveHistoryDatetime(
+        '20260621-160200-20260621-inbox-AA6C-langgraph-readme.md',
+        '2026-06-21',
+        '2026-06-21T15:45:14Z',
+      ),
+      '2026-06-21T15:45:14Z',
+    );
+    assert.equal(
+      resolveHistoryDatetime(
+        '20260621-160200-20260621-inbox-7510-kube-pretooluse-hook.md',
+        '2026-06-21',
+        '2026-06-21T15:45:15Z',
+      ),
+      '2026-06-21T15:45:15Z',
+    );
+  });
 });
 
 describe('buildHistoryRows', () => {
@@ -1305,5 +1370,88 @@ describe('/api/agent-status', () => {
     assert.equal(body.cursorRequired, true);
     assert.equal(body.cursorOk, body.cursorIdeRunning);
     await post('/api/agent-conf', { runner: 'claude' });
+  });
+});
+
+// ── findInboxSourceForTask ─────────────────────────────────────────────────────
+describe('findInboxSourceForTask', () => {
+  test('finds inbox file from heartbeat log registration line', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'find-inbox-test-'));
+    const logsDir = path.join(tmp, '.orchestrate', 'logs');
+    const inboxDir = path.join(tmp, '.orchestrate', 'inbox', 'processed');
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.mkdirSync(inboxDir, { recursive: true });
+    fs.writeFileSync(path.join(logsDir, 'heartbeat.log'),
+      '[2026-06-21T14:05:14Z] inbox — registered (gated) "Hello Work" from gated/hello-work-20260621T140351.md\n');
+    fs.writeFileSync(path.join(inboxDir, 'hello-work-20260621T140351.md'),
+      'mode: gated\n\n# Hello Work\n\n## Goal\nTest task.\n\n## Acceptance Criteria\n- AC1\n');
+    const result = findInboxSourceForTask(logsDir, path.join(tmp, '.orchestrate', 'inbox'), 'Hello Work');
+    assert.ok(result, 'should find the inbox file');
+    assert.ok(result.content.includes('## Goal'), 'content should include Goal section');
+    assert.equal(result.filename, 'hello-work-20260621T140351.md');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('returns null when no matching heartbeat line', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'find-inbox-miss-'));
+    const logsDir = path.join(tmp, 'logs');
+    const inboxDir = path.join(tmp, 'inbox');
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.mkdirSync(inboxDir, { recursive: true });
+    fs.writeFileSync(path.join(logsDir, 'heartbeat.log'), '[2026-06-21T14:05:14Z] tend go auto — idle\n');
+    const result = findInboxSourceForTask(logsDir, inboxDir, 'Nonexistent Task');
+    assert.equal(result, null);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+// ── approveRegistryTask ───────────────────────────────────────────────────────
+describe('approveRegistryTask', () => {
+  function makeTestProject(tmp, status = 'awaiting_go', mode = 'gated') {
+    const orchestrateDir = path.join(tmp, '.orchestrate');
+    const logsDir = path.join(orchestrateDir, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.writeFileSync(path.join(orchestrateDir, 'project.md'),
+      `# Orchestrate — test\nlast_updated: 2026-01-01T00:00:00Z\n\n## Shared Context\n\n## Task Registry\n| ID | summary | mode | current_phase | status | last_activity |\n|----|---------|------|---------------|--------|---------------|\n| test-gated | Test Task | ${mode} | 1 | ${status} | 2026-01-01T00:00:00Z |\n`);
+  }
+
+  test('approve auto: sets status=pending mode=auto', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'approve-test-'));
+    makeTestProject(tmp);
+    const result = approveRegistryTask(tmp, 'test-gated', 'auto');
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'pending');
+    assert.equal(result.mode, 'auto');
+    const content = fs.readFileSync(path.join(tmp, '.orchestrate', 'project.md'), 'utf8');
+    assert.ok(/\|\s*test-gated\s*\|[^|]*\|\s*auto\s*\|[^|]*\|\s*pending\s*\|/.test(content), 'registry should show auto+pending');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('cancel: sets status=failed', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cancel-test-'));
+    makeTestProject(tmp);
+    const result = approveRegistryTask(tmp, 'test-gated', 'cancel');
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'failed');
+    const content = fs.readFileSync(path.join(tmp, '.orchestrate', 'project.md'), 'utf8');
+    assert.ok(/\|\s*test-gated\s*\|[^|]*\|\s*gated\s*\|[^|]*\|\s*failed\s*\|/.test(content), 'registry should show failed');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('returns error when task not awaiting_go', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'approve-err-test-'));
+    makeTestProject(tmp, 'running');
+    const result = approveRegistryTask(tmp, 'test-gated', 'auto');
+    assert.ok(result.error, 'should return error for non-awaiting_go task');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('appends approval entry to heartbeat.log', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'approve-hb-test-'));
+    makeTestProject(tmp);
+    approveRegistryTask(tmp, 'test-gated', 'auto');
+    const hb = fs.readFileSync(path.join(tmp, '.orchestrate', 'logs', 'heartbeat.log'), 'utf8');
+    assert.ok(hb.includes('dashboard — approved go auto gated task test-gated'), 'heartbeat should record approval');
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

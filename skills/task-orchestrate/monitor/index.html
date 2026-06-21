@@ -295,6 +295,31 @@
     padding: 2px 8px;
   }
   .section-toggle:hover { background: #1c2f4f; }
+  .btn-approve {
+    background: #1a3d1a;
+    border: 1px solid #238636;
+    border-radius: 4px;
+    color: #3fb950;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    margin-right: 6px;
+    padding: 3px 10px;
+  }
+  .btn-approve:hover:not(:disabled) { background: #1f5c1f; }
+  .btn-approve:disabled { opacity: 0.5; cursor: default; }
+  .btn-cancel {
+    background: #2d1515;
+    border: 1px solid #da3633;
+    border-radius: 4px;
+    color: #f85149;
+    cursor: pointer;
+    font-size: 12px;
+    margin-right: 6px;
+    padding: 3px 10px;
+  }
+  .btn-cancel:hover:not(:disabled) { background: #3d1a1a; }
+  .btn-cancel:disabled { opacity: 0.5; cursor: default; }
   .expand-area {
     display: none;
     margin-top: 10px;
@@ -1304,6 +1329,17 @@ function renderTasks() {
       ? `<span class="badge ${blocked ? 'badge-blocked' : 'badge-approval'}">${esc(row.approvalLabel || 'Approval required')}</span>`
       : '';
 
+    const isGated = row.status === 'awaiting_go';
+    const gatedActions = isGated ? `
+    <div style="margin-top:8px;display:flex;align-items:center;flex-wrap:wrap;gap:4px;">
+      <button class="section-toggle" onclick="toggleInboxPreview('${safeId}', '${esc(id)}')">Inbox Preview</button>
+      <button class="btn-approve" onclick="approveGatedTask(this,'${esc(id)}','auto')" title="Approve and run automatically">▶ Go Auto</button>
+      <button class="btn-cancel" onclick="approveGatedTask(this,'${esc(id)}','cancel')" title="Cancel this gated task">✗ Cancel</button>
+    </div>
+    <div class="expand-area" id="inbox-${safeId}">
+      <pre class="content-block" id="inbox-content-${safeId}" style="color:var(--muted);font-size:12px;">Loading…</pre>
+    </div>` : '';
+
     return `
 <div class="${cardCls}">
   <div class="card-header">
@@ -1316,6 +1352,7 @@ function renderTasks() {
   <div class="card-body">
     <div class="summary">${esc(row.summary || '(no summary)')}</div>
     ${phaseBar(row.current_phase, totalPhases)}
+    ${gatedActions}
     <div class="actions" style="margin-top:8px;">
       ${hasDetails ? `<button class="section-toggle" onclick="toggleDetails('${safeId}')">Details</button>` : ''}
       <button class="section-toggle" onclick="toggleLogs('${safeId}', '${esc(id)}')">Logs</button>
@@ -1338,6 +1375,59 @@ function renderTasks() {
 function toggleDetails(safeId) {
   const el = document.getElementById('details-' + safeId);
   if (el) el.classList.toggle('open');
+}
+
+async function toggleInboxPreview(safeId, taskId) {
+  const area = document.getElementById('inbox-' + safeId);
+  if (!area) return;
+  const isOpen = area.classList.contains('open');
+  if (isOpen) { area.classList.remove('open'); return; }
+  area.classList.add('open');
+  const contentEl = document.getElementById('inbox-content-' + safeId);
+  if (contentEl && contentEl.dataset.loaded) return;
+  try {
+    const res = await fetch('/api/task-details?id=' + encodeURIComponent(taskId));
+    const data = await res.json();
+    if (!contentEl) return;
+    if (data.inboxContent) {
+      contentEl.textContent = data.inboxContent;
+      contentEl.style.color = '';
+    } else {
+      contentEl.textContent = data.error || 'No inbox file found for this task.';
+      contentEl.style.color = 'var(--muted)';
+    }
+    contentEl.dataset.loaded = '1';
+  } catch (e) {
+    if (contentEl) { contentEl.textContent = 'Failed to load: ' + e.message; contentEl.style.color = 'var(--danger)'; }
+  }
+}
+
+async function approveGatedTask(btn, taskId, mode) {
+  if (btn.disabled) return;
+  const label = mode === 'cancel' ? 'Cancelling…' : 'Approving…';
+  btn.disabled = true;
+  btn.textContent = label;
+  const siblingBtns = btn.parentElement.querySelectorAll('button');
+  siblingBtns.forEach(b => { b.disabled = true; });
+  try {
+    const res = await fetch('/api/task-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: taskId, mode }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      alert('Error: ' + data.error);
+      siblingBtns.forEach(b => { b.disabled = false; });
+      btn.textContent = mode === 'cancel' ? '✗ Cancel' : '▶ Go Auto';
+    } else {
+      await fetchTasks();
+    }
+  } catch (e) {
+    alert('Request failed: ' + e.message);
+    siblingBtns.forEach(b => { b.disabled = false; });
+    btn.textContent = mode === 'cancel' ? '✗ Cancel' : '▶ Go Auto';
+  }
 }
 
 async function toggleLogs(safeId, taskId) {
