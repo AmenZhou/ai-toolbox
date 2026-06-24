@@ -773,7 +773,8 @@ function findInboxSourceForTask(logsDir, inboxDir, summary) {
   if (!summary) return null;
   const heartbeatContent = readFileSafe(path.join(logsDir, 'heartbeat.log')) || '';
   const esc = summary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`\\] inbox — registered \\(gated\\) "${esc}" from (?:gated/)?(.+\\.md)`, 'i');
+  // Match both gated and non-gated registrations
+  const re = new RegExp(`\\] inbox — registered (?:\\(gated\\) )?"${esc}" from (?:gated/)?(.+\\.md)`, 'i');
   const lines = heartbeatContent.split('\n').reverse();
   for (const line of lines) {
     const m = line.match(re);
@@ -785,6 +786,58 @@ function findInboxSourceForTask(logsDir, inboxDir, summary) {
       const content = readFileSafe(candidate);
       if (content) return { content, filename: basename };
     }
+  }
+  return null;
+}
+
+/**
+ * Extract a short excerpt from the ## Goal section of an inbox file.
+ * @param {string|null} inboxContent
+ * @returns {string|null}
+ */
+function getGoalExcerpt(inboxContent) {
+  if (!inboxContent) return null;
+  const m = inboxContent.match(/^## Goal\s*\n([\s\S]*?)(?=\n## |\n# |$)/m);
+  if (!m) return null;
+  return m[1].trim().slice(0, 280).replace(/\s+/g, ' ');
+}
+
+/**
+ * Extract why a needs_human task is blocked.
+ * Checks for explicit BLOCKED pattern, then returns first incomplete phase name.
+ * @param {string|null} taskContent
+ * @returns {string|null}
+ */
+function getBlockingReason(taskContent) {
+  if (!taskContent) return null;
+  const blockedMatch = taskContent.match(/BLOCKED until (\S+)/i);
+  if (blockedMatch) return `Waiting for ${blockedMatch[1]} to complete`;
+  // First phase without ✓ complete
+  const allPhases = [...taskContent.matchAll(/### Phase \d+: ([^\n]+)\n([\s\S]*?)(?=### Phase \d+:|## OPERATING|$)/g)];
+  for (const pm of allPhases) {
+    if (!pm[2].includes('status: ✓ complete')) {
+      const name = pm[1].replace(/\s*\[.*$/, '').trim();
+      return `Blocked at: ${name}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Try to find an inbox file matching by summary, with fuzzy fallback on prefix.
+ * Extends findInboxSourceForTask with partial-match when title diverged after registration.
+ * @param {string} logsDir
+ * @param {string} inboxDir
+ * @param {string} summary
+ * @returns {{ content: string, filename: string } | null}
+ */
+function findInboxSource(logsDir, inboxDir, summary) {
+  const exact = findInboxSourceForTask(logsDir, inboxDir, summary);
+  if (exact) return exact;
+  // Fuzzy: try summary truncated at first '(' or ':' (handles diverged titles)
+  const prefix = summary.split(/[:(]/)[0].trim();
+  if (prefix && prefix !== summary) {
+    return findInboxSourceForTask(logsDir, inboxDir, prefix);
   }
   return null;
 }
@@ -815,7 +868,7 @@ function approveRegistryTask(cwd, taskId, goMode) {
     if (cells[0] !== taskId) return line;
     if (cells[4] !== 'awaiting_go') return line;
     foundRow = { id: cells[0], summary: cells[1], originalMode: cells[2] };
-    const newMode = goMode === 'cancel' ? cells[2] : 'auto';
+    const newMode = goMode === 'cancel' ? cells[2] : goMode === 'gated' ? 'gated' : 'auto';
     const newStatus = goMode === 'cancel' ? 'failed' : 'pending';
     return `| ${cells[0]} | ${cells[1]} | ${newMode} | ${cells[3]} | ${newStatus} | ${now} |`;
   });
@@ -824,7 +877,7 @@ function approveRegistryTask(cwd, taskId, goMode) {
 
   fs.writeFileSync(projectMdPath, newLines.join('\n'));
 
-  const verb = goMode === 'cancel' ? 'cancelled' : 'approved go auto';
+  const verb = goMode === 'cancel' ? 'cancelled' : goMode === 'gated' ? 'approved go (gated)' : 'approved go auto';
   try {
     const hbPath = path.join(cwd, '.orchestrate', 'logs', 'heartbeat.log');
     fs.appendFileSync(hbPath, `[${now}] dashboard — ${verb} gated task ${taskId} "${foundRow.summary}"\n`);
@@ -834,8 +887,321 @@ function approveRegistryTask(cwd, taskId, goMode) {
     success: true,
     id: taskId,
     status: goMode === 'cancel' ? 'failed' : 'pending',
-    mode: goMode === 'cancel' ? foundRow.originalMode : 'auto',
+    mode: goMode === 'cancel' ? foundRow.originalMode : goMode,
   };
+}
+
+/**
+ * Reset a needs_human/failed/awaiting_go task back to pending so tend will re-run it.
+ * @param {string} cwd
+ * @param {string} taskId
+ * @returns {{ success: boolean, id: string, status: string } | { error: string }}
+ */
+function rerunTask(cwd, taskId) {
+  const projectMdPath = path.join(cwd, '.orchestrate', 'project.md');
+  let content = readFileSafe(projectMdPath);
+  if (!content) return { error: 'project.md not found' };
+  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  let found = null;
+  const newLines = content.split('\n').map(line => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) return line;
+    const rawCells = trimmed.split('|');
+    const cells = rawCells.slice(1, rawCells.length - 1).map(c => c.trim());
+    if (cells.length < 6 || cells[0] !== taskId) return line;
+    if (!['needs_human', 'failed', 'awaiting_go'].includes(cells[4])) return line;
+    found = { id: cells[0], summary: cells[1], prevStatus: cells[4] };
+    return `| ${cells[0]} | ${cells[1]} | auto | ${cells[3]} | pending | ${now} |`;
+  });
+  if (!found) return { error: `task ${taskId} not eligible for rerun (must be needs_human/failed/awaiting_go)` };
+  fs.writeFileSync(projectMdPath, newLines.join('\n'));
+  try {
+    const hbPath = path.join(cwd, '.orchestrate', 'logs', 'heartbeat.log');
+    fs.appendFileSync(hbPath, `[${now}] dashboard — rerun queued ${taskId} "${found.summary}" (was ${found.prevStatus})\n`);
+  } catch (_) {}
+  return { success: true, id: taskId, status: 'pending' };
+}
+
+// ── pg review helpers ─────────────────────────────────────────────────────────
+
+const PG_REVIEW_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function cleanupStalePgReviews(cwd) {
+  const dirs = pgReviewsPaths(cwd);
+  const now = Date.now();
+  for (const dir of [dirs.pending, dirs.processed, dirs.approved]) {
+    let files;
+    try { files = fs.readdirSync(dir); } catch (_) { continue; }
+    for (const name of files) {
+      const filePath = path.join(dir, name);
+      try {
+        const stat = fs.statSync(filePath);
+        if (now - stat.mtimeMs > PG_REVIEW_MAX_AGE_MS) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (_) { /* ignore */ }
+    }
+  }
+}
+
+function pgReviewsPaths(cwd) {
+  const base = path.join(cwd, '.orchestrate', 'pg-reviews');
+  return {
+    base,
+    pending: path.join(base, 'pending'),
+    processed: path.join(base, 'processed'),
+    approved: path.join(base, 'approved'),
+  };
+}
+
+function readPgReviewJson(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+function listPgReviews(cwd) {
+  cleanupStalePgReviews(cwd);
+  const dirs = pgReviewsPaths(cwd);
+  const pending = [];
+  const processed = [];
+
+  for (const bucket of ['pending', 'processed']) {
+    const dir = dirs[bucket];
+    let entries;
+    try {
+      entries = fs.readdirSync(dir);
+    } catch (_) {
+      continue;
+    }
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      const review = readPgReviewJson(path.join(dir, name));
+      if (!review) continue;
+      if (bucket === 'pending') pending.push(review);
+      else processed.push(review);
+    }
+  }
+
+  pending.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  processed.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  return {
+    pending,
+    processed: processed.slice(0, 20),
+    pendingCount: pending.length,
+  };
+}
+
+/**
+ * Approve or dismiss a pending pg review. Never executes SQL directly.
+ * @param {string} cwd
+ * @param {string} id
+ * @param {'approve'|'dismiss'} action
+ */
+function approvePgReview(cwd, id, action) {
+  const dirs = pgReviewsPaths(cwd);
+  const pendingPath = path.join(dirs.pending, `${id}.json`);
+  const review = readPgReviewJson(pendingPath);
+  if (!review) return { error: `review ${id} not found in pending` };
+
+  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  review.status = action === 'approve' ? 'approved' : 'dismissed';
+  review.resolved_at = now;
+
+  fs.mkdirSync(dirs.processed, { recursive: true });
+  fs.mkdirSync(dirs.approved, { recursive: true });
+
+  fs.writeFileSync(path.join(dirs.processed, `${id}.json`), JSON.stringify(review, null, 2));
+  fs.unlinkSync(pendingPath);
+
+  if (action === 'approve') {
+    fs.writeFileSync(
+      path.join(dirs.approved, `${id}.token`),
+      `${review.script_path}\n${now}\n`,
+    );
+  }
+
+  try {
+    const hbPath = path.join(cwd, '.orchestrate', 'logs', 'heartbeat.log');
+    fs.appendFileSync(hbPath, `[${now}] dashboard — pg review ${action}d ${id}\n`);
+  } catch (_) {}
+
+  return { success: true, id, status: review.status };
+}
+
+function handlePgReviews(res) {
+  const data = listPgReviews(CWD);
+  send(res, 200, {
+    ...data,
+    attention: { pendingCount: data.pendingCount },
+  });
+}
+
+async function handlePgApprove(req, res) {
+  let payload;
+  try {
+    payload = await readJsonBody(req);
+  } catch (_) {
+    send(res, 400, { error: 'invalid JSON body' });
+    return;
+  }
+  const id = (payload.id || '').trim();
+  const action = payload.action === 'dismiss' ? 'dismiss' : 'approve';
+  if (!id) {
+    send(res, 400, { error: 'id required' });
+    return;
+  }
+  try {
+    const result = approvePgReview(CWD, id, action);
+    send(res, result.error ? 404 : 200, result);
+  } catch (e) {
+    send(res, 500, { error: e.message || 'internal error' });
+  }
+}
+
+// ── kube review helpers ───────────────────────────────────────────────────────
+
+const KUBE_REVIEW_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function cleanupStaleKubeReviews(cwd) {
+  const dirs = kubeReviewsPaths(cwd);
+  const now = Date.now();
+  for (const dir of [dirs.pending, dirs.processed, dirs.approved]) {
+    let files;
+    try { files = fs.readdirSync(dir); } catch (_) { continue; }
+    for (const name of files) {
+      const filePath = path.join(dir, name);
+      try {
+        const stat = fs.statSync(filePath);
+        if (now - stat.mtimeMs > KUBE_REVIEW_MAX_AGE_MS) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (_) { /* ignore */ }
+    }
+  }
+}
+
+function kubeReviewsPaths(cwd) {
+  const base = path.join(cwd, '.orchestrate', 'kube-reviews');
+  return {
+    base,
+    pending: path.join(base, 'pending'),
+    processed: path.join(base, 'processed'),
+    approved: path.join(base, 'approved'),
+  };
+}
+
+function readKubeReviewJson(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+function listKubeReviews(cwd) {
+  cleanupStaleKubeReviews(cwd);
+  const dirs = kubeReviewsPaths(cwd);
+  const pending = [];
+  const processed = [];
+
+  for (const bucket of ['pending', 'processed']) {
+    const dir = dirs[bucket];
+    let entries;
+    try {
+      entries = fs.readdirSync(dir);
+    } catch (_) {
+      continue;
+    }
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      const review = readKubeReviewJson(path.join(dir, name));
+      if (!review) continue;
+      if (bucket === 'pending') pending.push(review);
+      else processed.push(review);
+    }
+  }
+
+  pending.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  processed.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  return {
+    pending,
+    processed: processed.slice(0, 20),
+    pendingCount: pending.length,
+  };
+}
+
+/**
+ * Approve or dismiss a pending kube review. Never executes cluster commands.
+ * @param {string} cwd
+ * @param {string} id
+ * @param {'approve'|'dismiss'} action
+ */
+function approveKubeReview(cwd, id, action) {
+  const dirs = kubeReviewsPaths(cwd);
+  const pendingPath = path.join(dirs.pending, `${id}.json`);
+  const review = readKubeReviewJson(pendingPath);
+  if (!review) return { error: `review ${id} not found in pending` };
+
+  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  review.status = action === 'approve' ? 'approved' : 'dismissed';
+  review.resolved_at = now;
+
+  fs.mkdirSync(dirs.processed, { recursive: true });
+  fs.mkdirSync(dirs.approved, { recursive: true });
+
+  fs.writeFileSync(path.join(dirs.processed, `${id}.json`), JSON.stringify(review, null, 2));
+  fs.unlinkSync(pendingPath);
+
+  if (action === 'approve') {
+    fs.writeFileSync(
+      path.join(dirs.approved, `${id}.token`),
+      `${review.script_path}\n${now}\n`,
+    );
+  }
+
+  try {
+    const hbPath = path.join(cwd, '.orchestrate', 'logs', 'heartbeat.log');
+    fs.appendFileSync(hbPath, `[${now}] dashboard — kube review ${action}d ${id}\n`);
+  } catch (_) {}
+
+  return { success: true, id, status: review.status };
+}
+
+function handleKubeReviews(res) {
+  const data = listKubeReviews(CWD);
+  send(res, 200, {
+    ...data,
+    attention: { pendingCount: data.pendingCount },
+  });
+}
+
+async function handleKubeApprove(req, res) {
+  let payload;
+  try {
+    payload = await readJsonBody(req);
+  } catch (_) {
+    send(res, 400, { error: 'invalid JSON body' });
+    return;
+  }
+  const id = (payload.id || '').trim();
+  const action = payload.action === 'dismiss' ? 'dismiss' : 'approve';
+  if (!id) {
+    send(res, 400, { error: 'id required' });
+    return;
+  }
+  try {
+    const result = approveKubeReview(CWD, id, action);
+    send(res, result.error ? 404 : 200, result);
+  } catch (e) {
+    send(res, 500, { error: e.message || 'internal error' });
+  }
 }
 
 // ── route handlers ────────────────────────────────────────────────────────────
@@ -855,21 +1221,35 @@ function handleTasks(res) {
     });
   }
 
-  const registry = parseRegistry(content).map(row => ({
-    ...row,
-    ...taskApprovalInfo(row, tendMode),
-  }));
+  const logsDir = path.join(CWD, '.orchestrate', 'logs');
+  const inboxDir = path.join(CWD, '.orchestrate', 'inbox');
+  // Pre-load task files so we can compute blockingReason alongside goalExcerpt
+  const taskFileCache = {};
+  for (const row of parseRegistry(content)) {
+    if (!row.id || row.status === 'complete') continue;
+    const taskPath = path.join(CWD, '.orchestrate', 'tasks', `${row.id}.md`);
+    const tc = readFileSafe(taskPath);
+    if (tc !== null) taskFileCache[row.id] = tc;
+  }
+
+  const SHOW_GOAL_STATUSES = new Set(['awaiting_go', 'needs_human', 'pending', 'running']);
+  const registry = parseRegistry(content).map(row => {
+    const base = { ...row, ...taskApprovalInfo(row, tendMode) };
+    if (SHOW_GOAL_STATUSES.has(row.status)) {
+      const found = findInboxSource(logsDir, inboxDir, row.summary);
+      base.goalExcerpt = getGoalExcerpt(found ? found.content : null);
+    } else {
+      base.goalExcerpt = null;
+    }
+    base.blockingReason = row.status === 'needs_human'
+      ? getBlockingReason(taskFileCache[row.id] || null)
+      : null;
+    return base;
+  });
   const tasks = {};
 
-  for (const row of registry) {
-    if (!row.id) continue;
-    if (row.status !== 'complete') {
-      const taskPath = path.join(CWD, '.orchestrate', 'tasks', `${row.id}.md`);
-      const taskContent = readFileSafe(taskPath);
-      if (taskContent !== null) {
-        tasks[row.id] = taskContent;
-      }
-    }
+  for (const id of Object.keys(taskFileCache)) {
+    tasks[id] = taskFileCache[id];
   }
 
   const approvalTasks = registry.filter(r => r.needsApproval && r.status !== 'complete');
@@ -1095,6 +1475,120 @@ function handleTaskDetails(res, query) {
   send(res, 200, { taskContent, inboxContent, inboxFilename });
 }
 
+async function handleTaskRerun(req, res) {
+  let payload;
+  try { payload = await readJsonBody(req); } catch (_) { send(res, 400, { error: 'invalid JSON body' }); return; }
+  const taskId = (payload.id || '').trim();
+  if (!taskId) { send(res, 400, { error: 'id required' }); return; }
+  const result = rerunTask(CWD, taskId);
+  if (result.error) { send(res, 400, result); return; }
+  send(res, 200, result);
+}
+
+async function handleTaskRunnow(req, res) {
+  let payload;
+  try { payload = await readJsonBody(req); } catch (_) { send(res, 400, { error: 'invalid JSON body' }); return; }
+  const taskId = (payload.id || '').trim();
+  if (!taskId) { send(res, 400, { error: 'id required' }); return; }
+  const result = rerunTask(CWD, taskId);
+  if (result.error) { send(res, 400, result); return; }
+  // Fire-and-forget: kick a tend cycle
+  try {
+    const runJobPath = path.join(CWD, '.orchestrate', 'bin', 'run-job.sh');
+    if (fs.existsSync(runJobPath)) {
+      require('child_process').spawn('bash', [runJobPath, 'tend'], {
+        detached: true, stdio: 'ignore', cwd: CWD,
+      }).unref();
+    }
+  } catch (_) {}
+  send(res, 200, { ...result, tended: true });
+}
+
+async function handleTaskResolve(req, res) {
+  let payload;
+  try { payload = await readJsonBody(req); } catch (_) { send(res, 400, { error: 'invalid JSON body' }); return; }
+  const taskId = (payload.id || '').trim();
+  const resolution = (payload.resolution || '').trim();
+  if (!taskId) { send(res, 400, { error: 'id required' }); return; }
+  if (!resolution) { send(res, 400, { error: 'resolution text required' }); return; }
+
+  const taskFilePath = path.join(CWD, '.orchestrate', 'tasks', `${taskId}.md`);
+  let taskContent;
+  try { taskContent = fs.readFileSync(taskFilePath, 'utf8'); } catch (_) {
+    send(res, 404, { error: `task file not found: ${taskId}.md` }); return;
+  }
+
+  // Find the first ### Phase N section without "status: ✓ complete"
+  const phaseRegex = /^(### Phase (\d+):.*?)(?=^### Phase \d+:|^## |$)/gms;
+  let blockingPhaseNum = null;
+  let updatedContent = taskContent;
+  let matchOffset = 0;
+
+  const lines = taskContent.split('\n');
+  let inPhase = false;
+  let currentPhaseNum = null;
+  let insertIdx = -1;
+  let phaseComplete = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const phaseHeader = line.match(/^### Phase (\d+):/);
+    if (phaseHeader) {
+      // Check if previous phase was incomplete
+      if (inPhase && !phaseComplete && insertIdx !== -1 && blockingPhaseNum === null) {
+        blockingPhaseNum = currentPhaseNum;
+        // Insert human_resolution after the status line within this phase
+        lines.splice(insertIdx + 1, 0, `human_resolution: ${resolution}`);
+        break;
+      }
+      inPhase = true;
+      currentPhaseNum = parseInt(phaseHeader[1], 10);
+      phaseComplete = false;
+      insertIdx = i;
+    } else if (inPhase) {
+      if (line.trim().startsWith('status:')) {
+        if (line.includes('✓ complete')) {
+          phaseComplete = true;
+        }
+        insertIdx = i;
+      }
+    }
+  }
+
+  // Handle last phase if it was the blocking one
+  if (blockingPhaseNum === null && inPhase && !phaseComplete && insertIdx !== -1) {
+    blockingPhaseNum = currentPhaseNum;
+    lines.splice(insertIdx + 1, 0, `human_resolution: ${resolution}`);
+  }
+
+  if (blockingPhaseNum === null) {
+    send(res, 400, { error: 'no incomplete phase found in task file' }); return;
+  }
+
+  updatedContent = lines.join('\n');
+  fs.writeFileSync(taskFilePath, updatedContent);
+
+  const result = rerunTask(CWD, taskId);
+  if (result.error) { send(res, 400, result); return; }
+
+  try {
+    const runJobPath = path.join(CWD, '.orchestrate', 'bin', 'run-job.sh');
+    if (fs.existsSync(runJobPath)) {
+      require('child_process').spawn('bash', [runJobPath, 'tend'], {
+        detached: true, stdio: 'ignore', cwd: CWD,
+      }).unref();
+    }
+  } catch (_) {}
+
+  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  try {
+    const hbPath = path.join(CWD, '.orchestrate', 'logs', 'heartbeat.log');
+    fs.appendFileSync(hbPath, `[${now}] dashboard — resolve injected phase ${blockingPhaseNum} of ${taskId}: "${resolution.slice(0, 80)}"\n`);
+  } catch (_) {}
+
+  send(res, 200, { ok: true, phase: blockingPhaseNum, tended: true });
+}
+
 async function handleTaskApprove(req, res) {
   let payload;
   try {
@@ -1104,7 +1598,7 @@ async function handleTaskApprove(req, res) {
     return;
   }
   const taskId = (payload.id || '').trim();
-  const goMode = payload.mode === 'cancel' ? 'cancel' : 'auto';
+  const goMode = payload.mode === 'cancel' ? 'cancel' : payload.mode === 'gated' ? 'gated' : 'auto';
   if (!taskId) {
     send(res, 400, { error: 'id required' });
     return;
@@ -1114,6 +1608,20 @@ async function handleTaskApprove(req, res) {
     send(res, result.error ? 404 : 200, result);
   } catch (e) {
     send(res, 500, { error: e.message || 'internal error' });
+  }
+}
+
+async function handleLaunchdStart(req, res) {
+  let payload;
+  try { payload = await readJsonBody(req); } catch (_) { send(res, 400, { error: 'invalid JSON body' }); return; }
+  const label = (payload.label || '').trim();
+  if (!label || !/^[\w.-]+$/.test(label)) { send(res, 400, { error: 'valid label required' }); return; }
+  try {
+    const uid = require('child_process').execSync('id -u', { encoding: 'utf8' }).trim();
+    require('child_process').execSync(`launchctl kickstart -k gui/${uid}/${label}`, { encoding: 'utf8', timeout: 5000 });
+    send(res, 200, { ok: true, label });
+  } catch (e) {
+    send(res, 500, { error: e.message || 'kickstart failed', label });
   }
 }
 
@@ -1544,6 +2052,30 @@ const server = http.createServer(async (req, res) => {
     await handleTaskApprove(req, res);
     return;
   }
+  if (pathname === '/api/task-rerun' && req.method === 'POST') {
+    await handleTaskRerun(req, res);
+    return;
+  }
+  if (pathname === '/api/task-runnow' && req.method === 'POST') {
+    await handleTaskRunnow(req, res);
+    return;
+  }
+  if (pathname === '/api/task-resolve' && req.method === 'POST') {
+    await handleTaskResolve(req, res);
+    return;
+  }
+  if (pathname === '/api/kube-approve' && req.method === 'POST') {
+    await handleKubeApprove(req, res);
+    return;
+  }
+  if (pathname === '/api/pg-approve' && req.method === 'POST') {
+    await handlePgApprove(req, res);
+    return;
+  }
+  if (pathname === '/api/launchd-start' && req.method === 'POST') {
+    await handleLaunchdStart(req, res);
+    return;
+  }
 
   if (req.method !== 'GET') {
     res.writeHead(405, { 'Content-Type': 'text/plain' });
@@ -1565,6 +2097,10 @@ const server = http.createServer(async (req, res) => {
     handleLogs(res, parsed.query);
   } else if (pathname === '/api/inbox') {
     handleInbox(res);
+  } else if (pathname === '/api/kube-reviews') {
+    handleKubeReviews(res);
+  } else if (pathname === '/api/pg-reviews') {
+    handlePgReviews(res);
   } else if (pathname === '/api/heartbeat') {
     handleHeartbeat(res);
   } else if (pathname === '/api/agent-status') {
@@ -1583,6 +2119,9 @@ if (require.main === module) {
     console.log('server.js changed — restarting');
     process.exit(0);
   });
+
+  cleanupStaleKubeReviews(CWD);
+  cleanupStalePgReviews(CWD);
 
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`task-orchestrate monitor listening on http://127.0.0.1:${PORT}`);
@@ -1637,5 +2176,13 @@ module.exports = {
   synthesizeHistoryStub,
   APPROVAL_STATUSES,
   findInboxSourceForTask,
+  getGoalExcerpt,
   approveRegistryTask,
+  rerunTask,
+  kubeReviewsPaths,
+  listKubeReviews,
+  approveKubeReview,
+  pgReviewsPaths,
+  listPgReviews,
+  approvePgReview,
 };

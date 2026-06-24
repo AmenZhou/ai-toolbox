@@ -90,6 +90,8 @@ skill_has '## Inbox Mode' "SKILL.md has Inbox Mode section"
 skill_has 'deferred_at:' "T-2 skips deferred inbox files"
 skill_has 'Gated tasks never auto-execute' "T-4 awaiting_go tasks are never auto-executed (gated fix 2026-06-21)"
 skill_has 'auto-resolved needs_human' "T-4 auto-resolves needs_human when all phases complete"
+skill_has 'self-unblocked' "T-4 second-pass auto-resolution logs self-unblocked to heartbeat"
+skill_has 'Second-Pass Auto-Resolution Check' "T-4 has second-pass check before surfacing needs_human to human"
 skill_has 'physically move' "T-2 requires physical move to processed/ (not processed_as in place)"
 if grep -q 'finding_hashes' "$ANALYZER_SKILL" 2>/dev/null; then
   ok "inbox-log-analyzer uses finding hash ledger"
@@ -118,6 +120,7 @@ skill_has 'orchestrate-history' "completion archives to orchestrate-history"
 skill_has 'reasoning phase.*agent/premium' "executor table maps reasoning phases to agent/premium"
 skill_has 'Mandatory final phase.*Test & Verify' "plan requires mandatory Test & Verify final phase"
 skill_has 'Background Job Dry-Run' "verify phase mandates dry-run for background jobs"
+skill_has 'Project-local smoke scripts' "verify phase mandates running inbox-referenced smoke scripts"
 skill_has 'disqualifies PASS' "critic gate: any ✗ in AC → PARTIAL minimum"
 skill_has 'Premium: retry 1.*premium; retry 2.*halt' "premium retry cap documented (retry 2 → halt)"
 skill_has 'confidence-only gate' "critic applies confidence gate for simple/instructional phases"
@@ -369,6 +372,9 @@ skill_has '\| `inbox go auto` \|' "invocation table includes inbox go auto"
 skill_has 'improvements-only' "inbox mode supports improvements-only triage"
 skill_has 'source: self' "T-2 handles source: self inbox items"
 skill_has 'awaiting_go.*tasks are never auto-executed' "T-4 awaiting_go skipped in tend go auto queue drain"
+skill_has 'parallel batches of up to 3' "T-4 tend go auto dispatches parallel batches of 3"
+skill_has 'TASK RESULT' "parallel batch subagent returns TASK RESULT block"
+skill_has 'tend go auto <ID>' "invocation modes includes targeted single-task mode"
 skill_has 'Do \*\*not\*\* append to `skill-improvement-backlog.md`' "completion routes suggestions to inbox not backlog"
 skill_has 'inbox/gated/improvement-' "self-improvement writes to inbox/gated/"
 
@@ -554,6 +560,12 @@ if [[ -f "$MONITOR_SERVER" ]] && grep -q 'buildCompletionHints' "$MONITOR_SERVER
   ok "monitor buildCompletionHints infers completion time from heartbeat/logs"
 else
   fail "monitor server missing buildCompletionHints for History timestamps"
+fi
+
+if [[ -f "$MONITOR_SERVER" ]] && grep -q 'isFutureTimestamp' "$MONITOR_SERVER" && grep -q 'isFutureTimestamp(filenameIso)' "$MONITOR_SERVER"; then
+  ok "resolveHistoryDatetime rejects future archive filename timestamps"
+else
+  fail "monitor server missing isFutureTimestamp guard on archive filename"
 fi
 
 if [[ -f "$MONITOR_INDEX" ]] && grep -q 'parseIsoUtc' "$MONITOR_INDEX"; then

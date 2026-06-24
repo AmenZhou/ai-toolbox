@@ -24,7 +24,8 @@ Detect which mode applies from the input:
 | Input | Mode |
 |-------|------|
 | `tend` | Watchdog — scan registry, drain inbox, notify on pending tasks |
-| `tend go auto` | Watchdog + auto-execute — drain inbox, register tasks, execute all `pending` tasks in auto mode; `awaiting_go` (gated) tasks always require explicit human "go" (launchd default) |
+| `tend go auto` | Watchdog + auto-execute — drain inbox, register tasks, execute `pending` tasks in parallel batches of up to 3; `awaiting_go` (gated) tasks always require explicit human "go" (launchd default) |
+| `tend go auto <ID>` | Execute only task `<ID>` in auto mode; skip T-1/T-2 drain and T-4 general scan; used by parallel dispatch when run-job.sh pre-assigns a task |
 | `inbox` | Show pending inbox items, wait for triage |
 | `inbox go` | Triage inbox, then execute approved items (gated — phase checkpoints) |
 | `inbox go auto` | Triage inbox, then execute all approved items unattended |
@@ -229,17 +230,48 @@ For each task in the registry:
 
 **`pending` tasks (from inbox drain this cycle OR already registered):**
 - **Mode `tend`:** Send `PushNotification`: `📋 [{N} new task(s) queued — type "go" or "go auto" to start]`. Log.
-- **Mode `tend go auto`:** Execute each pending task immediately in auto mode. For each task: create its `.orchestrate/tasks/{ID}.md` plan file if it doesn't exist, run the full execution loop (same as `go auto`), write per-task log to `.orchestrate/logs/{ID}-tend.log`. Do not send a push notification — execution is unattended. Append to heartbeat.log: `[<ISO>] tend-auto — executing "<task title>" ({ID})`.
+- **Mode `tend go auto`:** Execute pending tasks in **parallel batches of up to 3**. `awaiting_go` tasks are never auto-executed — skip during batch collection.
 
-  **This applies to ALL `pending` tasks in the registry**, not only those drained this cycle. `awaiting_go` tasks are never auto-executed — skip them during T-4 queue drain.
+  **Parallel batch execution protocol:**
+  1. Collect ALL `pending` task IDs from the registry (not just drained this cycle). Skip `awaiting_go`, `needs_human`, `running`, `complete`, `failed`.
+  2. Take the first batch of up to 3 IDs.
+  3. For each task in the batch: mark as `running` in project.md (sequential, before dispatch), create `.orchestrate/tasks/{ID}.md` plan file if missing. Append to heartbeat.log: `[<ISO>] tend-auto — dispatching "<task title>" ({ID}) [batch N]`.
+  4. Launch the batch as **parallel Agent calls** (max 3 simultaneous). Each agent prompt must include:
+     - Full task file content (`.orchestrate/tasks/{ID}.md`)
+     - SKILL.md Execution Loop instructions (paste relevant sections)
+     - Absolute working directory
+     - `## Shared Context` from project.md (verbatim)
+     - Instruction: "Run the full auto execution loop for this task. When all phases are done, end your response with a `## TASK RESULT` block: `status: complete|needs_human|failed`, `summary: <one line>`, `phases_done: N`."
+     - Instruction: "Do NOT update project.md — the parent session handles registry writes."
+  5. After **all agents in the batch return**: for each agent result — read `## TASK RESULT`, update project.md row (`running` → final status), run Completion sequence (archive, MANIFEST) for any `complete` tasks. Log each outcome.
+  6. **Blocked tasks never block the batch:** if an agent returns `needs_human` or `failed`, checkpoint its result immediately and continue — do not wait or retry within this batch. Log: `[<ISO>] tend-auto — task <ID> blocked (needs_human); continuing queue`.
+  7. If more `pending` tasks remain after the batch, repeat from step 2 with the next batch.
 
-  **Queue drain (tend-auto only):** After each task finishes — whether `complete`, `needs_human`, or `failed` — always continue to the next `pending` task. A stuck task must never block remaining queue items. Log each skip: `[<ISO>] tend-auto — task <ID> blocked (needs_human); continuing queue`.
+  **Mode `tend go auto <ID>`:** Execute ONLY task `<ID>`. Skip T-1/T-2 (run-job.sh already did cleanup/drain). Skip T-4 general scan. Find `.orchestrate/tasks/{ID}.md`, run the full auto execution loop, update project.md row on completion. Used when run-job.sh pre-assigns tasks to parallel agent sessions.
 
 **`needs_human` tasks:**
 - Read task file at `.orchestrate/tasks/{ID}.md`. If the file is missing, skip.
 - Count phase sections (`### Phase N`). If **every** phase has `status: ✓ complete`, run the normal **Completion** sequence inline: update registry row to `complete`, archive task file to `orchestrate-history/`, append MANIFEST entry, delete task file from `.orchestrate/tasks/`.
 - Append to heartbeat.log: `[<ISO>] tend — auto-resolved needs_human "<task title>" ({ID}) — all phases complete`
-- If any phase is incomplete or missing `✓ complete`, skip — leave registry at `needs_human`.
+- If any phase is incomplete or missing `✓ complete`: run the **Second-Pass Auto-Resolution Check** before leaving the task blocked.
+
+**Second-Pass Auto-Resolution Check (T-4 `needs_human` branch):**
+
+Before writing `needs_human` and skipping a task with incomplete phases, check these signals for automatic resolution. Read the task file's blocking phase blocks and project context:
+
+1. **Deferral language in phase ACs:** Scan the failed/incomplete phase's `acceptance_criteria_met:` block and blockers field for markers: "deferred", "deferred to", "deferred — <team>", "not a blocker", "closed", "no action needed", "Forbidden", "out of scope". If **all** incomplete ACs contain explicit deferral or closure language → auto-resolvable.
+
+2. **Report file closure:** If the task file or any phase block references a file path (e.g. `reports/phase3/hrbaca_capacity_report.md`), read that file. If it contains a `**Closed:**`, `**Status:** ✅`, or `**dsp-service GO/NO-GO verdict:**` section → auto-resolvable.
+
+3. **Downstream task completion:** Scan project.md registry for any task whose summary or ID is referenced in this task's file (e.g. "superseded by", "closes with", "see also `<ID>`"). If the referenced task is `complete` → auto-resolvable.
+
+**If ANY signal confirms auto-resolution:**
+- Inject into the blocking phase block in the task file: `human_resolution: Auto-resolved — all ACs satisfied or explicitly deferred per <evidence summary>. No human action required.`
+- Update project.md registry row: `status: pending`
+- Append to heartbeat.log: `[<ISO>] tend-auto — self-unblocked <ID>: <one-line reason>`
+- The task will be re-executed on the next T-4 pending scan or next tend cycle.
+
+**If none of the signals confirm:** fall through — leave registry at `needs_human`.
 
 **All other statuses:** skip.
 
@@ -312,7 +344,7 @@ When user provides plain text (via `inbox "..."` or bare text after display):
 4. Generate 2 `## Acceptance Criteria` bullets.
 5. Show structured preview; on approve, write to `.orchestrate/inbox/<slug>-<ISO>.md` (or `inbox/gated/` if user requests gated).
 
-Default new human items to `mode: gated` unless user says "auto".
+Default new human items to `mode: auto` unless user says "gated" (or write to `inbox/gated/`).
 
 ---
 
@@ -370,7 +402,7 @@ Precedence: reasoning > execution > simple > instructional.
 
 Read `## Shared Context` from `project.md` before planning — it contains durable decisions and constraints from prior tasks. Incorporate relevant context into the plan (phase design, executor choices, acceptance criteria).
 
-**Mandatory final phase:** Every plan must include a final `Test & Verify` phase `[inline · execution]`, numbered as Phase N (= total phases). Its acceptance criteria: (1) all output files declared in prior phases exist on disk, (2) detected test suite passes or "no test runner detected", (3) for any background script or launchd job changed: dry-run against a controlled environment passes in both happy-path and failure/recovery scenarios (see Background Job Dry-Run). Omit only for tasks that produce zero file changes (pure queries, documentation with no outputs).
+**Mandatory final phase:** Every plan must include a final `Test & Verify` phase `[inline · execution]`, numbered as Phase N (= total phases). Its acceptance criteria: (1) all output files declared in prior phases exist on disk, (2) detected test suite passes or "no test runner detected", (3) for any background script or launchd job changed: dry-run against a controlled environment passes in both happy-path and failure/recovery scenarios (see Background Job Dry-Run), (4) when inbox ACs or summary name a project-local smoke script, run it (see Project-local smoke scripts). Omit only for tasks that produce zero file changes (pure queries, documentation with no outputs).
 
 ```
 TASK PLAN — `<summary>`  Complexity: Lightweight|Moderate|Complex (N phases)
@@ -418,6 +450,10 @@ Update project.md registry row: `status: running`.
 **Ready phases** = all `depends_on` entries are `✓ complete` AND status is `pending`.
 
 ### Inline phase execution
+
+**human_resolution:** Before running (or retrying) a phase, check the phase block in the task file for a `human_resolution:` line. If present, prepend this to your context for the phase:
+> "Human resolved this block with: `<text>`. Proceed using this answer."
+After the phase completes `✓ complete`, strip the `human_resolution:` line from the task file (rewrite the phase block without that line).
 
 Run the phase directly with your own tools. When done, produce:
 
@@ -509,6 +545,20 @@ test_evidence: dry-run 3/3 scenarios pass; launchctl list com.orchestrate.rescue
 
 If a script has no controllable inputs (reads only live system state), document why dry-run is not feasible and use `launchctl list` + log inspection instead.
 
+### Project-local smoke scripts (Test & Verify)
+
+When an inbox task's **Goal**, **Acceptance Criteria**, or registry **summary** names a project-relative script (e.g. `examples/langgraph/smoke_pattern1_drop.py`), the Test & Verify phase MUST run that script from the project root — do not substitute file-existence or read-only checks.
+
+**Detection:** task summary, inbox AC bullets, or phase acceptance criteria mention a path ending in `.py`/`.sh`, or an explicit `python3`/`bash` command.
+
+**Execution:** run from project CWD; record exit code and tail output in `test_evidence` and `.orchestrate/logs/{ID}-verify.log`.
+
+**Examples:**
+- Summary "Pattern1 Smoke Test" → `python3 examples/langgraph/smoke_pattern1_drop.py`
+- AC "run `bash scripts/foo.sh`" → execute exactly that path relative to project root
+
+**Side effects:** smoke scripts that write to `.orchestrate/inbox/` may enqueue a follow-up tend cycle — note created paths in the verify log.
+
 ---
 
 ## Feedback → Decision → Execute (Steps A/B/C)
@@ -549,7 +599,7 @@ Simple/instructional: high/medium confidence → ✅, low → ⚠️.
   - **Gated / interactive auto:** Gate: `⏸ retry · skip · replan · abort · instruct`
   - **Tend-auto (invoked from `tend go auto`):** Do NOT gate. Log the block and move on:
     `[<ISO>] tend-auto — task <ID> blocked (needs_human); continuing queue`
-    Exit the current task's execution loop and proceed to the next `pending` task in T-4.
+    Exit the current task's execution loop. If running as a parallel batch subagent, return `## TASK RESULT` with `status: needs_human`. If running inline T-4, proceed to the next `pending` task or next batch.
 
 ---
 

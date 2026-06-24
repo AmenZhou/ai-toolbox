@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
-const { intervalLabel, buildLaunchdAgents, tendThrottleHint, parseTendHealth, readTendMode, readAgentConf, readRunner, readAgentStatus, isCursorIdeRunning, isTendGoAuto, taskApprovalInfo, parseInboxMeta, isCompletedInboxFile, manifestMatchesRegistry, archiveDateFromFilename, resolveHistoryDatetime, isPlaceholderTimestamp, isFutureTimestamp, buildCompletionHints, findHistoryEntry, loadHistoryEntries, buildHistoryRows, historyStats, historyCoverage, extractTaskIdFromFilename, collectTaskLogContent, synthesizeHistoryStub, findInboxSourceForTask, approveRegistryTask } = require('../server');
+const { intervalLabel, buildLaunchdAgents, tendThrottleHint, parseTendHealth, readTendMode, readAgentConf, readRunner, readAgentStatus, isCursorIdeRunning, isTendGoAuto, taskApprovalInfo, parseInboxMeta, isCompletedInboxFile, manifestMatchesRegistry, archiveDateFromFilename, resolveHistoryDatetime, isPlaceholderTimestamp, isFutureTimestamp, buildCompletionHints, findHistoryEntry, loadHistoryEntries, buildHistoryRows, historyStats, historyCoverage, extractTaskIdFromFilename, collectTaskLogContent, synthesizeHistoryStub, findInboxSourceForTask, approveRegistryTask, listKubeReviews, approveKubeReview } = require('../server');
 
 const TEST_PORT = 7843;
 let tmpDir;
@@ -166,6 +166,8 @@ test('/ serves index.html', async () => {
     'index.html should contain page title');
   assert.ok(body.includes('approval-banner'), 'index should include approval banner');
   assert.ok(body.includes('function approveGatedTask'), 'index should include gated approval handler');
+  assert.ok(body.includes('fetchKubeReviews'), 'index should include kube reviews fetch');
+  assert.ok(body.includes('data-tab="kube"'), 'index should include Kube tab');
   assert.ok(body.includes('await fetchTasks();'), 'approveGatedTask should refresh via fetchTasks()');
   assert.ok(!body.includes('await loadTasks();'), 'approveGatedTask must not call undefined loadTasks()');
 });
@@ -1453,5 +1455,94 @@ describe('approveRegistryTask', () => {
     const hb = fs.readFileSync(path.join(tmp, '.orchestrate', 'logs', 'heartbeat.log'), 'utf8');
     assert.ok(hb.includes('dashboard — approved go auto gated task test-gated'), 'heartbeat should record approval');
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+// ── kube reviews ──────────────────────────────────────────────────────────────
+describe('kube reviews', () => {
+  function seedPendingReview(tmp, id = 'test-kube-001') {
+    const pendingDir = path.join(tmp, '.orchestrate', 'kube-reviews', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const review = {
+      id,
+      created_at: '2026-06-21T17:00:00Z',
+      command: 'kubectl scale deployment/foo --replicas=3',
+      script_path: '/tmp/kube-cmd.abc123.sh',
+      tier: 'live_mutating',
+      project_root: tmp,
+      status: 'pending',
+    };
+    fs.writeFileSync(path.join(pendingDir, `${id}.json`), JSON.stringify(review, null, 2));
+    return review;
+  }
+
+  test('listKubeReviews returns pending reviews', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kube-list-'));
+    seedPendingReview(tmp);
+    const data = listKubeReviews(tmp);
+    assert.equal(data.pendingCount, 1);
+    assert.equal(data.pending[0].command, 'kubectl scale deployment/foo --replicas=3');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('approveKubeReview moves to processed and writes token', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kube-approve-'));
+    fs.mkdirSync(path.join(tmp, '.orchestrate', 'logs'), { recursive: true });
+    seedPendingReview(tmp, 'kube-approve-1');
+    const result = approveKubeReview(tmp, 'kube-approve-1', 'approve');
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'approved');
+    assert.ok(!fs.existsSync(path.join(tmp, '.orchestrate', 'kube-reviews', 'pending', 'kube-approve-1.json')));
+    assert.ok(fs.existsSync(path.join(tmp, '.orchestrate', 'kube-reviews', 'processed', 'kube-approve-1.json')));
+    const token = fs.readFileSync(path.join(tmp, '.orchestrate', 'kube-reviews', 'approved', 'kube-approve-1.token'), 'utf8');
+    assert.ok(token.includes('/tmp/kube-cmd.abc123.sh'));
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('dismissKubeReview moves to processed without token', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kube-dismiss-'));
+    fs.mkdirSync(path.join(tmp, '.orchestrate', 'logs'), { recursive: true });
+    seedPendingReview(tmp, 'kube-dismiss-1');
+    const result = approveKubeReview(tmp, 'kube-dismiss-1', 'dismiss');
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'dismissed');
+    assert.ok(!fs.existsSync(path.join(tmp, '.orchestrate', 'kube-reviews', 'approved', 'kube-dismiss-1.token')));
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('GET /api/kube-reviews returns pending list', async () => {
+    const pendingDir = path.join(tmpDir, '.orchestrate', 'kube-reviews', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(path.join(pendingDir, 'api-test-kube.json'), JSON.stringify({
+      id: 'api-test-kube',
+      created_at: '2026-06-21T17:00:00Z',
+      command: 'helm uninstall foo',
+      script_path: '/tmp/kube-cmd.test.sh',
+      tier: 'live_mutating',
+      status: 'pending',
+    }, null, 2));
+    const { status, body } = await get('/api/kube-reviews');
+    assert.equal(status, 200);
+    assert.ok(body.pending.some(r => r.id === 'api-test-kube'));
+    assert.equal(body.attention.pendingCount, body.pending.length);
+    fs.unlinkSync(path.join(pendingDir, 'api-test-kube.json'));
+  });
+
+  test('POST /api/kube-approve dismisses review', async () => {
+    const pendingDir = path.join(tmpDir, '.orchestrate', 'kube-reviews', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(path.join(pendingDir, 'api-dismiss-kube.json'), JSON.stringify({
+      id: 'api-dismiss-kube',
+      created_at: '2026-06-21T17:00:00Z',
+      command: 'kubectl delete pod foo',
+      script_path: '/tmp/kube-cmd.dismiss.sh',
+      tier: 'live_mutating',
+      status: 'pending',
+    }, null, 2));
+    const { status, body } = await post('/api/kube-approve', { id: 'api-dismiss-kube', action: 'dismiss' });
+    assert.equal(status, 200);
+    assert.equal(body.status, 'dismissed');
+    assert.ok(!fs.existsSync(path.join(pendingDir, 'api-dismiss-kube.json')));
+    assert.ok(fs.existsSync(path.join(tmpDir, '.orchestrate', 'kube-reviews', 'processed', 'api-dismiss-kube.json')));
   });
 });

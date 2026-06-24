@@ -128,19 +128,21 @@ session_limit_reset_hint() {
   fi
 }
 
-# Invoke one agent binary; prints output, returns classification via stdout path in AGENT_RESULT
+# Invoke one agent binary; routes ALL output to a per-session log so prose never
+# pollutes heartbeat.log (which receives only structured [ISO] lines via log_heartbeat).
 invoke_agent() {
   local bin="$1"
   shift
   local agent_log
-  agent_log="$(mktemp "${TMPDIR:-/tmp}/run-job-agent.XXXXXX")"
+  agent_log="$ROOT/.orchestrate/logs/$(date -u +%Y%m%d-%H%M%S)-agent.log"
+  mkdir -p "$(dirname "$agent_log")"
   set +e
-  "$bin" "$@" 2>&1 | tee "$agent_log"
-  local code="${PIPESTATUS[0]}"
+  "$bin" "$@" > "$agent_log" 2>&1
+  local code="$?"
   set -e
   AGENT_RESULT="$(classify_agent_result "$code" "$agent_log")"
   AGENT_RESET_HINT="$(session_limit_reset_hint "$agent_log")"
-  rm -f "$agent_log"
+  # Keep the session log for post-mortem (do not remove)
 }
 
 run_with_fallback() {
@@ -230,6 +232,77 @@ dispatch() {
   esac
 }
 
+# RS01: Mark all `pending` registry rows as `running` before agent dispatch so the
+# dashboard reflects the correct state immediately (the agent marks them running
+# too, but this is faster and prevents the stale-pending flash).
+mark_pending_tasks_as_running() {
+  local proj="$ROOT/.orchestrate/project.md"
+  [[ -f "$proj" ]] || return 0
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
+  awk -F'|' -v OFS='|' -v now="$now" '
+    /^\|[[:space:]]*[0-9]/ {
+      for (i=1; i<=NF; i++) {
+        field = $i
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", field)
+        if (field == "pending") {
+          $i = " running "
+          if (NF >= 8) $8 = " " now " "
+        }
+      }
+    }
+    { print }
+  ' "$proj" > "$tmp" && mv "$tmp" "$proj"
+}
+
+# D328 Bug 1: Detect ghost `running` tasks — tasks stuck in running with
+# last_activity older than STALE_RUNNING_SECS and no ✓ complete phase in their
+# task file — and reset them to needs_human with an auto-reset hint.
+STALE_RUNNING_SECS=600  # 10 minutes
+reset_stale_running_tasks() {
+  local proj="$ROOT/.orchestrate/project.md"
+  [[ -f "$proj" ]] || return 0
+  local now_epoch
+  now_epoch="$(date +%s)"
+
+  while IFS='|' read -r _ task_id _ _ _ status last_activity _; do
+    task_id="${task_id// /}"
+    status="${status// /}"
+    last_activity="${last_activity// /}"
+    [[ "$status" == "running" ]] || continue
+    [[ -z "$task_id" || "$task_id" == "ID" || "$task_id" =~ ^-+$ ]] && continue
+
+    # Parse last_activity ISO timestamp to epoch
+    local la_epoch=0
+    if [[ -n "$last_activity" ]]; then
+      la_epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$last_activity" +%s 2>/dev/null || echo 0)"
+    fi
+    local age=$(( now_epoch - la_epoch ))
+    [[ $age -lt $STALE_RUNNING_SECS ]] && continue
+
+    # Check task file for any ✓ complete phase
+    local task_file="$ROOT/.orchestrate/tasks/${task_id}.md"
+    if [[ -f "$task_file" ]] && grep -q '✓ complete' "$task_file" 2>/dev/null; then
+      continue  # Has progress — not a ghost
+    fi
+
+    # Reset to needs_human and inject resolution hint into task file
+    local hint="Auto-reset: task stuck in running for ${age}s with no phase progress (tend session likely died)"
+    local now_iso
+    now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    sed -i '' "s/| running | ${last_activity} |/| needs_human | ${now_iso} |/" "$proj" 2>/dev/null || \
+      sed -i '' "/\| ${task_id} \|/s/| running |/| needs_human |/" "$proj" 2>/dev/null || true
+    if [[ -f "$task_file" ]]; then
+      # Prepend human_resolution hint to the first incomplete phase block
+      sed -i '' "/^### Phase/a\\
+human_resolution: ${hint}" "$task_file" 2>/dev/null || true
+    fi
+    log_heartbeat "run-job — ghost-reset ${task_id}: running→needs_human (${age}s stale, no ✓ phase)"
+  done < <(grep -E '^\|[[:space:]]*[0-9]' "$proj" 2>/dev/null || true)
+}
+
 cleanup_stale_inbox() {
   local script="$ROOT/.orchestrate/bin/cleanup-stale-inbox.sh"
   if [[ -x "$script" ]]; then
@@ -268,6 +341,20 @@ log_tend_idle() {
   esac
 }
 
+# Count only `pending` rows — used as the loop guard in go-auto mode.
+# awaiting_go/needs_human/running are not executable by tend go auto.
+pending_task_count() {
+  local proj="$ROOT/.orchestrate/project.md"
+  [[ -f "$proj" ]] || { echo 0; return; }
+  awk -F'|' '
+    /^\|/ && $2 !~ /^[[:space:]]*ID[[:space:]]*$/ && $2 !~ /^-+$/ {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $6)
+      if ($6 == "pending") n++
+    }
+    END { print n + 0 }
+  ' "$proj"
+}
+
 # Acquire the tend lock at the shell level so it is always released on exit,
 # regardless of whether the agent session can execute shell commands.
 # Sets TEND_LOCK_MANAGED=1 so the SKILL's T-0 skips its own lock logic.
@@ -295,13 +382,44 @@ case "$JOB" in
     acquire_tend_lock
     cleanup_stale_inbox
     drain_inbox
-    if tend_need_action; then
-      cursor_prompt="$(tend_prompt)" || exit 1
-      claude_prompt="$(tend_prompt_claude)" || exit 1
-      dispatch "$cursor_prompt" "$claude_prompt"
-    else
+    if ! tend_need_action; then
       log_tend_idle
       exit 0
+    fi
+
+    # D328 Bug 1: Detect and reset ghost running tasks before dispatching.
+    reset_stale_running_tasks
+
+    # go-auto: loop until no pending tasks remain or max iterations reached.
+    # Each session handles a parallel batch; if tasks remain after a session
+    # (e.g. session limit, new inbox items), fire another session immediately
+    # rather than waiting 5 min for the next launchd cycle.
+    MAX_TEND_LOOPS=5
+    tend_loop=0
+    cursor_prompt="$(tend_prompt)" || exit 1
+    claude_prompt="$(tend_prompt_claude)" || exit 1
+
+    # RS01: mark pending tasks as running before dispatch so dashboard is accurate.
+    if [[ "$TEND_MODE" == "go auto" || "$TEND_MODE" == "go_auto" ]]; then
+      mark_pending_tasks_as_running
+    fi
+
+    dispatch "$cursor_prompt" "$claude_prompt"
+    tend_loop=1
+
+    if [[ "$TEND_MODE" == "go auto" || "$TEND_MODE" == "go_auto" ]]; then
+      while true; do
+        drain_inbox  # pick up any new inbox items between sessions
+        pcount="$(pending_task_count)"
+        [[ "$pcount" -eq 0 ]] && break
+        if [[ $tend_loop -ge $MAX_TEND_LOOPS ]]; then
+          log_heartbeat "run-job — queue drain reached max loops ($MAX_TEND_LOOPS); $pcount task(s) deferred to next cycle"
+          break
+        fi
+        log_heartbeat "run-job — queue drain loop $((tend_loop + 1))/$MAX_TEND_LOOPS ($pcount pending remaining)"
+        dispatch "$cursor_prompt" "$claude_prompt"
+        tend_loop=$(( tend_loop + 1 ))
+      done
     fi
     ;;
   inbox-log-analyzer)

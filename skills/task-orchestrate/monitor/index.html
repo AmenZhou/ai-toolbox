@@ -320,6 +320,36 @@
   }
   .btn-cancel:hover:not(:disabled) { background: #3d1a1a; }
   .btn-cancel:disabled { opacity: 0.5; cursor: default; }
+  .goal-excerpt {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 4px 0 6px;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .blocking-reason {
+    font-size: 12px;
+    color: #d97706;
+    background: rgba(217, 119, 6, 0.08);
+    border-left: 2px solid #d97706;
+    padding: 3px 8px;
+    margin: 4px 0 4px;
+    border-radius: 0 3px 3px 0;
+  }
+  .btn-rerun {
+    background: #1f3a1f;
+    border: 1px solid #388038;
+    color: #58a458;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .btn-rerun:hover:not(:disabled) { background: #274f27; }
+  .btn-rerun:disabled { opacity: 0.5; cursor: default; }
   .expand-area {
     display: none;
     margin-top: 10px;
@@ -652,6 +682,64 @@
     background: #2d1f00;
   }
 
+  /* ── kube reviews ── */
+  .kube-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+  .kube-card-header {
+    padding: 10px 12px;
+    background: #2d1f00;
+    border-bottom: 1px solid #d29922;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .kube-command {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: #0d1117;
+    padding: 10px 12px;
+    margin: 0;
+  }
+  .kube-meta {
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .kube-actions {
+    padding: 10px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .kube-actions button {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .kube-actions button.btn-approve-kube {
+    background: #238636;
+    border-color: #238636;
+    color: #fff;
+  }
+  .kube-actions button.btn-dismiss-kube {
+    background: #21262d;
+    color: #f85149;
+    border-color: #f85149;
+  }
+
   /* ── loader ── */
   .loading { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
 
@@ -678,6 +766,8 @@
 <nav>
   <button class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Active Tasks <span id="tasks-approval-badge" class="tab-badge"></span></button>
   <button class="tab" data-tab="inbox" onclick="switchTab('inbox')">Inbox <span id="inbox-count-badge" class="tab-badge"></span></button>
+  <button class="tab" data-tab="kube" onclick="switchTab('kube')">Kube <span id="kube-count-badge" class="tab-badge"></span></button>
+  <button class="tab" data-tab="pg" onclick="switchTab('pg')">Postgres <span id="pg-count-badge" class="tab-badge"></span></button>
   <button class="tab" data-tab="history" onclick="switchTab('history')">History</button>
   <button class="tab" data-tab="launchd" onclick="switchTab('launchd')">LaunchD Jobs</button>
 </nav>
@@ -694,6 +784,16 @@
   <div id="inbox-panel" class="tab-panel">
     <div class="loading" id="inbox-loading">Loading inbox…</div>
     <div id="inbox-container"></div>
+  </div>
+
+  <div id="kube-panel" class="tab-panel">
+    <div class="loading" id="kube-loading">Loading kube reviews…</div>
+    <div id="kube-container"></div>
+  </div>
+
+  <div id="pg-panel" class="tab-panel">
+    <div class="loading" id="pg-loading">Loading postgres reviews…</div>
+    <div id="pg-container"></div>
   </div>
 
   <div id="history-panel" class="tab-panel">
@@ -733,6 +833,8 @@
 let tasksData    = { registry: [], tasks: {}, tendHealth: { ok: true }, attention: { taskCount: 0, tasks: [], tendIssues: [] } };
 let historyData  = { manifest: [], entries: {}, rows: [] };
 let inboxData    = { items: [], attention: { inboxCount: 0, approvalCount: 0, approvalItems: [] } };
+let kubeData     = { pending: [], processed: [], pendingCount: 0, attention: { pendingCount: 0 } };
+let pgData       = { pending: [], processed: [], pendingCount: 0, attention: { pendingCount: 0 } };
 let agentStatus  = { runner: 'cursor', tendMode: 'go auto', cursorFallback: 'auto', cursorAutoOpen: false, cursorIdeRunning: false };
 let heartbeatLines = [];
 let logsCache    = {};   // taskId -> { files, logs }
@@ -762,12 +864,12 @@ function toggleActivityFeed() {
 
 // ── refresh ───────────────────────────────────────────────────────────────────
 async function manualRefresh() {
-  countdown = 15;
+  countdown = nextCountdown();
   await doRefresh();
 }
 
 async function doRefresh() {
-  await Promise.all([fetchTasks(), fetchInbox(), fetchHistory(), fetchHeartbeat(), fetchLaunchd(), fetchAgentStatus()]);
+  await Promise.all([fetchTasks(), fetchInbox(), fetchKubeReviews(), fetchPgReviews(), fetchHistory(), fetchHeartbeat(), fetchLaunchd(), fetchAgentStatus()]);
   lastRefreshed = new Date();
   updateMeta();
 }
@@ -778,12 +880,23 @@ function updateMeta() {
     `last refreshed: ${timeStr}  |  auto-refresh in ${countdown}s`;
 }
 
+const POLL_ACTIVE = 5;   // seconds when tasks are running/awaiting_critic
+const POLL_IDLE   = 15;  // seconds when all tasks are at rest
+
+function nextCountdown() {
+  const active = ['running', 'awaiting_critic'];
+  const hasActive = Array.isArray(tasksData)
+    ? tasksData.some(t => active.includes(t.status))
+    : false;
+  return hasActive ? POLL_ACTIVE : POLL_IDLE;
+}
+
 function startCountdown() {
   if (countdownTimer) clearInterval(countdownTimer);
   countdownTimer = setInterval(() => {
     countdown--;
     if (countdown <= 0) {
-      countdown = 15;
+      countdown = nextCountdown();
       doRefresh();
     } else {
       updateMeta();
@@ -888,6 +1001,224 @@ function toggleInboxCard(id) {
   if (el) el.classList.toggle('open');
 }
 
+// ── fetch kube reviews ────────────────────────────────────────────────────────
+async function fetchKubeReviews() {
+  try {
+    const r = await fetch('/api/kube-reviews');
+    kubeData = await r.json();
+    renderKubeReviews();
+  } catch (e) {
+    document.getElementById('kube-container').innerHTML =
+      `<div class="empty">Failed to load kube reviews: ${esc(e.message)}</div>`;
+  } finally {
+    document.getElementById('kube-loading').style.display = 'none';
+  }
+}
+
+function renderKubeReviews() {
+  const pending = kubeData.pending || [];
+  const processed = kubeData.processed || [];
+  const container = document.getElementById('kube-container');
+
+  const kubeBadge = document.getElementById('kube-count-badge');
+  if (pending.length > 0) {
+    kubeBadge.textContent = pending.length;
+    kubeBadge.className = 'tab-badge visible';
+    kubeBadge.title = `${pending.length} kube review(s) pending approval`;
+  } else {
+    kubeBadge.className = 'tab-badge';
+    kubeBadge.textContent = '';
+  }
+
+  updateAttentionBadge();
+
+  if (pending.length === 0 && processed.length === 0) {
+    container.innerHTML = `
+      <div class="empty">
+        <span class="checkmark">✓</span>
+        No pending kube reviews — live mutating commands appear here when blocked
+      </div>`;
+    return;
+  }
+
+  let html = '';
+  if (pending.length) {
+    html += `<h3 style="font-size:13px;color:var(--muted);margin:0 0 8px">Pending (${pending.length})</h3>`;
+    html += pending.map(r => kubeReviewCard(r, true)).join('');
+  }
+  if (processed.length) {
+    html += `<h3 style="font-size:13px;color:var(--muted);margin:16px 0 8px">Recently resolved</h3>`;
+    html += processed.map(r => kubeReviewCard(r, false)).join('');
+  }
+  container.innerHTML = html;
+}
+
+function kubeReviewCard(review, showActions) {
+  const id = esc(review.id || '');
+  const created = review.created_at ? formatEastern(review.created_at) : '—';
+  const statusBadge = review.status === 'approved'
+    ? '<span class="badge badge-auto">approved</span>'
+    : review.status === 'dismissed'
+      ? '<span class="badge" style="background:#6e7681">dismissed</span>'
+      : '<span class="badge badge-approval">pending</span>';
+  const actions = showActions ? `
+    <div class="kube-actions">
+      <button type="button" onclick="copyKubeText('${id}-cmd')">Copy command</button>
+      <button type="button" onclick="copyKubeText('${id}-path')">Copy script path</button>
+      <button type="button" class="btn-approve-kube" onclick="kubeReviewAction('${id}','approve',this)">Approve live</button>
+      <button type="button" class="btn-dismiss-kube" onclick="kubeReviewAction('${id}','dismiss',this)">Dismiss</button>
+    </div>` : '';
+  return `
+<div class="kube-card" id="kube-card-${id}">
+  <div class="kube-card-header">
+    ${statusBadge}
+    <span class="badge badge-gated">live mutating</span>
+    <span style="font-size:11px;color:var(--muted)">${esc(created)}</span>
+    <span style="font-size:11px;color:var(--muted);margin-left:auto">${id}</span>
+  </div>
+  <div class="kube-meta">Script: <code id="${id}-path">${esc(review.script_path || '')}</code></div>
+  <pre class="kube-command" id="${id}-cmd">${esc(review.command || '')}</pre>
+  ${actions}
+</div>`;
+}
+
+function copyKubeText(elementId) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const text = el.textContent || '';
+  navigator.clipboard.writeText(text).catch(() => {});
+}
+
+async function kubeReviewAction(id, action, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/kube-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, action }),
+    });
+    const body = await r.json();
+    if (!r.ok || body.error) {
+      alert(body.error || 'Kube review action failed');
+      if (btn) btn.disabled = false;
+      return;
+    }
+    await fetchKubeReviews();
+  } catch (e) {
+    alert(e.message || 'Request failed');
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── fetch pg reviews ──────────────────────────────────────────────────────────
+async function fetchPgReviews() {
+  try {
+    const r = await fetch('/api/pg-reviews');
+    pgData = await r.json();
+    renderPgReviews();
+  } catch (e) {
+    document.getElementById('pg-container').innerHTML =
+      `<div class="empty">Failed to load pg reviews: ${esc(e.message)}</div>`;
+  } finally {
+    document.getElementById('pg-loading').style.display = 'none';
+  }
+}
+
+function renderPgReviews() {
+  const pending = pgData.pending || [];
+  const processed = pgData.processed || [];
+  const container = document.getElementById('pg-container');
+
+  const pgBadge = document.getElementById('pg-count-badge');
+  if (pending.length > 0) {
+    pgBadge.textContent = pending.length;
+    pgBadge.className = 'tab-badge visible';
+    pgBadge.title = `${pending.length} pg review(s) pending approval`;
+  } else {
+    pgBadge.className = 'tab-badge';
+    pgBadge.textContent = '';
+  }
+
+  updateAttentionBadge();
+
+  if (pending.length === 0 && processed.length === 0) {
+    container.innerHTML = `
+      <div class="empty">
+        <span class="checkmark">✓</span>
+        No pending pg reviews — live mutating SQL appears here when blocked
+      </div>`;
+    return;
+  }
+
+  let html = '';
+  if (pending.length) {
+    html += `<h3 style="font-size:13px;color:var(--muted);margin:0 0 8px">Pending (${pending.length})</h3>`;
+    html += pending.map(r => pgReviewCard(r, true)).join('');
+  }
+  if (processed.length) {
+    html += `<h3 style="font-size:13px;color:var(--muted);margin:16px 0 8px">Recently resolved</h3>`;
+    html += processed.map(r => pgReviewCard(r, false)).join('');
+  }
+  container.innerHTML = html;
+}
+
+function pgReviewCard(review, showActions) {
+  const id = esc(review.id || '');
+  const created = review.created_at ? formatEastern(new Date(review.created_at)) : '—';
+  const statusBadge = review.status === 'approved'
+    ? '<span class="badge badge-auto">approved</span>'
+    : review.status === 'dismissed'
+      ? '<span class="badge" style="background:#6e7681">dismissed</span>'
+      : '<span class="badge badge-approval">pending</span>';
+  const actions = showActions ? `
+    <div class="kube-actions">
+      <button type="button" onclick="copyPgText('${id}-cmd')">Copy command</button>
+      <button type="button" onclick="copyPgText('${id}-path')">Copy script path</button>
+      <button type="button" class="btn-approve-kube" onclick="pgReviewAction('${id}','approve',this)">Approve live</button>
+      <button type="button" class="btn-dismiss-kube" onclick="pgReviewAction('${id}','dismiss',this)">Dismiss</button>
+    </div>` : '';
+  return `
+<div class="kube-card" id="pg-card-${id}">
+  <div class="kube-card-header">
+    ${statusBadge}
+    <span class="badge badge-gated">live mutating SQL</span>
+    <span style="font-size:11px;color:var(--muted)">${esc(created)}</span>
+    <span style="font-size:11px;color:var(--muted);margin-left:auto">${id}</span>
+  </div>
+  <div class="kube-meta">Script: <code id="${id}-path">${esc(review.script_path || '')}</code></div>
+  <pre class="kube-command" id="${id}-cmd">${esc(review.command || '')}</pre>
+  ${actions}
+</div>`;
+}
+
+function copyPgText(elementId) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const text = el.textContent || '';
+  navigator.clipboard.writeText(text).catch(() => {});
+}
+
+async function pgReviewAction(id, action, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/pg-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, action }),
+    });
+    const body = await r.json();
+    if (!r.ok || body.error) {
+      alert(body.error || 'PG review action failed');
+      if (btn) btn.disabled = false;
+      return;
+    }
+    await fetchPgReviews();
+  } catch (e) {
+    alert(e.message || 'Request failed');
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ── fetch history ─────────────────────────────────────────────────────────────
 async function fetchHistory() {
   try {
@@ -915,6 +1246,35 @@ async function fetchLaunchd() {
       `<div class="empty">Failed to load launchd agents: ${esc(e.message)}</div>`;
   } finally {
     document.getElementById('launchd-loading').style.display = 'none';
+  }
+}
+
+async function runLaunchdJob(label, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  try {
+    const r = await fetch('/api/launchd-start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      btn.textContent = 'Triggered';
+      btn.style.background = '#1f6feb';
+      setTimeout(() => fetchLaunchd(), 2000);
+      setTimeout(() => fetchLaunchd(), 4000);
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; btn.style.background = ''; }, 5000);
+    } else {
+      btn.textContent = 'Failed';
+      btn.style.background = '#da3633';
+      btn.title = d.error || 'kickstart failed';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; btn.style.background = ''; btn.title = ''; }, 3000);
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+    btn.style.background = '#da3633';
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; btn.style.background = ''; }, 3000);
   }
 }
 
@@ -947,17 +1307,20 @@ function renderLaunchd() {
       <th>Interval</th>
       <th>Last Run</th>
       <th>Status</th>
+      <th></th>
     </tr></thead>
     <tbody>`;
   for (const a of launchdData) {
     const lastRun = a.lastRun
       ? new Date(a.lastRun).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
       : '—';
+    const safeLabel = esc(a.label).replace(/'/g, "\\'");
     html += `<tr>
       <td style="font-family:var(--font-mono);font-size:12px">${esc(a.label)}</td>
       <td>${esc(a.interval)}</td>
       <td style="font-family:var(--font-mono);font-size:12px;white-space:nowrap">${esc(lastRun)}</td>
       <td>${launchdStatusBadge(a.status)}</td>
+      <td><button class="btn-rerun" onclick="runLaunchdJob('${safeLabel}', this)" style="font-size:11px;padding:3px 8px">Run Now</button></td>
     </tr>`;
   }
   html += '</tbody></table>';
@@ -1162,8 +1525,10 @@ function isBlockedStatus(status) {
 function updateAttentionBadge() {
   const taskApproval = (tasksData.attention && tasksData.attention.tasks) || [];
   const inboxApproval = (inboxData.attention && inboxData.attention.approvalItems) || [];
+  const kubePending = (kubeData.pending || []).length;
+  const pgPending = (pgData.pending || []).length;
   const tendIssues = (tasksData.attention && tasksData.attention.tendIssues) || [];
-  const total = taskApproval.length + inboxApproval.length + tendIssues.length;
+  const total = taskApproval.length + inboxApproval.length + kubePending + pgPending + tendIssues.length;
   const blockedCount = taskApproval.filter(t => isBlockedStatus(t.status)).length
     + tendIssues.filter(t => ['failed', 'stuck', 'misconfigured'].includes(t.status)).length;
 
@@ -1176,6 +1541,8 @@ function updateAttentionBadge() {
   const parts = [];
   if (taskApproval.length) parts.push(`${taskApproval.length} task(s)`);
   if (inboxApproval.length) parts.push(`${inboxApproval.length} inbox item(s)`);
+  if (kubePending) parts.push(`${kubePending} kube review(s)`);
+  if (pgPending) parts.push(`${pgPending} pg review(s)`);
   if (tendIssues.length) parts.push(`${tendIssues.length} tend issue(s)`);
   badge.title = total > 0 ? parts.join(' + ') + ' need attention' : '';
 
@@ -1191,7 +1558,7 @@ function updateAttentionBadge() {
   }
 
   renderTendHealthBanner(tendIssues);
-  renderApprovalBanner(taskApproval, inboxApproval);
+  renderApprovalBanner(taskApproval, inboxApproval, kubeData.pending || [], pgData.pending || []);
 }
 
 function renderTendHealthBanner(tendIssues) {
@@ -1209,7 +1576,7 @@ function renderTendHealthBanner(tendIssues) {
     <p>${esc(issue.message || '')}${esc(hint)} Runner: ${esc(issue.runner || '—')}.</p>`;
 }
 
-function renderApprovalBanner(taskApproval, inboxApproval) {
+function renderApprovalBanner(taskApproval, inboxApproval, kubePending, pgPending) {
   const banner = document.getElementById('approval-banner');
   const all = [
     ...taskApproval.map(t => ({
@@ -1224,6 +1591,20 @@ function renderApprovalBanner(taskApproval, inboxApproval) {
       key: i.filename,
       label: i.approvalLabel || 'Gated inbox',
       summary: i.title,
+      blocked: false,
+    })),
+    ...(kubePending || []).map(r => ({
+      kind: 'kube',
+      key: r.id,
+      label: 'Kube review',
+      summary: (r.command || '').slice(0, 80),
+      blocked: false,
+    })),
+    ...(pgPending || []).map(r => ({
+      kind: 'pg',
+      key: r.id,
+      label: 'PG review',
+      summary: (r.command || '').slice(0, 80),
       blocked: false,
     })),
   ];
@@ -1330,14 +1711,43 @@ function renderTasks() {
       : '';
 
     const isGated = row.status === 'awaiting_go';
+    const isNeedsHuman = row.status === 'needs_human';
+    const isPendingOrRunning = row.status === 'pending' || row.status === 'running';
+    const goalExcerptHtml = row.goalExcerpt
+      ? `<div class="goal-excerpt">${esc(row.goalExcerpt)}</div>`
+      : '';
+    const blockingReasonHtml = (isNeedsHuman && row.blockingReason)
+      ? `<div class="blocking-reason">&#x26A0; ${esc(row.blockingReason)}</div>`
+      : '';
+    const pendingGoalHtml = isPendingOrRunning && row.goalExcerpt
+      ? `<div class="goal-excerpt" style="margin-top:6px;">${esc(row.goalExcerpt)}</div>`
+      : '';
     const gatedActions = isGated ? `
+    ${goalExcerptHtml}
     <div style="margin-top:8px;display:flex;align-items:center;flex-wrap:wrap;gap:4px;">
-      <button class="section-toggle" onclick="toggleInboxPreview('${safeId}', '${esc(id)}')">Inbox Preview</button>
-      <button class="btn-approve" onclick="approveGatedTask(this,'${esc(id)}','auto')" title="Approve and run automatically">▶ Go Auto</button>
-      <button class="btn-cancel" onclick="approveGatedTask(this,'${esc(id)}','cancel')" title="Cancel this gated task">✗ Cancel</button>
+      <button class="section-toggle" onclick="toggleInboxPreview('${safeId}', '${esc(id)}')">Full Context</button>
+      <button class="btn-approve" onclick="approveAndRun(this,'${esc(id)}','gated')" title="Approve and run with phase checkpoints" style="background:#1f3d5c;border-color:#4d8ec7;color:#a8d4f5;">&#9654; Go</button>
+      <button class="btn-approve" onclick="approveAndRun(this,'${esc(id)}','auto')" title="Approve and run automatically (no checkpoints)">&#9654; Go Auto</button>
+      <button class="btn-cancel" onclick="approveGatedTask(this,'${esc(id)}','cancel')" title="Cancel this gated task">&#x2717; Cancel</button>
     </div>
     <div class="expand-area" id="inbox-${safeId}">
       <pre class="content-block" id="inbox-content-${safeId}" style="color:var(--muted);font-size:12px;">Loading…</pre>
+    </div>` : '';
+    const needsHumanActions = isNeedsHuman ? `
+    ${blockingReasonHtml}
+    ${goalExcerptHtml}
+    <div style="margin-top:8px;display:flex;align-items:center;flex-wrap:wrap;gap:4px;">
+      <button class="btn-rerun" onclick="rerunTask(this,'${esc(id)}')" title="Reset to pending and trigger tend">&#x21BA; Re-run</button>
+      <button class="section-toggle" onclick="toggleResolveBox('${safeId}')">Resolve&#x2026;</button>
+      <button class="section-toggle" onclick="toggleDetails('${safeId}')">Details</button>
+      <button class="section-toggle" onclick="toggleLogs('${safeId}', '${esc(id)}')">Logs</button>
+    </div>
+    <div class="expand-area" id="resolve-${safeId}" style="display:none;margin-top:8px;">
+      <textarea id="resolve-text-${safeId}" placeholder="Describe the answer or decision that unblocks this task…" style="width:100%;min-height:80px;background:var(--card-bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:6px;font-size:13px;resize:vertical;box-sizing:border-box;"></textarea>
+      <div style="margin-top:6px;display:flex;gap:6px;">
+        <button class="btn-approve" onclick="submitResolution(this,'${esc(id)}','${safeId}')" style="background:#1f3d1f;border-color:#3d7a3d;color:#a8f5a8;">&#10003; Submit Resolution</button>
+        <button class="btn-cancel" onclick="toggleResolveBox('${safeId}')">Cancel</button>
+      </div>
     </div>` : '';
 
     return `
@@ -1352,10 +1762,12 @@ function renderTasks() {
   <div class="card-body">
     <div class="summary">${esc(row.summary || '(no summary)')}</div>
     ${phaseBar(row.current_phase, totalPhases)}
+    ${pendingGoalHtml}
     ${gatedActions}
+    ${needsHumanActions}
     <div class="actions" style="margin-top:8px;">
-      ${hasDetails ? `<button class="section-toggle" onclick="toggleDetails('${safeId}')">Details</button>` : ''}
-      <button class="section-toggle" onclick="toggleLogs('${safeId}', '${esc(id)}')">Logs</button>
+      ${!isNeedsHuman ? (hasDetails ? `<button class="section-toggle" onclick="toggleDetails('${safeId}')">Details</button>` : '') : ''}
+      ${!isNeedsHuman ? `<button class="section-toggle" onclick="toggleLogs('${safeId}', '${esc(id)}')">Logs</button>` : ''}
     </div>
     ${hasDetails ? `
     <div class="expand-area" id="details-${safeId}">
@@ -1427,6 +1839,95 @@ async function approveGatedTask(btn, taskId, mode) {
     alert('Request failed: ' + e.message);
     siblingBtns.forEach(b => { b.disabled = false; });
     btn.textContent = mode === 'cancel' ? '✗ Cancel' : '▶ Go Auto';
+  }
+}
+
+async function approveAndRun(btn, taskId, mode) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Approving…';
+  const siblingBtns = btn.parentElement.querySelectorAll('button');
+  siblingBtns.forEach(b => { b.disabled = true; });
+  try {
+    const res = await fetch('/api/task-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: taskId, mode }),
+    });
+    const data = await res.json();
+    const origText = mode === 'gated' ? '▶ Go' : '▶ Go Auto';
+    if (data.error) { alert('Error: ' + data.error); siblingBtns.forEach(b => { b.disabled = false; }); btn.textContent = origText; return; }
+    // Trigger immediate tend run (gated mode will pause at first phase checkpoint)
+    await fetch('/api/task-runnow', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: taskId }),
+    }).catch(() => {});
+    btn.textContent = '✓ Queued…';
+    setTimeout(() => fetchTasks(), 3000);
+  } catch (e) {
+    alert('Network error: ' + e.message);
+    siblingBtns.forEach(b => { b.disabled = false; });
+    btn.textContent = mode === 'gated' ? '▶ Go' : '▶ Go Auto';
+  }
+}
+
+async function rerunTask(btn, taskId) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Queuing…';
+  try {
+    const res = await fetch('/api/task-runnow', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: taskId }),
+    });
+    const data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); btn.disabled = false; btn.textContent = '↺ Re-run'; return; }
+    btn.textContent = '✓ Running…';
+    setTimeout(() => fetchTasks(), 3000);
+  } catch (e) {
+    alert('Network error: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '↺ Re-run';
+  }
+}
+
+function toggleResolveBox(safeId) {
+  const box = document.getElementById(`resolve-${safeId}`);
+  if (!box) return;
+  const isHidden = box.style.display === 'none' || !box.style.display;
+  box.style.display = isHidden ? 'block' : 'none';
+  if (isHidden) {
+    const ta = document.getElementById(`resolve-text-${safeId}`);
+    if (ta) ta.focus();
+  }
+}
+
+async function submitResolution(btn, taskId, safeId) {
+  const ta = document.getElementById(`resolve-text-${safeId}`);
+  const resolution = ta ? ta.value.trim() : '';
+  if (!resolution) { alert('Please enter a resolution before submitting.'); return; }
+  btn.disabled = true;
+  btn.textContent = 'Submitting…';
+  try {
+    const res = await fetch('/api/task-resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: taskId, resolution }),
+    });
+    const data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); btn.disabled = false; btn.textContent = '✓ Submit Resolution'; return; }
+    const box = document.getElementById(`resolve-${safeId}`);
+    if (box) box.style.display = 'none';
+    if (ta) ta.value = '';
+    btn.disabled = false;
+    btn.textContent = '✓ Submit Resolution';
+    setTimeout(() => fetchTasks(), 3000);
+  } catch (e) {
+    alert('Network error: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '✓ Submit Resolution';
   }
 }
 

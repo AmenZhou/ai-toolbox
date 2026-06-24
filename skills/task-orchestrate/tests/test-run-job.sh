@@ -650,6 +650,28 @@ else
   fail "drain-inbox heartbeat missing 'registered (gated)' — log line format may have changed"
 fi
 
+# §10 — pending_task_count and queue drain loop present in run-job.sh
+echo ""
+echo "── §10 Queue drain loop assertions ──────────────"
+
+if grep -q 'pending_task_count' "$RUN_JOB_SRC" 2>/dev/null; then
+  ok "run-job.sh has pending_task_count() function"
+else
+  fail "run-job.sh missing pending_task_count() — parallel queue drain not wired"
+fi
+
+if grep -q 'MAX_TEND_LOOPS' "$RUN_JOB_SRC" 2>/dev/null; then
+  ok "run-job.sh has MAX_TEND_LOOPS guard for queue drain loop"
+else
+  fail "run-job.sh missing MAX_TEND_LOOPS — loop may be unbounded"
+fi
+
+if grep -q 'queue drain loop' "$RUN_JOB_SRC" 2>/dev/null; then
+  ok "run-job.sh logs queue drain loop iterations"
+else
+  fail "run-job.sh missing 'queue drain loop' log line"
+fi
+
 echo ""
 echo "── Results ───────────────────────────────────────"
 echo "  Passed: $PASS"
