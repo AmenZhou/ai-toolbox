@@ -1616,10 +1616,19 @@ async function handleLaunchdStart(req, res) {
   try { payload = await readJsonBody(req); } catch (_) { send(res, 400, { error: 'invalid JSON body' }); return; }
   const label = (payload.label || '').trim();
   if (!label || !/^[\w.-]+$/.test(label)) { send(res, 400, { error: 'valid label required' }); return; }
+
+  // Clear the tend lock before kickstart so run-job.sh doesn't exit early on "lock held".
+  // This is the primary cause of Run Now flashing running→ok without processing tasks.
+  let lockCleared = false;
+  if (label === 'com.orchestrate.tend') {
+    const lockPath = path.join(CWD, '.orchestrate', '.tend.lock');
+    try { fs.unlinkSync(lockPath); lockCleared = true; } catch (_) { /* no lock or already gone */ }
+  }
+
   try {
     const uid = require('child_process').execSync('id -u', { encoding: 'utf8' }).trim();
     require('child_process').execSync(`launchctl kickstart -k gui/${uid}/${label}`, { encoding: 'utf8', timeout: 5000 });
-    send(res, 200, { ok: true, label });
+    send(res, 200, { ok: true, label, lockCleared });
   } catch (e) {
     send(res, 500, { error: e.message || 'kickstart failed', label });
   }
