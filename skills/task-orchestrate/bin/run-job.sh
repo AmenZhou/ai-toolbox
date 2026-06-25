@@ -382,13 +382,17 @@ case "$JOB" in
     acquire_tend_lock
     cleanup_stale_inbox
     drain_inbox
+
+    # D328 Bug 1: Detect and reset ghost running tasks. Runs BEFORE the
+    # need-action gate (cheap bash, no tokens) so a stale `running` ghost is
+    # reset to `needs_human` — and re-queued if it's an auto job — even on a
+    # cycle that would otherwise be idle. `running` no longer gates dispatch.
+    reset_stale_running_tasks
+
     if ! tend_need_action; then
       log_tend_idle
       exit 0
     fi
-
-    # D328 Bug 1: Detect and reset ghost running tasks before dispatching.
-    reset_stale_running_tasks
 
     # go-auto: loop until no pending tasks remain or max iterations reached.
     # Each session handles a parallel batch; if tasks remain after a session
