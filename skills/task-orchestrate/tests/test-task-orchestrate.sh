@@ -789,6 +789,50 @@ else
   fail "monitor server.test.js missing registry-complete inbox test"
 fi
 
+# ── 15. Bypass — park blocked tasks until unblocked ─────────────────────────────
+echo ""
+echo "15. Bypass — park blocked tasks until unblocked"
+
+skill_has 'bypassed_at:' "SKILL.md documents the bypassed_at park marker"
+skill_has 'Bypass — park blocked tasks' "SKILL.md has the Bypass section"
+
+BYP_BIN="$PROJECT_ROOT/.orchestrate/bin"
+if [[ -f "$BYP_BIN/tend-need-action.sh" && -f "$BYP_BIN/requeue-unblocked.sh" ]]; then
+  BYP_TMP=$(mktemp -d "${TMPDIR:-/tmp}/orch-bypass.XXXXXX")
+  mkdir -p "$BYP_TMP/.orchestrate/tasks" "$BYP_TMP/.orchestrate/logs" "$BYP_TMP/reports"
+  cat > "$BYP_TMP/.orchestrate/project.md" <<'PROJEOF'
+# Orchestrate — test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| 20990101-inbox-PARK | parked external block | auto | 1 | needs_human | 2099-01-01T00:00:00Z |
+| 20990101-inbox-NEW0 | not yet evaluated | auto | 1 | needs_human | 2099-01-01T00:00:00Z |
+PROJEOF
+  printf 'id: 20990101-inbox-PARK\nstatus: needs_human\nbypassed_at: 2099-01-01T00:05:00Z\nbypass_reason: external dep\n### Phase 1\nstatus: x failed\n' > "$BYP_TMP/.orchestrate/tasks/20990101-inbox-PARK.md"
+  printf 'id: 20990101-inbox-NEW0\nstatus: needs_human\n### Phase 1\nstatus: x failed\n' > "$BYP_TMP/.orchestrate/tasks/20990101-inbox-NEW0.md"
+
+  NHA="$(bash "$BYP_BIN/tend-need-action.sh" "$BYP_TMP" 2>/dev/null | grep '^NEEDS_HUMAN_ACTIONABLE=' | cut -d= -f2 || true)"
+  if [[ "$NHA" == "1" ]]; then
+    ok "tend-need-action.sh skips bypassed_at task (only un-parked counted)"
+  else
+    fail "tend-need-action.sh bypass skip — expected NEEDS_HUMAN_ACTIONABLE=1, got '$NHA'"
+  fi
+
+  # Unblock the parked task via requeue_when_exists closure → marker stripped + pending
+  printf '**Status:** ✅ CONFIRMED\n' > "$BYP_TMP/reports/decision.md"
+  printf 'id: 20990101-inbox-PARK\nstatus: needs_human\nrequeue_when_exists: %s/reports/decision.md\nbypassed_at: 2099-01-01T00:05:00Z\nbypass_reason: external dep\n### Phase 1\nstatus: x failed\n' "$BYP_TMP" > "$BYP_TMP/.orchestrate/tasks/20990101-inbox-PARK.md"
+  bash "$BYP_BIN/requeue-unblocked.sh" "$BYP_TMP" >/dev/null 2>&1 || true
+  if ! grep -qE '^(bypassed_at|bypass_reason):' "$BYP_TMP/.orchestrate/tasks/20990101-inbox-PARK.md" \
+     && grep -qE '\| 20990101-inbox-PARK \|.*\| pending \|' "$BYP_TMP/.orchestrate/project.md"; then
+    ok "requeue-unblocked.sh clears bypass marker and sets pending"
+  else
+    fail "requeue-unblocked.sh did not clear marker / set pending"
+  fi
+  rm -rf "$BYP_TMP"
+else
+  fail "bypass bin scripts not found under $BYP_BIN"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "── Results ───────────────────────────────────────"

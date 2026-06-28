@@ -68,17 +68,31 @@ extract_title() {
   printf '%.100s' "$title"
 }
 
+# Risky-op patterns (Gating Criteria). Scanned across the whole task file so a
+# risky op described in Goal, Context, or Acceptance Criteria is caught.
+RISKY_OP_RE='kubectl (apply|scale|delete|patch|rollout)|INSERT |UPDATE |DELETE |DROP |ALTER |TRUNCATE|rm -rf|rm -f|git push --force|force.push|force-push|delete branch|branch deletion|send email|post to slack|trigger deploy|deploy pipeline'
+
+has_gate_reason() {
+  # Explicit human override: a non-empty `gate_reason:` line forces a gate.
+  grep -qE '^gate_reason:[[:space:]]*\S' "$1" 2>/dev/null
+}
+
+file_has_risky_op() {
+  grep -qiE "$RISKY_OP_RE" "$1" 2>/dev/null
+}
+
+# Gating is risk-based, not location-based. A file under gated/ or marked
+# `mode: gated` is only a hint — it gates only when it carries an explicit
+# `gate_reason:` line OR its content describes a genuine risky op. Safe tasks
+# (e.g. inbox-log-analyzer enhancements) are de-gated to auto so the tend job
+# can run them without waiting for a human "go".
 inbox_mode_for() {
   local file="$1"
-  if [[ "$file" == *"/gated/"* ]]; then
+  if has_gate_reason "$file"; then
     echo gated
     return
   fi
-  if grep -qE '^mode:[[:space:]]*gated[[:space:]]*$' "$file" 2>/dev/null; then
-    echo gated
-    return
-  fi
-  if grep -qE '^source:[[:space:]]*self[[:space:]]*$' "$file" 2>/dev/null; then
+  if file_has_risky_op "$file"; then
     echo gated
     return
   fi
@@ -159,6 +173,8 @@ drain_file() {
 
   if [[ "$mode" == gated ]]; then
     log_inbox "inbox — registered (gated) \"$summary\" from $rel"
+  elif [[ "$rel" == gated/* ]]; then
+    log_inbox "inbox — de-gated \"$summary\" (no risky op) from $rel"
   else
     log_inbox "inbox — registered \"$summary\" from $rel"
   fi

@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
-const { intervalLabel, buildLaunchdAgents, tendThrottleHint, parseTendHealth, readTendMode, readAgentConf, readRunner, readAgentStatus, isCursorIdeRunning, isTendGoAuto, taskApprovalInfo, parseInboxMeta, isCompletedInboxFile, manifestMatchesRegistry, archiveDateFromFilename, resolveHistoryDatetime, isPlaceholderTimestamp, isFutureTimestamp, buildCompletionHints, findHistoryEntry, loadHistoryEntries, buildHistoryRows, historyStats, historyCoverage, extractTaskIdFromFilename, collectTaskLogContent, synthesizeHistoryStub, findInboxSourceForTask, approveRegistryTask, listKubeReviews, approveKubeReview } = require('../server');
+const { intervalLabel, buildLaunchdAgents, tendThrottleHint, parseTendHealth, readTendMode, readAgentConf, readRunner, readAgentStatus, isCursorIdeRunning, isTendGoAuto, taskApprovalInfo, parseInboxMeta, isCompletedInboxFile, manifestMatchesRegistry, archiveDateFromFilename, resolveHistoryDatetime, isPlaceholderTimestamp, isFutureTimestamp, buildCompletionHints, findHistoryEntry, loadHistoryEntries, buildHistoryRows, historyStats, historyCoverage, extractTaskIdFromFilename, collectTaskLogContent, synthesizeHistoryStub, findInboxSourceForTask, approveRegistryTask, listKubeReviews, approveKubeReview, formatRegistryRow, checkRegistryInvariant } = require('../server');
 
 const TEST_PORT = 7843;
 let tmpDir;
@@ -574,6 +574,47 @@ describe('buildLaunchdAgents', () => {
       assert.ok(emailJob, 'com.inbox-zero.catchup must be present');
       assert.equal(emailJob.interval, '1 hr');
       assert.equal(emailJob.status, 'ok');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('includes com.inbox-zero.* plist first-class (no LAUNCHD_WATCH needed)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-launchd-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'com.orchestrate.fake.plist'), MINIMAL_PLIST('com.orchestrate.fake', 300));
+      fs.writeFileSync(path.join(dir, 'com.inbox-zero.catchup.plist'), MINIMAL_PLIST('com.inbox-zero.catchup', 3600));
+      // No extraLabels argument: the glob alone must surface the inbox-zero job.
+      const agents = buildLaunchdAgents(dir, '- 0 com.orchestrate.fake\n- 0 com.inbox-zero.catchup\n');
+      assert.equal(agents.length, 2, 'both orchestrate and inbox-zero jobs present');
+      const emailJob = agents.find(a => a.label === 'com.inbox-zero.catchup');
+      assert.ok(emailJob, 'com.inbox-zero.catchup must be present without LAUNCHD_WATCH');
+      assert.equal(emailJob.interval, '1 hr');
+      assert.equal(emailJob.status, 'ok');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('com.inbox-zero.* not duplicated when also in LAUNCHD_WATCH', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-launchd-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'com.inbox-zero.catchup.plist'), MINIMAL_PLIST('com.inbox-zero.catchup', 3600));
+      const agents = buildLaunchdAgents(dir, '- 0 com.inbox-zero.catchup\n', '', null, ['com.inbox-zero.catchup']);
+      assert.equal(agents.length, 1, 'glob + LAUNCHD_WATCH must not duplicate the row');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ignores unrelated com.* plists (e.g. com.google.*)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-launchd-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'com.orchestrate.fake.plist'), MINIMAL_PLIST('com.orchestrate.fake', 300));
+      fs.writeFileSync(path.join(dir, 'com.google.keystone.agent.plist'), MINIMAL_PLIST('com.google.keystone.agent', 300));
+      const agents = buildLaunchdAgents(dir, '- 0 com.orchestrate.fake\n');
+      assert.equal(agents.length, 1, 'only orchestrate/inbox-zero prefixes are surfaced');
+      assert.equal(agents[0].label, 'com.orchestrate.fake');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1544,5 +1585,55 @@ describe('kube reviews', () => {
     assert.equal(body.status, 'dismissed');
     assert.ok(!fs.existsSync(path.join(pendingDir, 'api-dismiss-kube.json')));
     assert.ok(fs.existsSync(path.join(tmpDir, '.orchestrate', 'kube-reviews', 'processed', 'api-dismiss-kube.json')));
+  });
+});
+
+describe('registry invariant (NF==8 row corruption hardening — C319)', () => {
+  test('formatRegistryRow emits exactly 6 columns / NF==8', () => {
+    const row = formatRegistryRow(['20260627-x', 'My task', 'auto', '2', 'pending', '2026-06-27T18:00:00Z']);
+    assert.equal(row, '| 20260627-x | My task | auto | 2 | pending | 2026-06-27T18:00:00Z |');
+    assert.equal(row.split('|').length, 8); // matches awk -F'|' NF==8
+  });
+
+  test('formatRegistryRow sanitizes embedded pipes in a cell (no phantom column)', () => {
+    const row = formatRegistryRow(['id1', 'summary with | a pipe', 'auto', '1', 'running', 'ts']);
+    assert.equal(row.split('|').length, 8);
+    assert.ok(!/summary with \| a pipe/.test(row));
+    assert.ok(/summary with \/ a pipe/.test(row));
+  });
+
+  test('formatRegistryRow strips newlines that would break the row', () => {
+    const row = formatRegistryRow(['id1', 'line1\nline2', 'auto', '1', 'pending', 'ts']);
+    assert.equal(row.split('\n').length, 1);
+    assert.equal(row.split('|').length, 8);
+  });
+
+  test('formatRegistryRow throws when not given exactly 6 cells', () => {
+    assert.throws(() => formatRegistryRow(['a', 'b', 'c']), /expected 6 cells/);
+    assert.throws(() => formatRegistryRow('not an array'), /expected 6 cells/);
+  });
+
+  test('checkRegistryInvariant flags a malformed (extra phantom column) row', () => {
+    const content = [
+      '## Task Registry',
+      '| ID | summary | mode | current_phase | status | last_activity |',
+      '|----|---------|------|---------------|--------|---------------|',
+      '| 20260627-ok | good row | auto | 1 | complete | 2026-06-27T18:00:00Z |',
+      '| 20260627-bad | corrupt | auto | 1 | running | 2026-06-27T18:00:00Z | 2026-06-27T18:05:00Z', // phantom 7th field, no trailing pipe
+    ].join('\n');
+    const res = checkRegistryInvariant(content);
+    assert.equal(res.healthy, false);
+    assert.equal(res.badRows.length, 1);
+    assert.ok(/20260627-bad/.test(res.badRows[0]));
+  });
+
+  test('checkRegistryInvariant reports healthy when all rows are NF==8', () => {
+    const content = [
+      '| 20260627-a | task a | auto | 1 | complete | 2026-06-27T18:00:00Z |',
+      '| 20260627-b | task b | auto | 2 | pending | 2026-06-27T18:01:00Z |',
+    ].join('\n');
+    const res = checkRegistryInvariant(content);
+    assert.equal(res.healthy, true);
+    assert.equal(res.badRows.length, 0);
   });
 });

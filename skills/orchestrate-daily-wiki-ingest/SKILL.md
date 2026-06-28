@@ -63,7 +63,7 @@ For each selected entry:
 1. Read `orchestrate-history/<filename>`.
 2. Extract from the archive file:
    - `task:` line (original task description)
-   - `total_phases:` and completed phase summaries / checkpoints
+   - `total_phases:` and completed phase summaries / checkpoints. If the `total_phases:` line is absent, derive the phase count with `grep -c '^### Phase' orchestrate-history/<filename>` — never emit `?`.
    - Any `## Shared Context` or improvement suggestions blocks if present
    - `tags:` line from frontmatter or manifest
 3. Derive slug from filename (strip `.md`, remove date prefix).
@@ -78,7 +78,7 @@ sources: [orchestrate-history/<filename>]
 created: <YYYY-MM-DD>
 updated: <today ISO date>
 task_id: <id from archive if present>
-phases: <total_phases value>
+phases: <total_phases value, or `grep -c '^### Phase' <archive>` when total_phases is absent>
 status: complete
 ---
 ```
@@ -103,6 +103,8 @@ For each date folder touched, create or update `$VAULT/Orchestration/Daily/<YYYY
 |------|--------|------|
 | [[<slug>]] | N | tag1, tag2 |
 ```
+
+`N` is the page's `phases:` value (the `total_phases:` value, or the `grep -c '^### Phase'` fallback when absent) — never `?`.
 
 One-line summary per job below the table.
 

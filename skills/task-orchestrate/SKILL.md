@@ -178,29 +178,38 @@ If `NEED_ACTION=0`: append `[<ISO>] tend — idle` to `.orchestrate/logs/heartbe
 
 When reading an inbox file:
 - **Skip** files containing a `deferred_at:` line (anywhere before `## Goal`) — user deferred via inbox triage; leave in place until explicitly approved.
-- If the file contains `source: self`: register as `mode: gated`, status `awaiting_go`. Under **`tend`** or **`tend go auto`**: register in T-2, send PushNotification — never auto-execute.
+- If the file contains `source: self`: register as `mode: auto` unless the improvement **Goal** explicitly mentions a risky operation (see Gating Criteria below). Risky-op `source: self` files register as `mode: gated`, status `awaiting_go`. Non-risky `source: self` improvements auto-execute under `tend go auto`.
 - If the file is plain text (no `## Goal` section): treat the entire content as the goal, but flag at registration: `⚠ inbox file <name> has no structured context — plan phase may need clarification`.
 - If the file has the structured format: extract Goal as task summary, Context as shared background for the plan phase, ACs as phase acceptance criteria seeds.
-- If the file contains a line `mode: gated` (anywhere before `## Goal`), **or** the file lives under `.orchestrate/inbox/gated/`: register with `mode: gated`, status `awaiting_go`. Under **`tend`** or **`tend go auto`**: register in T-2, send PushNotification — never auto-execute.
+- **Gating is risk-based, not location-based.** A file is registered `mode: gated`, status `awaiting_go` **only when its content meets the Gating Criteria below (a genuine risky op) OR it carries an explicit `gate_reason:` line** (the human override). A bare `mode: gated` marker or placement under `.orchestrate/inbox/gated/` is a *hint*, not a hard gate: if the task involves no risky op and has no `gate_reason:`, **de-gate** it — register `mode: auto`, status `pending` — and log the de-gate. Do **not** gate a task just because it is safe but happened to be filed under `gated/` (e.g. inbox-log-analyzer enhancement findings). Genuinely-gated tasks under **`tend`** or **`tend go auto`**: register in T-2, send PushNotification — never auto-execute.
 
 **Inbox layout:**
-| Path | Default mode | `tend` | `tend go auto` (launchd) |
-|------|--------------|--------|-------------------------|
-| `.orchestrate/inbox/*.md` | auto unless `mode: gated` | drain → notify | drain → execute |
-| `.orchestrate/inbox/gated/*.md` | always gated | drain → notify | drain → notify (never auto-executes) |
+| Path | Gating decision | `tend` | `tend go auto` (launchd) |
+|------|-----------------|--------|-------------------------|
+| `.orchestrate/inbox/*.md` | auto unless risky-op or `gate_reason:` | drain → notify | drain → execute |
+| `.orchestrate/inbox/gated/*.md` | gated only if risky-op or `gate_reason:`; else **de-gated to auto** | drain → notify | de-gated → execute · genuinely-gated → notify (never auto-exec) |
+
+**Gating Criteria — `mode: gated` only when the task explicitly involves (any one is sufficient):**
+1. Live kubectl mutations (scale, patch, rollout, apply, delete) — also blocked by kube hook
+2. DB mutations (INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE) — also blocked by pg hook
+3. `rm`/`mv` of tracked files or production data
+4. External irreversible service calls (send email, post to Slack, trigger deploy pipeline)
+5. Git force-push or branch deletion
+
+`source: self` alone does not gate. SKILL.md edits + `make test` are safe and reversible — default `auto`. **Automated findings (e.g. inbox-log-analyzer enhancements) filed under `gated/` do not gate unless they describe a risky op above** — de-gate them to `pending`. The only way to force a gate on a safe task is an explicit `gate_reason: <why>` line written by a human.
 
 **Interactive gating:** Plain `tend` (no `go auto`) still skips execution — sends PushNotification. Use `/task-orchestrate inbox` to triage before drain, or `/task-orchestrate go auto <ID>` for one-off interactive runs.
 
 For each `.md` file in `.orchestrate/inbox/gated/` (process first):
 1. Skip if `deferred_at:` present — leave file in place.
-2. Read the file — extract title/goal. Force `mode: gated`, register with status `awaiting_go` (always, including `source: self`).
+2. Read the file — extract title/goal. **Evaluate against the Gating Criteria.** If it involves a risky op **or** has a `gate_reason:` line → register `mode: gated`, status `awaiting_go`. Otherwise **de-gate**: register `mode: auto`, status `pending`, and append `[<ISO>] inbox — de-gated "<task title>" (no risky op) from gated/<filename>` to heartbeat.log.
 3. Move file to `.orchestrate/inbox/processed/`.
-4. Append to heartbeat.log: `[<ISO>] inbox — registered (gated) "<task title>" from gated/<filename>`
+4. For genuinely-gated files only, append to heartbeat.log: `[<ISO>] inbox — registered (gated) "<task title>" from gated/<filename>`
 
 For each `.md` file in `.orchestrate/inbox/` (not in `gated/` subdirectory):
 1. Skip if `deferred_at:` present — leave file in place.
 2. Read the file — extract title/goal.
-3. Register it in the project registry (`pending` for auto, `awaiting_go` for gated or `source: self`).
+3. Register it in the project registry (`pending` for auto, `awaiting_go` for gated — gate only per the Gating Criteria: risky-op or `gate_reason:`; `source: self` alone does not gate).
 3. Move file to `.orchestrate/inbox/processed/`.
 4. Append to `.orchestrate/logs/heartbeat.log`: `[<ISO>] inbox — registered "<task title>" from <filename>`
 5. **If mode is `tend`:** do not start execution — queued tasks wait for `go`/`go auto`.
@@ -250,14 +259,46 @@ For each task in the registry:
   **Mode `tend go auto <ID>`:** Execute ONLY task `<ID>`. Skip T-1/T-2 (run-job.sh already did cleanup/drain). Skip T-4 general scan. Find `.orchestrate/tasks/{ID}.md`, run the full auto execution loop, update project.md row on completion. Used when run-job.sh pre-assigns tasks to parallel agent sessions.
 
 **`needs_human` tasks:**
-- Read task file at `.orchestrate/tasks/{ID}.md`. If the file is missing, skip.
+- Read task file at `.orchestrate/tasks/{ID}.md`. If the file is missing:
+  - **Ghost-reset auto-job re-queue:** if the registry row is `mode: auto` AND `.orchestrate/logs/heartbeat.log` contains a `ghost-reset {ID}: running→needs_human` line (the job was stalled and reset by `run-job.sh`, never wrote a task file), set the registry row to `status: pending`, append `[<ISO>] tend-auto — re-queued ghost-reset auto job {ID} (no task file, stalled run)` to heartbeat.log, and let the next pending scan execute it. These are stalled automatable jobs (idempotent daily runs like wiki-ingest / inbox-log-analyzer), not genuine human blockers. **Churn guard:** before re-queueing, the bash requeue sites bump a shared counter (`bin/churn-guard.sh` `cg_increment`); a job re-processed `CG_THRESHOLD` (default 3) times without converging is **parked** instead of re-queued — see **Churn guard** below.
+  - Otherwise (no ghost-reset line, or `mode: gated`), skip. Genuine human-blocked tasks have task files with `human_resolution: BLOCKED ON HUMAN` and no ghost-reset line — they never match the re-queue rule.
 - Count phase sections (`### Phase N`). If **every** phase has `status: ✓ complete`, run the normal **Completion** sequence inline: update registry row to `complete`, archive task file to `orchestrate-history/`, append MANIFEST entry, delete task file from `.orchestrate/tasks/`.
 - Append to heartbeat.log: `[<ISO>] tend — auto-resolved needs_human "<task title>" ({ID}) — all phases complete`
 - If any phase is incomplete or missing `✓ complete`: run the **Second-Pass Auto-Resolution Check** before leaving the task blocked.
 
-**Second-Pass Auto-Resolution Check (T-4 `needs_human` branch):**
+**First-Pass Auto-Resolution Check (MANDATORY before writing `needs_human`):**
 
-Before writing `needs_human` and skipping a task with incomplete phases, check these signals for automatic resolution. Read the task file's blocking phase blocks and project context:
+Writing `status: needs_human` without first running this check is a **protocol violation**. Before setting registry `status: needs_human` during execution (Step C ❌ branch), you MUST:
+
+1. Run `.orchestrate/bin/first-pass-auto-resolve.sh <ROOT> <ID>`. If exit 0, inject `human_resolution: Auto-resolved (first-pass) — <reason>`, set registry to `pending`, log `[<ISO>] tend-auto — first-pass self-unblocked <ID>: <reason>`, and retry — do **not** write `needs_human`.
+2. If exit 1, apply the **Human-Only Block Classifier** below. The task may be left `needs_human` ONLY if it passes the classifier (a genuine external dependency). Record the self-resolution attempt and its result in the task file before parking.
+
+Trivial categories (enumerated): **C1** creatable missing dir under project root · **C2** deferred/out-of-scope AC language · **C3** one-shot retryable transient (EPIPE/ETIMEDOUT/429) · **C4** referenced report closure (`**Status:** ✅`, `**Closed:**`) · **C5** downstream referenced task `complete` in registry · **C6** locally-executable action mislabeled as a block (cross-project file write, reversible settings/config write, a script the agent can run) — these are NOT human blockers; attempt the action instead.
+
+**Hard guard (skip first-pass):** `blocked_on: EXTERNAL`, `escalation_note:` + `blocked_on:`, or task `mode: gated`.
+
+**Human-Only Block Classifier (MANDATORY gate on both branches):**
+
+A task may only be left `needs_human` when its file states a **concrete external dependency the agent cannot satisfy itself**. Valid human-only blockers (any one):
+- A live cluster / infra op the agent cannot run (e.g. `kubectl apply/exec`, load-ramp — kube hook blocks it, no kubectl in env).
+- An external service that must recover (e.g. Redis HA no-master, third-party API outage) — outside the agent's control.
+- A missing human decision, credential, or approval the agent has no way to obtain.
+
+**NOT valid blockers — attempt them, never gate on them:**
+- A **cross-project file write** or any **local file write** (the agent can write to any path under `~/apps/`).
+- A **reversible settings/config write** (e.g. `settings.json`, `.orchestrate/agent.conf`, any local config that can be edited and reverted).
+- **A script the agent can just run** locally (it being "cross-project" or "looks risky" is not a block — run it).
+- "I didn't try", "looked risky", "cross-project write", "config write" — none of these are concrete external dependencies. Attempt the action first.
+
+**Structured human ask (genuine blockers):** to land `needs_human`, the task file MUST carry `needs:`, `why:`, `to_clear:` (or `## needs` / `## why` / `## to_clear` sections) naming the concrete external dependency from the valid list above. Free-text `BLOCKED ON HUMAN`, "cross-project write", or "config write" alone fails the clear-human-ask criterion — the agent must attempt self-resolution instead.
+
+**Auto-finalize done-but-running rows (Completion is not atomic):** the running-row Completion path. A tend/agent session can write every phase block in `.orchestrate/tasks/{ID}.md` to `status: ✓ complete` (and may even archive the task file) but die BEFORE flipping the registry row `running → complete`. T-4 re-queues only `needs_human` rows, so the done-but-running row would otherwise sit `running` forever. `.orchestrate/bin/finalize-completed-tasks.sh` runs the bash analog of the Completion sequence to reap them: for each `running`/`needs_human` row it finalizes to `complete` when EITHER (1) the task file exists and the count of `status: ✓ complete` phase blocks equals `total_phases:` (conservative — never finalize partial work), OR (2) an archive for the ID already exists in `orchestrate-history/`. On finalize it flips the row to `complete` IN PLACE (preserving the NF==8 invariant), archives to `orchestrate-history/{STAMP}-{ID}-{slug}.md` + a MANIFEST line if not already archived (no dup), deletes the stale task file, and logs an `auto-finalize — completed {ID}` heartbeat line. Idempotent (a second run is a clean no-op). It runs from **`run-job.sh` preflight** AFTER `repair_registry_rows` and BEFORE `reset_stale_running_tasks` (so a finished-but-running ghost is completed, not bounced to `needs_human`), and from **`rescue.sh`** as a safety net (before its stale-running reset). Regression: `.orchestrate/tests/test-finalize-completed-tasks.sh`.
+
+**Auto-requeue on unblock:** `run-job.sh` preflight runs `.orchestrate/bin/requeue-unblocked.sh` after `reset_stale_running_tasks`. Requeues when `requeue_when_exists:` path has closure markers, `to_clear` decision file is filled, or `human_resolution:` is injected without `BLOCKED ON HUMAN`.
+
+**Second-Pass Auto-Resolution Check (MANDATORY — T-4 `needs_human` branch):**
+
+Before writing `needs_human` and skipping a task with incomplete phases, you MUST attempt self-resolution and prove the block is genuinely human-only. Skipping this check is a protocol violation. First run `.orchestrate/bin/first-pass-auto-resolve.sh <ROOT> <ID>` (it also catches **C6** locally-executable mislabeled blocks — cross-project file writes, reversible config writes, runnable scripts); if exit 0, self-unblock per the First-Pass rule. Then check these signals for automatic resolution. Read the task file's blocking phase blocks and project context:
 
 1. **Deferral language in phase ACs:** Scan the failed/incomplete phase's `acceptance_criteria_met:` block and blockers field for markers: "deferred", "deferred to", "deferred — <team>", "not a blocker", "closed", "no action needed", "Forbidden", "out of scope". If **all** incomplete ACs contain explicit deferral or closure language → auto-resolvable.
 
@@ -271,9 +312,31 @@ Before writing `needs_human` and skipping a task with incomplete phases, check t
 - Append to heartbeat.log: `[<ISO>] tend-auto — self-unblocked <ID>: <one-line reason>`
 - The task will be re-executed on the next T-4 pending scan or next tend cycle.
 
-**If none of the signals confirm:** fall through — leave registry at `needs_human`.
+**If none of the signals confirm:** apply the **Human-Only Block Classifier** (above) before parking. The task may be left `needs_human` ONLY if the block is a concrete external dependency (live cluster/infra op, external service recovery, missing human decision/credential) recorded in structured `needs:`/`why:`/`to_clear:` form. A locally-executable action — cross-project file write, reversible settings/config write, a runnable script — is NOT a valid block: attempt it and set the row back to `pending`. Only when the classifier confirms a genuine human-only block: **park it — do not re-evaluate every cycle:** write `bypassed_at: <ISO>` and `bypass_reason: <one-line why it cannot move on>` into the task file (header or blocking phase block), and leave the registry row at `needs_human`. See **Bypass — park blocked tasks** below.
 
 **All other statuses:** skip.
+
+**Bypass — park blocked tasks (do not re-process every cycle):**
+
+Any task the orchestrator has evaluated and confirmed cannot progress — a genuine human blocker, `blocked_on: EXTERNAL`, an unmet dependency, or a non-retryable failure — is **parked** with a durable marker so the tend cycle stops churning on it. This generalizes the human-only `human_resolution: BLOCKED ON HUMAN` bypass to **all** block types.
+
+- **Write on block:** the Second-Pass fall-through above writes `bypassed_at: <ISO>` + `bypass_reason: <one line>` into the task file. Park only *after* first-pass and second-pass auto-resolution have both failed — never park a locally-resolvable "block" (cross-project file write, reversible config write, a script the agent can run); attempt those instead.
+- **Skip while parked:** `bin/tend-need-action.sh` treats any `needs_human`/`failed` row whose task file carries `bypassed_at:` as **non-actionable** — it does not raise `NEED_ACTION`, so the launchd cycle never wakes the agent for it. Completion-eligible rows (all phases `✓ complete`) and ghost-reset re-queues remain actionable.
+- **Clear on unblock:** the only exit from a parked state is an explicit unblock signal, which **removes** `bypassed_at:`/`bypass_reason:` and sets the row to `pending`:
+  - `unblock-task` (human injects a resolution)
+  - `bin/requeue-unblocked.sh` (`requeue_when_exists:` closure, `to_clear:` decision filled, or non-`BLOCKED ON HUMAN` `human_resolution:` injected)
+  - a human edits the task file (file mtime newer than `bypassed_at:`) — re-evaluate once
+  - a depended-on task reaches `complete`
+
+**Churn guard — block tasks re-processed 3× (poison-task safety net):**
+
+A task can otherwise loop forever: `running → needs_human/ghost-reset → pending → running …` with nothing detecting that the **same** task keeps cycling back into the queue. `bin/churn-guard.sh` is the single shared owner of a re-queue counter, sourced by every requeue/re-dispatch site (`run-job.sh` `reset_stale_running_tasks`, `bin/requeue-unblocked.sh` `set_pending`, `rescue.sh` stale-running reset) so the logic and storage exist once.
+
+- **Counter (two layers, `max()` wins):** a `requeue_count: N` line in `.orchestrate/tasks/{ID}.md` when the file exists, PLUS a sidecar `.orchestrate/logs/requeue-counts.tsv` keyed by `{ID}` — the sidecar is the only home for ghost-reset auto jobs that have **no task file**. Every requeue/re-dispatch calls `cg_increment {ID}`; the counter resets to 0 only on `complete` (`cg_reset {ID}`).
+- **Block at threshold:** when the counter reaches `CG_THRESHOLD` (default 3), `cg_park_if_churned {ID}` **parks** the task instead of re-queueing — registry row forced to `needs_human` (NF==8-safe, self-heals phantom columns), and `bypassed_at:` + `bypass_reason: churn — re-processed 3×` written to the task file (a minimal file is created for ghosts). `tend-need-action.sh` then treats it as non-actionable, so the launchd cycle stops waking the agent for it.
+- **Async investigation job:** on crossing the threshold an inbox file `investigate-churn-{ID}-{ISO}.md` is auto-filed (`source: self`, `mode: auto`, `triggered_by: {ID}`) whose Goal is "root-cause why {ID} re-processed 3× without converging and propose/apply a fix", Context auto-populated from the registry row + relevant heartbeat lines. **Deduped:** skipped if any inbox file (active or `processed/`) already carries `triggered_by: {ID}`.
+- **Heartbeat:** a `[<ISO>] churn-guard — blocked {ID} after 3 re-processings; filed investigate-churn-{ID}` line is appended on park.
+- **Clear:** the park clears through the same unblock paths as any bypass (above); `cg_reset` zeros the counter on `complete`.
 
 ### T-5 — Update shared context (after any completions this cycle)
 
@@ -595,7 +658,7 @@ Simple/instructional: high/medium confidence → ✅, low → ⚠️.
   - Retry schedule (agent phases): retry 1 → original tier; retry 2 → upgrade (Haiku→Sonnet, Sonnet→premium); retry 3 → halt (Sonnet-tier) or retry 4 → halt (Haiku-tier). Premium: retry 1 → premium; retry 2 → halt.
   - Inline phases: after 2 retries, escalate to agent/Haiku on retry 3, halt on retry 4.
 
-- **❌** → write `✗ failed`. Update project.md: `status: needs_human`.
+- **❌** → write `✗ failed`. **Before** updating project.md to `status: needs_human`, you MUST run the **First-Pass Auto-Resolution Check** and the **Human-Only Block Classifier** (see T-4 below). Only set `status: needs_human` if the block passes the classifier (a concrete external dependency) — a locally-executable action (cross-project file write, reversible config write, a runnable script) is NOT a valid block: attempt it instead and retry.
   - **Gated / interactive auto:** Gate: `⏸ retry · skip · replan · abort · instruct`
   - **Tend-auto (invoked from `tend go auto`):** Do NOT gate. Log the block and move on:
     `[<ISO>] tend-auto — task <ID> blocked (needs_human); continuing queue`
@@ -662,6 +725,8 @@ On each phase checkpoint (Step C ✅), also set registry `last_activity` to `$(d
 - **Cross-project task summaries** (and archive MANIFEST lines) must include the project slug (e.g. `sy-promotion`) so History search finds them.
 
 **2. Update project.md registry:** set `status: complete`, `last_activity: <COMPLETED_AT>` (the exact ISO from timestamp contract — never a rounded placeholder).
+
+> **Registry-row invariant (every writer/checker MUST hold this).** A valid data row is `| ID | summary | mode | phase | status | last_activity |` — exactly 8 `|`-fields with an EMPTY trailing `$8`. The canonical corruption check is `awk -F'|' 'NF!=8 || $8!=""'` — a bare `NF!=8` is INSUFFICIENT because the historic phantom-timestamp corruption (`... | last_activity | new_ts`, no trailing pipe) is NF==8 with a NON-empty `$8` and a bare check misses it. Update rows IN PLACE (never append a column). Reference impls: `repair_registry_rows` (run-job.sh), `checkRegistryInvariant` (monitor server.js), `.orchestrate/tests/test-registry-invariant.sh`.
 
 **3. Update Shared Context** — see section below.
 
@@ -823,11 +888,11 @@ For each qualifying suggestion, write an inbox file instead of any external back
 - An existing file in `inbox/`, `inbox/gated/`, or `inbox/processed/` has ≥70% word overlap with the normalized suggestion title (lowercase, strip punctuation, compare token sets)
 - An existing file has the same `triggered_by: <this task ID>` value
 
-**Path:** `.orchestrate/inbox/gated/improvement-<slug>-<YYYYMMDDTHHMMSS>.md`
+**Path:** `.orchestrate/inbox/improvement-<slug>-<YYYYMMDDTHHMMSS>.md`
 
 **Template:**
 ```markdown
-mode: gated
+mode: auto
 source: self
 triggered_by: <task ID>
 

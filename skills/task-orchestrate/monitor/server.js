@@ -94,6 +94,61 @@ function parseRegistry(projectMdContent) {
   return rows;
 }
 
+/**
+ * Build a registry data row that is guaranteed to satisfy the NF==8 invariant
+ * (exactly 6 columns: ID | summary | mode | phase | status | last_activity).
+ * Every cell is sanitized — embedded `|` (would split into a phantom column) and
+ * newlines (would break the row) are replaced, and surrounding space is trimmed.
+ * Throws if the result does not parse to exactly 6 cells, so a bad write fails
+ * loudly instead of corrupting project.md. All monitor writes MUST route through
+ * this helper.
+ * @param {[string,string,string,string,string,string]} cells - the 6 column values
+ * @returns {string} a single `| ... |` registry row line
+ */
+function formatRegistryRow(cells) {
+  if (!Array.isArray(cells) || cells.length !== 6) {
+    throw new Error(`formatRegistryRow: expected 6 cells, got ${Array.isArray(cells) ? cells.length : typeof cells}`);
+  }
+  const clean = cells.map(c =>
+    String(c == null ? '' : c).replace(/\|/g, '/').replace(/[\r\n]+/g, ' ').trim()
+  );
+  const row = `| ${clean.join(' | ')} |`;
+  // Self-verify the invariant the same way awk -F'|' does (NF==8).
+  const nf = row.split('|').length;
+  if (nf !== 8) {
+    throw new Error(`formatRegistryRow: produced NF=${nf} (expected 8) for row: ${row}`);
+  }
+  return row;
+}
+
+/**
+ * Continuous invariant guard: scan project.md content for registry data rows that
+ * violate the canonical schema. A data row starts with `| <digit` (task IDs are
+ * date-stamped) — header/separator rows are skipped.
+ *
+ * A VALID row splits on `|` into exactly 8 parts with an EMPTY trailing part,
+ * i.e. `| ID | summary | mode | phase | status | last_activity |` (leading empty,
+ * 6 cells, trailing empty). This matches `repair_registry_rows` in run-job.sh:
+ * the historic corruption appends a phantom timestamp PAST the trailing pipe
+ * (`... | last_activity | new_ts`) which still yields 8 `|`-parts but a NON-empty
+ * trailing field — a bare length check misses it, so we also assert the trailing
+ * part is empty (equivalent to awk's `$8 != ""`). NF>8 (extra `|`) and truncated
+ * rows are caught by the length check.
+ * @param {string} projectMdContent
+ * @returns {{ healthy: boolean, badRows: string[] }}
+ */
+function checkRegistryInvariant(projectMdContent) {
+  const badRows = [];
+  if (typeof projectMdContent === 'string') {
+    for (const line of projectMdContent.split('\n')) {
+      if (!/^\|\s*[0-9]/.test(line)) continue;
+      const parts = line.split('|');
+      if (parts.length !== 8 || parts[parts.length - 1].trim() !== '') badRows.push(line);
+    }
+  }
+  return { healthy: badRows.length === 0, badRows };
+}
+
 /** Statuses that require human action before work continues (when tend is notify-only). */
 const APPROVAL_STATUSES = new Set(['awaiting_go', 'needs_human', 'failed', 'awaiting_critic']);
 
@@ -870,7 +925,7 @@ function approveRegistryTask(cwd, taskId, goMode) {
     foundRow = { id: cells[0], summary: cells[1], originalMode: cells[2] };
     const newMode = goMode === 'cancel' ? cells[2] : goMode === 'gated' ? 'gated' : 'auto';
     const newStatus = goMode === 'cancel' ? 'failed' : 'pending';
-    return `| ${cells[0]} | ${cells[1]} | ${newMode} | ${cells[3]} | ${newStatus} | ${now} |`;
+    return formatRegistryRow([cells[0], cells[1], newMode, cells[3], newStatus, now]);
   });
 
   if (!foundRow) return { error: `task ${taskId} not found or not in awaiting_go state` };
@@ -911,7 +966,7 @@ function rerunTask(cwd, taskId) {
     if (cells.length < 6 || cells[0] !== taskId) return line;
     if (!['needs_human', 'failed', 'awaiting_go'].includes(cells[4])) return line;
     found = { id: cells[0], summary: cells[1], prevStatus: cells[4] };
-    return `| ${cells[0]} | ${cells[1]} | auto | ${cells[3]} | pending | ${now} |`;
+    return formatRegistryRow([cells[0], cells[1], 'auto', cells[3], 'pending', now]);
   });
   if (!found) return { error: `task ${taskId} not eligible for rerun (must be needs_human/failed/awaiting_go)` };
   fs.writeFileSync(projectMdPath, newLines.join('\n'));
@@ -1255,11 +1310,21 @@ function handleTasks(res) {
   const approvalTasks = registry.filter(r => r.needsApproval && r.status !== 'complete');
   const { tendHealth } = readTendHealthInputs(CWD);
   const tendIssues = tendHealth && !tendHealth.ok ? [tendHealth] : [];
+  // Continuous invariant guard — surface registry corruption (NF!=8 OR non-empty
+  // trailing $8 rows; see checkRegistryInvariant) to the dashboard so a human is
+  // alerted even if rescue.sh has not run yet.
+  const inv = checkRegistryInvariant(content);
+  const registryHealth = {
+    ok: inv.healthy,
+    badRowCount: inv.badRows.length,
+    badRows: inv.badRows.slice(0, 10),
+  };
   send(res, 200, {
     tendMode,
     registry,
     tasks,
     tendHealth,
+    registryHealth,
     attention: {
       taskCount: approvalTasks.length,
       tasks: approvalTasks.map(r => ({
@@ -1324,16 +1389,25 @@ function handleLogs(res, query) {
   send(res, 200, { files: matchingFiles, logs });
 }
 
-/** Extract task IDs referenced in an inbox file (content + filename). */
+/**
+ * Extract the inbox file's OWN identity task IDs (used to decide if it was
+ * already handled). Identity = structured `Task ID:` / `processed_as:` lines
+ * plus the ID embedded in the filename. We deliberately do NOT scan the body
+ * prose for loose `YYYYMMDD-inbox-XXXX` tokens: a brand-new task that merely
+ * *references* a completed task (e.g. "Motivated by 20260627-inbox-AC12",
+ * `triggered_by:` an improvement's parent) would otherwise be misclassified as
+ * completed and hidden from the inbox the moment the referenced task finished.
+ */
 function extractInboxTaskIds(content, filename) {
   const ids = new Set();
   if (content) {
-    const taskIdLine = content.match(/^Task ID:\s*(\S+)/m);
+    // Identity markers only — accept a `Task ID:` line even when written as a
+    // markdown bullet ("- Task ID: …") or indented, but NOT a bare ID buried in
+    // prose (that is a reference, not the file's own identity).
+    const taskIdLine = content.match(/^\s*-?\s*Task ID:\s*(\S+)/m);
     if (taskIdLine) ids.add(taskIdLine[1]);
     const processedAs = content.match(/^processed_as:\s*(\S+)/m);
     if (processedAs) ids.add(processedAs[1]);
-    const idPattern = /20\d{6}(?:-inbox-[A-Z0-9]+|\d{6}-\d+)/g;
-    for (const m of content.matchAll(idPattern)) ids.add(m[0]);
   }
   const base = path.basename(filename, '.md');
   const fnMatch = base.match(/(20\d{6}(?:-inbox-[A-Z0-9]+|\d{6}-\d+))/);
@@ -1878,11 +1952,15 @@ function readTendHealthInputs(cwd) {
   return { heartbeatContent, tendHealth };
 }
 
+// Plist label prefixes that are surfaced first-class in the dashboard LaunchD
+// tab without needing an explicit LAUNCHD_WATCH entry in agent.conf.
+const LAUNCHD_PREFIXES = ['com.orchestrate.', 'com.inbox-zero.'];
+
 function buildLaunchdAgents(launchDir, lctlOutput, heartbeatContent, tendHealth, extraLabels) {
   let plistFiles = [];
   try {
     plistFiles = fs.readdirSync(launchDir)
-      .filter(f => f.startsWith('com.orchestrate.') && f.endsWith('.plist'))
+      .filter(f => f.endsWith('.plist') && LAUNCHD_PREFIXES.some(p => f.startsWith(p)))
       .map(f => path.join(launchDir, f));
   } catch (_) {}
 
@@ -2153,6 +2231,8 @@ module.exports = {
   parseTendHealth,
   readTendHealthInputs,
   parseRegistry,
+  formatRegistryRow,
+  checkRegistryInvariant,
   readTendMode,
   readAgentConf,
   readRunner,

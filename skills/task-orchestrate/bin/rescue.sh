@@ -21,6 +21,20 @@ HEARTBEAT="$ROOT/.orchestrate/logs/heartbeat.log"
 PROJ="$ROOT/.orchestrate/project.md"
 BIN="$ROOT/.orchestrate/bin"
 
+# Churn guard: share the re-queue counter with run-job.sh / requeue-unblocked.sh
+# so a task ghost-reset 3× from ANY reaper is parked rather than churning forever.
+CG_ROOT="$ROOT"
+if [[ -f "$BIN/churn-guard.sh" ]]; then
+  # shellcheck disable=SC1090
+  source "$BIN/churn-guard.sh"
+fi
+
+# Stale-running threshold — MUST match run-job.sh:reset_stale_running_tasks
+# (STALE_RUNNING_SECS). Keeping the two reapers on a single value avoids the
+# 14C8 gap where a ghost was older than run-job's 600s bar but younger than
+# rescue's old 3600s bar, so neither reaper reset it.
+STALE_RUNNING_SECS=600
+
 log_rescue() {
   local msg="$1"
   mkdir -p "$(dirname "$HEARTBEAT")"
@@ -53,18 +67,81 @@ if [[ -f "$HEARTBEAT" ]]; then
   fi
 fi
 
+# --- 2pre. Normalize registry rows (NF==8 invariant) BEFORE any status fix ---
+# A registry data row must be exactly `| ID | summary | mode | phase | status |
+# last_activity |` → awk -F'|' NF==8 (6 cells + leading/trailing empties). A
+# concurrent/legacy writer could append a phantom field past the trailing pipe
+# (`| ... | running | <ts> | <ts>`), which defeats the stale-running reset below
+# (its matcher expects `| running | ts |`) and deadlocks the registry. Normalize
+# first — keeping the 6 real columns ($2..$7) and restoring the trailing pipe —
+# so corruption from ANY source (monitor, parallel agents, manual edits) self-heals
+# without an agent. No-op on valid rows. Atomic temp+mv write.
+if [[ -f "$PROJ" ]]; then
+  NORM_TMP="${PROJ}.norm.$$"
+  if awk -F'|' -v OFS='|' '
+    /^\|[[:space:]]*[0-9]/ && NF>=8 {
+      trailing=$8; gsub(/[[:space:]]/,"",trailing)
+      if (NF>8 || trailing!="") {
+        line=$1
+        for (i=2; i<=7; i++) line=line "|" $i
+        print line "|"; fixed++; next
+      }
+    }
+    { print }
+    END { if (fixed>0) print "NORMALIZED="fixed > "/dev/stderr" }
+  ' "$PROJ" > "$NORM_TMP" 2>"${NORM_TMP}.err"; then
+    NORM_COUNT="$(grep -oE 'NORMALIZED=[0-9]+' "${NORM_TMP}.err" 2>/dev/null | cut -d= -f2 || echo 0)"
+    if [[ "${NORM_COUNT:-0}" -gt 0 ]]; then
+      mv "$NORM_TMP" "$PROJ"
+      log_rescue "normalized $NORM_COUNT corrupted registry row(s) (registry-invariant self-heal: NF!=8 or non-empty trailing field)"
+    else
+      rm -f "$NORM_TMP"
+    fi
+  else
+    rm -f "$NORM_TMP"
+  fi
+  rm -f "${NORM_TMP}.err"
+
+  # Continuous invariant guard: any data row that is STILL malformed after the
+  # normalizer is corruption it could not repair (e.g. a truncated row). A valid
+  # row is NF==8 with an EMPTY trailing field $8; flag NF!=8 OR non-empty $8
+  # (matches repair_registry_rows / monitor checkRegistryInvariant). Log a warning
+  # + fire a macOS push notification so a human is alerted. The dashboard surfaces
+  # the same condition (see monitor registryHealth).
+  BAD_ROWS="$(awk -F'|' '/^\|[[:space:]]*[0-9]/ { t=$8; gsub(/[[:space:]]/,"",t); if (NF!=8 || t!="") c++ } END{print c+0}' "$PROJ" 2>/dev/null || echo 0)"
+  if [[ "${BAD_ROWS:-0}" -gt 0 ]]; then
+    log_rescue "WARNING invariant breach — ${BAD_ROWS} registry row(s) still violate invariant (NF!=8 or non-empty trailing field) after normalize (needs manual fix)"
+    if command -v osascript >/dev/null 2>&1; then
+      osascript -e "display notification \"${BAD_ROWS} project.md row(s) violate invariant (NF!=8 or non-empty trailing field) after normalize — manual fix needed\" with title \"orchestrate registry corruption\"" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
+# --- 2b. Auto-finalize done-but-running rows (E721) ---
+# Safety net for the run-job.sh preflight reaper: Completion is not atomic, so a
+# session can finish all phases (and maybe archive the task file) but die before
+# flipping the registry row running→complete. Finalize those here too — flip to
+# complete + archive (no dup) + delete stale task file. Runs BEFORE the
+# stale-running reset so a finished-but-running ghost is completed, not bounced to
+# needs_human. Guard on -x, || true (never break rescue). Idempotent.
+if [[ -x "$BIN/finalize-completed-tasks.sh" ]]; then
+  bash "$BIN/finalize-completed-tasks.sh" "$ROOT" 2>/dev/null || true
+fi
+
 # --- 2a. Reset stale 'running' tasks to 'needs_human' ---
-# A task stuck in 'running' for >3600s means the agent session crashed without
-# updating the registry. T-4 can't act on 'running' tasks, so reset them to
-# 'needs_human' so the next tend cycle auto-resolves (all phases complete) or
-# surfaces them for human attention.
+# A task stuck in 'running' for >STALE_RUNNING_SECS with no completed phase means
+# the agent session crashed/wedged without updating the registry. T-4 can't act
+# on 'running' tasks, so reset them to 'needs_human' so the next tend cycle
+# auto-resolves (all phases complete) or surfaces them for human attention.
+# Mirrors run-job.sh:reset_stale_running_tasks (same threshold + ✓-phase guard).
 if [[ -f "$PROJ" ]]; then
   NOW_RESET="$(date +%s)"
-  while IFS='|' read -r _ r_id _ _ _ r_status r_last _; do
+  while IFS='|' read -r _ r_id _ r_mode _ r_status r_last _; do
     r_status="${r_status## }"; r_status="${r_status%% }"
     [[ "$r_status" == "running" ]] || continue
     r_id="${r_id## }"; r_id="${r_id%% }"
     [[ -z "$r_id" || "$r_id" == "ID" || "$r_id" == "---"* ]] && continue
+    r_mode="${r_mode## }"; r_mode="${r_mode%% }"
     r_last="${r_last## }"; r_last="${r_last%% }"
     r_ts=0
     # TZ=UTC required on macOS: date -j -f ignores 'Z' suffix and uses local time
@@ -72,7 +149,13 @@ if [[ -f "$PROJ" ]]; then
       r_ts="$(date -d "$r_last" '+%s' 2>/dev/null || echo 0)"
     fi
     r_age=$(( NOW_RESET - r_ts ))
-    if [[ "$r_age" -gt 3600 ]]; then
+    # ✓-phase guard (mirrors run-job.sh): a task whose file shows real phase
+    # progress is genuinely running, not a ghost — never reset it on age alone.
+    r_file="$ROOT/.orchestrate/tasks/${r_id}.md"
+    if [[ -f "$r_file" ]] && grep -q '✓ complete' "$r_file" 2>/dev/null; then
+      continue
+    fi
+    if [[ "$r_age" -gt "$STALE_RUNNING_SECS" ]]; then
       r_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       awk -v id="$r_id" -v ts="$r_now" 'BEGIN{FS="|";OFS="|"} /^\|/ {
         n=split($2,a,/[[:space:]]+/); tid=""
@@ -81,7 +164,31 @@ if [[ -f "$PROJ" ]]; then
         for(i=1;i<=n;i++) if(b[i]!=""){st=b[i];break}
         if(tid==id && st=="running"){$6=" needs_human ";$7=" "ts" "}
       } {print}' "$PROJ" > "${PROJ}.tmp" && mv "${PROJ}.tmp" "$PROJ" || true
-      log_rescue "reset stale running task $r_id (${r_age}s) → needs_human"
+      # Emit the exact "ghost-reset <ID>: running→needs_human" token that
+      # tend-need-action.sh:42 recognizes, so an AUTO job with no task file is
+      # re-queued instead of left parked in needs_human. run-job.sh:302 uses the
+      # same form. Gated rows are genuine human blockers — keep them descriptive
+      # and NOT re-queue-eligible (avoids spurious dispatch / token spend).
+      # Churn guard: this stale-running reset is a re-processing of $r_id. Bump the
+      # shared counter; if it has churned ${CG_THRESHOLD:-3}× without converging,
+      # park it (needs_human + bypass markers) + file an investigation job instead
+      # of emitting the re-queue-eligible ghost-reset token. cg_park_if_churned
+      # returns 0 only when it actually parked.
+      cg_parked_here=0
+      if type cg_increment >/dev/null 2>&1; then
+        cg_increment "$r_id" >/dev/null 2>&1 || true
+        if cg_park_if_churned "$r_id" 2>/dev/null; then
+          cg_parked_here=1
+          log_rescue "churn-guard parked $r_id after ${CG_THRESHOLD:-3} re-processings (rescue path)"
+        fi
+      fi
+      if [[ "$cg_parked_here" -eq 0 ]]; then
+        if [[ "$r_mode" == "auto" ]]; then
+          log_rescue "ghost-reset $r_id: running→needs_human (${r_age}s stale, rescue)"
+        else
+          log_rescue "reset stale running task $r_id (${r_age}s) → needs_human (gated; not auto-requeued)"
+        fi
+      fi
     fi
   done < <(grep '^|' "$PROJ" 2>/dev/null)
 fi
@@ -97,7 +204,12 @@ done
 REGISTRY_ACTIONABLE=0
 OLDEST_PENDING_AGE=0
 if [[ -f "$PROJ" ]]; then
-  for st in pending awaiting_go needs_human running; do
+  # needs_human is a parked state the watchdog cannot progress on its own, so it
+  # must NOT count toward the stuck-tend heuristic — otherwise rescue treats
+  # human-blocked rows as "actionable" forever and logs a false RECOVERED every
+  # cycle. Auto-resolvable needs_human rows are still handled by tend's own
+  # scheduled second-pass check, not by rescue.
+  for st in pending awaiting_go running; do
     n="$(awk -F'|' -v st="$st" '
       /^\|/ && $2 !~ /^[[:space:]]*ID[[:space:]]*$/ && $2 !~ /^-+$/ {
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", $6)

@@ -48,6 +48,15 @@ if [[ -f "$CONF" ]]; then
   source "$CONF"
 fi
 
+# Churn guard: shared re-queue counter + "blocked after 3×" park. Sourced so the
+# counter/park logic exists once (also used by requeue-unblocked.sh + rescue.sh).
+# CG_ROOT pins the helper to this project root regardless of caller cwd.
+CG_ROOT="$ROOT"
+if [[ -f "$ROOT/.orchestrate/bin/churn-guard.sh" ]]; then
+  # shellcheck disable=SC1090
+  source "$ROOT/.orchestrate/bin/churn-guard.sh"
+fi
+
 log_heartbeat() {
   local line="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1"
   mkdir -p "$(dirname "$HEARTBEAT_LOG")"
@@ -55,26 +64,34 @@ log_heartbeat() {
   echo "$line" >&2
 }
 
+# Launchd wrapper holds .tend.lock; tell the agent to skip SKILL.md T-0 so it does
+# not self-abort on the wrapper's own lock (root cause of the 2026-06 tend stall).
+LOCK_DIRECTIVE="Launchd-managed run: TEND_LOCK_MANAGED=1 is set and .orchestrate/.tend.lock is already held by your run-job.sh wrapper (released on exit). Per SKILL.md T-0, SKIP the lock block entirely — do NOT check lock age and do NOT exit with 'tend already running'. Proceed directly to T-1."
+
 tend_prompt() {
+  local base
   case "$TEND_MODE" in
-    go\ auto|go_auto) printf '%s' "/task-orchestrate tend go auto" ;;
-    notify|tend|"")   printf '%s' "/task-orchestrate tend" ;;
+    go\ auto|go_auto) base="/task-orchestrate tend go auto" ;;
+    notify|tend|"")   base="/task-orchestrate tend" ;;
     *)
       echo "run-job.sh: unknown TEND_MODE='$TEND_MODE' in $CONF (expected 'go auto' or 'notify')" >&2
       exit 1
       ;;
   esac
+  printf '%s\n\n%s' "$base" "$LOCK_DIRECTIVE"
 }
 
 tend_prompt_claude() {
+  local base
   case "$TEND_MODE" in
-    go\ auto|go_auto) printf '%s' "tend go auto" ;;
-    notify|tend|"")   printf '%s' "tend" ;;
+    go\ auto|go_auto) base="tend go auto" ;;
+    notify|tend|"")   base="tend" ;;
     *)
       echo "run-job.sh: unknown TEND_MODE='$TEND_MODE' in $CONF (expected 'go auto' or 'notify')" >&2
       exit 1
       ;;
   esac
+  printf '%s\n\n%s' "$base" "$LOCK_DIRECTIVE"
 }
 
 # cursor-agent requires permissions.deny (array, may be empty) in project cli.json
@@ -242,15 +259,40 @@ mark_pending_tasks_as_running() {
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
+  # Registry row schema: | ID | summary | mode | phase | status | last_activity |
+  # → awk -F'|' fields: $2=ID  $6=status  $7=last_activity  $8=<empty trailing>.
+  # Only well-formed rows (NF==8) are touched: flip status $6 pending→running and
+  # stamp last_activity in $7. (Historic bug: wrote $8, appending a phantom field
+  # PAST the trailing pipe — the malformed '| running | ts | ts' corruption that
+  # then defeated reset_stale_running_tasks. See repair_registry_rows.)
   awk -F'|' -v OFS='|' -v now="$now" '
-    /^\|[[:space:]]*[0-9]/ {
-      for (i=1; i<=NF; i++) {
-        field = $i
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", field)
-        if (field == "pending") {
-          $i = " running "
-          if (NF >= 8) $8 = " " now " "
-        }
+    /^\|[[:space:]]*[0-9]/ && NF==8 {
+      st=$6; gsub(/^[[:space:]]+|[[:space:]]+$/,"",st)
+      if (st=="pending") { $6=" running "; $7=" " now " " }
+    }
+    { print }
+  ' "$proj" > "$tmp" && mv "$tmp" "$proj"
+}
+
+# Repair malformed registry rows: a concurrent writer (pre-lock-fix) could append
+# a phantom timestamp field PAST the trailing pipe, yielding rows like
+# '| ... | running | <last_activity> | <phantom_ts>' with no trailing pipe. Such
+# rows defeat reset_stale_running_tasks (its sed expects '| running | ts |') and
+# deadlock the registry. This normalizer keeps the 6 real columns ($2..$7) and
+# restores the trailing pipe, dropping any phantom field. No-op on valid rows
+# (NF==8 with an empty $8). Atomic temp+mv write.
+repair_registry_rows() {
+  local proj="$ROOT/.orchestrate/project.md"
+  [[ -f "$proj" ]] || return 0
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
+  awk -F'|' '
+    /^\|[[:space:]]*[0-9]/ && NF>=8 {
+      trailing=$8; gsub(/[[:space:]]/,"",trailing)
+      if (NF>8 || trailing!="") {
+        line=$1
+        for (i=2; i<=7; i++) line=line "|" $i
+        print line "|"; next
       }
     }
     { print }
@@ -288,19 +330,81 @@ reset_stale_running_tasks() {
       continue  # Has progress — not a ghost
     fi
 
-    # Reset to needs_human and inject resolution hint into task file
+    # Reset to needs_human and inject resolution hint into task file.
+    # Atomic temp+mv write (was `sed -i ''` in place — non-atomic, unsafe under a
+    # concurrent reader). Match the row by ID ($2) and flip status $6 running→
+    # needs_human, stamping last_activity $7.
+    #
+    # 14C8 (split-brain fix): the detection loop above matches ANY grep-matched stale
+    # `running` row (NF-tolerant positional read), but this mutation historically
+    # guarded on NF==8. So a phantom-extra-column row (NF>8 — the
+    # `| … | running | <last_activity> | <phantom_ts> |` corruption) was DETECTED but
+    # never flipped, while the heartbeat below still logged a ghost-reset. That
+    # split-brain left the row stuck `running` (T-4 re-queues only `needs_human` rows)
+    # and made the heartbeat lie. Fix: accept NF>=8 and self-heal phantom columns in
+    # the same pass (collapse to the 6 real columns + restored trailing pipe), and log
+    # the ghost-reset heartbeat ONLY when the flip actually happened (awk signals via
+    # exit code; a detected-but-unflipped row logs a distinct SKIPPED line instead).
     local hint="Auto-reset: task stuck in running for ${age}s with no phase progress (tend session likely died)"
     local now_iso
     now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    sed -i '' "s/| running | ${last_activity} |/| needs_human | ${now_iso} |/" "$proj" 2>/dev/null || \
-      sed -i '' "/\| ${task_id} \|/s/| running |/| needs_human |/" "$proj" 2>/dev/null || true
-    if [[ -f "$task_file" ]]; then
-      # Prepend human_resolution hint to the first incomplete phase block
-      sed -i '' "/^### Phase/a\\
+    local rs_tmp rs_rc=0
+    rs_tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
+    awk -F'|' -v OFS='|' -v id="$task_id" -v ts="$now_iso" '
+      /^\|[[:space:]]*[0-9]/ && NF>=8 {
+        rid=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",rid)
+        st=$6;  gsub(/^[[:space:]]+|[[:space:]]+$/,"",st)
+        if (rid==id && st=="running") {
+          $6=" needs_human "; $7=" " ts " "
+          if (NF>8) { NF=8; $8="" }   # drop phantom column(s), restore trailing pipe
+          flipped=1
+        }
+      }
+      { print }
+      END { exit (flipped ? 0 : 2) }
+    ' "$proj" > "$rs_tmp" || rs_rc=$?
+    if [[ $rs_rc -eq 0 ]]; then
+      mv "$rs_tmp" "$proj"
+      if [[ -f "$task_file" ]]; then
+        # Prepend human_resolution hint to the first incomplete phase block
+        sed -i '' "/^### Phase/a\\
 human_resolution: ${hint}" "$task_file" 2>/dev/null || true
+      fi
+      # Churn guard: this ghost-reset is a re-processing of ${task_id}. Bump the
+      # shared counter; if it has now churned ${CG_THRESHOLD:-3}× without
+      # converging, park it (needs_human + bypass markers) and file an async
+      # investigation job instead of letting it loop forever. cg_park_if_churned
+      # returns 0 only when it actually parked.
+      if type cg_increment >/dev/null 2>&1; then
+        cg_increment "$task_id" >/dev/null 2>&1 || true
+        if cg_park_if_churned "$task_id" 2>/dev/null; then
+          log_heartbeat "run-job — churn-guard parked ${task_id} after ${CG_THRESHOLD:-3} re-processings (ghost-reset path)"
+          continue
+        fi
+      fi
+      log_heartbeat "run-job — ghost-reset ${task_id}: running→needs_human (${age}s stale, no ✓ phase)"
+    else
+      rm -f "$rs_tmp"
+      log_heartbeat "run-job — ghost-reset SKIPPED ${task_id}: stale running row did not flip (malformed/raced); awaiting repair_registry_rows"
     fi
-    log_heartbeat "run-job — ghost-reset ${task_id}: running→needs_human (${age}s stale, no ✓ phase)"
   done < <(grep -E '^\|[[:space:]]*[0-9]' "$proj" 2>/dev/null || true)
+}
+
+# E721: auto-finalize watchdog. Completion is NOT atomic — a tend/agent session
+# can write every phase block to ✓ complete (and possibly archive the task file)
+# but die before flipping the registry row running→complete. T-4 re-queues only
+# `needs_human`, so such a row sits `running` forever. This bash analog of the
+# SKILL Completion sequence reaps those done-but-running rows: flips the row to
+# complete, archives to orchestrate-history/ + MANIFEST (no dup if already
+# archived), deletes the stale task file. Idempotent. Runs in the tend preflight
+# AFTER repair_registry_rows (so malformed rows are normalized first) and BEFORE
+# reset_stale_running_tasks (so a finished-but-running ghost is completed, not
+# bounced to needs_human). Guard on -x, log on failure (continue tend).
+finalize_completed_tasks() {
+  local script="$ROOT/.orchestrate/bin/finalize-completed-tasks.sh"
+  if [[ -x "$script" ]]; then
+    bash "$script" "$ROOT" || log_heartbeat "run-job — finalize-completed-tasks.sh failed (continuing tend)"
+  fi
 }
 
 cleanup_stale_inbox() {
@@ -358,28 +462,99 @@ pending_task_count() {
 # Acquire the tend lock at the shell level so it is always released on exit,
 # regardless of whether the agent session can execute shell commands.
 # Sets TEND_LOCK_MANAGED=1 so the SKILL's T-0 skips its own lock logic.
+#
+# Concurrency model (fixes the 2026-06 concurrent-tend race that corrupted
+# project.md): acquisition is atomic via a noclobber exclusive create, and the
+# lock records the owning PID. A second launchd cycle that fires while a long
+# go-auto drain (up to MAX_TEND_LOOPS agent sessions, easily >300s) is still
+# running finds the lock held by a LIVE pid and skips — it never steals a lock
+# whose owner is alive, no matter how old the lock is. The old age-only rule
+# (steal at >360s) let the 300s launchd cycle barge into a long live cycle, so
+# two writers raced on the registry. A lock is now reclaimed only when its owner
+# PID is dead (crashed session) AND the lock has aged past LOCK_STALE_GRACE.
+# refresh_tend_lock() touches the lock between dispatch sessions so a healthy
+# long cycle also stays fresh for rescue.sh / SKILL T-0 mtime checks.
+#
+# flock vs noclobber (C319 decision): we deliberately keep the `set -o noclobber`
+# exclusive-create lock rather than switching to flock(1). Rationale:
+#   - macOS ships no `flock` binary (it is util-linux); this lock must run on the
+#     dev Macs and under launchd without extra deps, so flock would need a polyfill.
+#   - flock's advisory lock is held by an open fd and released when the process
+#     exits — it cannot survive across the multiple short-lived agent SESSIONS a
+#     single go-auto drain spawns, which is exactly the window we must protect.
+#   - The noclobber create is itself atomic, and we add PID-liveness + grace-based
+#     reclaim (above), giving the same mutual exclusion plus crash recovery that a
+#     bare flock would not. Registry writes are additionally made atomic (temp+mv)
+#     and self-healing (repair_registry_rows / rescue normalizer), so a lost lock
+#     degrades to a repairable row, never a deadlock. Decision: keep noclobber.
+LOCK_STALE_GRACE=120   # seconds a DEAD owner's lock must age before reclaim
+
 acquire_tend_lock() {
   local lock="$ROOT/.orchestrate/.tend.lock"
-  if [[ -f "$lock" ]]; then
-    local age
+  TEND_LOCK_FILE="$lock"
+  mkdir -p "$(dirname "$lock")"
+
+  while true; do
+    # Atomic test-and-set: noclobber makes '>' fail if the file already exists,
+    # so only one racer can create it. Content = "<pid> <iso-acquired>".
+    if ( set -o noclobber; printf '%s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lock" ) 2>/dev/null; then
+      # shellcheck disable=SC2064
+      trap "rm -f '$lock'" EXIT
+      export TEND_LOCK_MANAGED=1
+      return 0
+    fi
+
+    # Lock held — decide whether the owner is alive.
+    local owner_pid age
+    owner_pid="$(awk 'NR==1{print $1}' "$lock" 2>/dev/null)"
     age=$(( $(date +%s) - $(date -r "$lock" +%s 2>/dev/null || echo 0) ))
-    if [[ $age -lt 360 ]]; then
-      log_heartbeat "run-job — tend lock held (${age}s); skipping cycle"
+
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+      # 14C8: a session can wedge WHILE still holding the lock (the owner is
+      # alive to `kill -0` but is no longer making progress). The task it was
+      # running then sits `running` forever, because the lock-gated ghost reaper
+      # in the tend preflight below never runs on any cycle that exits here — the
+      # ghost's own lock-holder blocks its reaping. Reap stale `running` ghosts
+      # (≥STALE_RUNNING_SECS, no ✓ phase) BEFORE skipping, so a wedged-owner
+      # ghost is reset to needs_human + re-queued by T-4 without waiting for
+      # rescue.sh to break the lock. reset_stale_running_tasks touches only stale
+      # rows (atomic temp+mv) and never touches the lock, so it is safe to run
+      # while another (live) session holds it.
+      reset_stale_running_tasks
+      log_heartbeat "run-job — tend lock held by live pid $owner_pid (${age}s); skipping cycle (reaped stale ghosts first)"
       exit 0
     fi
-    log_heartbeat "run-job — clearing stale lock (${age}s old)"
+
+    # Owner dead/unknown. Only reclaim once the lock has gone stale, to avoid
+    # racing a just-started session that has not yet stamped its PID.
+    if [[ $age -lt $LOCK_STALE_GRACE ]]; then
+      log_heartbeat "run-job — tend lock owner ${owner_pid:-?} not alive but fresh (${age}s); skipping cycle"
+      exit 0
+    fi
+
+    log_heartbeat "run-job — reclaiming stale lock (owner ${owner_pid:-?} dead, ${age}s old)"
     rm -f "$lock"
-  fi
-  mkdir -p "$(dirname "$lock")"
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$lock"
-  # shellcheck disable=SC2064
-  trap "rm -f '$lock'" EXIT
-  export TEND_LOCK_MANAGED=1
+    # loop and retry the atomic create
+  done
+}
+
+# Touch the lock so a long-running healthy cycle is never seen as stale by a
+# concurrent launchd cycle, rescue.sh, or SKILL T-0 (all compare mtime age).
+refresh_tend_lock() {
+  [[ -n "${TEND_LOCK_FILE:-}" && -f "${TEND_LOCK_FILE:-}" ]] && touch "$TEND_LOCK_FILE" 2>/dev/null || true
 }
 
 case "$JOB" in
   tend)
     acquire_tend_lock
+    # Self-heal any malformed rows left by a pre-lock-fix concurrent writer so the
+    # ghost-reset / requeue logic below can act on them (normalizer is a no-op on
+    # valid rows). Must run before reset_stale_running_tasks.
+    repair_registry_rows
+    # E721: reap done-but-running rows (Completion is not atomic) AFTER the row
+    # normalizer and BEFORE the stale-running reaper, so a finished-but-running
+    # ghost is finalized to `complete` instead of being bounced to needs_human.
+    finalize_completed_tasks
     cleanup_stale_inbox
     drain_inbox
 
@@ -388,6 +563,12 @@ case "$JOB" in
     # reset to `needs_human` — and re-queued if it's an auto job — even on a
     # cycle that would otherwise be idle. `running` no longer gates dispatch.
     reset_stale_running_tasks
+
+    # BC0E: auto-requeue needs_human rows when to_clear / requeue_when_exists signals are met
+    requeue_script="$ROOT/.orchestrate/bin/requeue-unblocked.sh"
+    if [[ -x "$requeue_script" ]]; then
+      bash "$requeue_script" "$ROOT" || log_heartbeat "run-job — requeue-unblocked.sh failed (continuing tend)"
+    fi
 
     if ! tend_need_action; then
       log_tend_idle
@@ -408,11 +589,13 @@ case "$JOB" in
       mark_pending_tasks_as_running
     fi
 
+    refresh_tend_lock
     dispatch "$cursor_prompt" "$claude_prompt"
     tend_loop=1
 
     if [[ "$TEND_MODE" == "go auto" || "$TEND_MODE" == "go_auto" ]]; then
       while true; do
+        refresh_tend_lock   # keep the lock fresh across long multi-session drains
         drain_inbox  # pick up any new inbox items between sessions
         pcount="$(pending_task_count)"
         [[ "$pcount" -eq 0 ]] && break
@@ -421,6 +604,7 @@ case "$JOB" in
           break
         fi
         log_heartbeat "run-job — queue drain loop $((tend_loop + 1))/$MAX_TEND_LOOPS ($pcount pending remaining)"
+        refresh_tend_lock
         dispatch "$cursor_prompt" "$claude_prompt"
         tend_loop=$(( tend_loop + 1 ))
       done

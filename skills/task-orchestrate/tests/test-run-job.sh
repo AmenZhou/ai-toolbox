@@ -13,7 +13,7 @@ ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 
 TMP=""
-cleanup() { [[ -n "$TMP" && -d "$TMP" ]] && rm -rf "$TMP"; }
+cleanup() { [[ -n "$TMP" && -d "$TMP" ]] && rm -rf "$TMP"; return 0; }  # return 0: an EXIT trap must never clobber the script's exit status
 trap cleanup EXIT
 
 setup_mocks() {
@@ -543,10 +543,11 @@ else
 fi
 
 echo ""
-echo "10. awaiting_go task — tend MUST dispatch agent (notification gate)"
-# Regression guard: after the 2026-06-21 gated fix, tend go auto no longer EXECUTES
-# awaiting_go tasks — but it still DISPATCHES the agent (for PushNotification).
-# tend-need-action.sh must return NEED_ACTION=1 for awaiting_go registry rows.
+echo "10. awaiting_go task — tend is IDLE (notify-only, does NOT gate dispatch)"
+# Behavior change e26282d (2026-06-25): awaiting_go is gated/notify-only and no longer
+# gates dispatch — tend-need-action.sh excludes it "on purpose" so the launchd cycle does
+# not spend AI tokens re-notifying gated tasks every 5 min. When ONLY awaiting_go tasks
+# exist (no pending/inbox/awaiting_critic), tend must report idle and NOT invoke an agent.
 GATED_WORK="$TMP/gated-work"
 mkdir -p "$GATED_WORK/.orchestrate/inbox/gated" "$GATED_WORK/.orchestrate/inbox/processed" \
   "$GATED_WORK/.orchestrate/logs" "$GATED_WORK/.orchestrate/bin"
@@ -589,19 +590,19 @@ CURSOR_IDE_RUNNING=1
 EOF
 rm -f "$LOG_GATED_CURSOR" "$LOG_GATED_CLAUDE"
 if (cd "$GATED_WORK" && ORCHESTRATE_AGENT_CONF="$GATED_CONF" bash "$GATED_WORK/.orchestrate/bin/run-job.sh" tend); then
-  if [[ -f "$LOG_GATED_CURSOR" ]] || [[ -f "$LOG_GATED_CLAUDE" ]]; then
-    ok "tend dispatches agent when only awaiting_go tasks exist (notification path still active)"
+  if [[ ! -f "$LOG_GATED_CURSOR" && ! -f "$LOG_GATED_CLAUDE" ]]; then
+    ok "tend does NOT dispatch agent when only awaiting_go tasks exist (notify-only, e26282d)"
   else
-    fail "tend logged idle for awaiting_go task — tend-need-action.sh must flag awaiting_go as NEED_ACTION=1"
+    fail "agent dispatched for awaiting_go-only registry — e26282d excludes awaiting_go from NEED_ACTION"
   fi
 else
   fail "run-job tend exited non-zero with awaiting_go task"
 fi
 
-if ! grep -q 'tend go auto — idle' "$GATED_WORK/.orchestrate/logs/heartbeat.log" 2>/dev/null; then
-  ok "heartbeat does NOT contain idle when task is awaiting_go"
+if grep -q 'tend go auto — idle' "$GATED_WORK/.orchestrate/logs/heartbeat.log" 2>/dev/null; then
+  ok "heartbeat logs idle when only awaiting_go tasks exist (no token spend re-notifying)"
 else
-  fail "heartbeat shows idle for awaiting_go task — gated task must trigger agent notification"
+  fail "heartbeat missing idle line for awaiting_go-only registry"
 fi
 
 echo ""
@@ -670,6 +671,161 @@ if grep -q 'queue drain loop' "$RUN_JOB_SRC" 2>/dev/null; then
   ok "run-job.sh logs queue drain loop iterations"
 else
   fail "run-job.sh missing 'queue drain loop' log line"
+fi
+
+echo ""
+echo "12. tend preflight runs requeue-unblocked.sh WITHOUT 'local outside function' abort"
+# Regression (BC0E, 2026-06-25): the requeue-unblocked.sh hook was added to the
+# top-level `tend)` case branch as `local requeue_script=...`. `local` is only valid
+# inside a function — at top level bash errors "local: can only be used in a function"
+# and, under `set -e`, ABORTS run-job.sh before dispatch. Result: every tend cycle
+# died silently at that line for ~2 days; pending tasks never executed and rescue
+# crash-looped (kick → same abort → kick). This test runs the full preflight (with a
+# real requeue-unblocked.sh present so line 393 executes) and asserts:
+#   (a) no "can only be used in a function" appears on stderr, and
+#   (b) the agent is still dispatched for a pending task.
+PREFLIGHT_WORK="$TMP/preflight-work"
+mkdir -p "$PREFLIGHT_WORK/.orchestrate/inbox/gated" "$PREFLIGHT_WORK/.orchestrate/inbox/processed" \
+  "$PREFLIGHT_WORK/.orchestrate/logs" "$PREFLIGHT_WORK/.orchestrate/bin" "$PREFLIGHT_WORK/.orchestrate/tasks"
+cp "$PROJECT_ROOT/.orchestrate/bin/"{run-job.sh,drain-inbox.sh,tend-need-action.sh,cleanup-stale-inbox.sh} \
+  "$PREFLIGHT_WORK/.orchestrate/bin/"
+# Copy requeue-unblocked.sh if it exists so the real preflight line is exercised;
+# otherwise install a no-op stand-in so the [[ -x ]] guard path is still taken.
+if [[ -f "$PROJECT_ROOT/.orchestrate/bin/requeue-unblocked.sh" ]]; then
+  cp "$PROJECT_ROOT/.orchestrate/bin/requeue-unblocked.sh" "$PREFLIGHT_WORK/.orchestrate/bin/"
+else
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$PREFLIGHT_WORK/.orchestrate/bin/requeue-unblocked.sh"
+fi
+chmod +x "$PREFLIGHT_WORK/.orchestrate/bin/"*.sh
+cat > "$PREFLIGHT_WORK/.orchestrate/project.md" << 'EOF'
+# Orchestrate — preflight-test
+last_updated: 2026-01-01T00:00:00Z
+
+## Shared Context
+
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| test-pending | pending task | auto | 1 | pending | 2026-01-01T00:00:00Z |
+EOF
+PREFLIGHT_CONF="$TMP/preflight-agent.conf"
+LOG_PRE_CURSOR="$TMP/preflight-cursor.log"
+MOCK_PRE_CURSOR="$TMP/mock-preflight-cursor.sh"
+cat > "$MOCK_PRE_CURSOR" << EOF
+#!/usr/bin/env bash
+echo "cursor-agent called with: \$*" > "$LOG_PRE_CURSOR"
+exit 0
+EOF
+chmod +x "$MOCK_PRE_CURSOR"
+cat > "$PREFLIGHT_CONF" << EOF
+RUNNER=cursor
+TEND_MODE="go auto"
+CURSOR_BIN=$MOCK_PRE_CURSOR
+CLAUDE_BIN=$MOCK_CLAUDE
+CURSOR_IDE_RUNNING=1
+EOF
+PREFLIGHT_ERR="$TMP/preflight-stderr.log"
+rm -f "$LOG_PRE_CURSOR" "$PREFLIGHT_ERR"
+(cd "$PREFLIGHT_WORK" && ORCHESTRATE_AGENT_CONF="$PREFLIGHT_CONF" \
+  bash "$PREFLIGHT_WORK/.orchestrate/bin/run-job.sh" tend) >/dev/null 2>"$PREFLIGHT_ERR" || true
+if ! grep -q 'can only be used in a function' "$PREFLIGHT_ERR" 2>/dev/null; then
+  ok "tend preflight has no 'local outside function' error (BC0E regression)"
+else
+  fail "run-job.sh aborts with 'local: can only be used in a function' — BC0E bug regressed: $(grep -m1 'can only be used' "$PREFLIGHT_ERR")"
+fi
+if [[ -f "$LOG_PRE_CURSOR" ]]; then
+  ok "tend dispatches agent after requeue preflight (no silent abort)"
+else
+  fail "agent not dispatched — preflight aborted before dispatch ($(tail -1 "$PREFLIGHT_ERR" 2>/dev/null))"
+fi
+
+# Static guard: no `local` may appear in a top-level case branch. Strip function
+# bodies (name() { ... }) and assert no `local` survives in the remaining top-level code.
+NO_LOCAL_TOPLEVEL="$(awk '
+  /^[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{/ { depth=1; next }
+  depth>0 {
+    n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m;
+    if (depth<=0) depth=0;
+    next
+  }
+  /(^|[[:space:];])local[[:space:]]/ { print NR": "$0 }
+' "$RUN_JOB_SRC")"
+if [[ -z "$NO_LOCAL_TOPLEVEL" ]]; then
+  ok "no 'local' keyword outside a function in run-job.sh source"
+else
+  fail "'local' used outside a function (will abort under set -e):\n$NO_LOCAL_TOPLEVEL"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 68A1: concurrent-tend lock race + registry-corruption regression tests
+# ─────────────────────────────────────────────────────────────────────────────
+echo "13. lock race + registry off-by-one (task 68A1)"
+LOCKTMP="$(mktemp -d "${TMPDIR:-/tmp}/run-job-lock.XXXXXX")"
+mkdir -p "$LOCKTMP/.orchestrate"
+# Extract the pure-bash funcs under test from the run-job.sh under test; stub log_heartbeat.
+FUNCS="$LOCKTMP/funcs.sh"
+{
+  echo 'log_heartbeat(){ :; }'
+  grep -E '^LOCK_STALE_GRACE=' "$RUN_JOB"
+  sed -n '/^acquire_tend_lock()/,/^}/p;/^refresh_tend_lock()/,/^}/p;/^mark_pending_tasks_as_running()/,/^}/p;/^repair_registry_rows()/,/^}/p' "$RUN_JOB"
+} > "$FUNCS"
+LPROJ="$LOCKTMP/.orchestrate/project.md"
+
+# 13a. mark_pending_tasks_as_running stamps last_activity in $7, never the phantom $8
+cat > "$LPROJ" << 'PEOF'
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| 20260627-mp01 | pending row | auto | 1 | pending |  |
+PEOF
+( export ROOT="$LOCKTMP"; source "$FUNCS"; mark_pending_tasks_as_running ) || true
+if awk -F'|' '/mp01/{s=$6;a=$7;t=$8;gsub(/ /,"",s);gsub(/ /,"",t);gsub(/^[ ]+|[ ]+$/,"",a); exit !(s=="running" && a ~ /Z$/ && t=="" && NF==8)}' "$LPROJ"; then
+  ok "mark_pending stamps last_activity in \$7 (no phantom \$8 — corruption root cause)"
+else
+  fail "mark_pending off-by-one regressed: $(grep mp01 "$LPROJ")"
+fi
+
+# 13b. repair_registry_rows normalizes a malformed phantom-field row to NF==8 + trailing pipe
+printf '## Task Registry\n| ID | summary | mode | current_phase | status | last_activity |\n|----|----|----|----|----|----|\n| 20260627-rr01 | corrupt | auto | 1 | running | 2026-06-27T11:00:00Z | 2026-06-27T11:05:00Z \n' > "$LPROJ"
+( export ROOT="$LOCKTMP"; source "$FUNCS"; repair_registry_rows ) || true
+if awk -F'|' '/rr01/{exit !(NF==8)}' "$LPROJ" && grep -qE '\| 20260627-rr01 \|.*\| running \| 2026-06-27T11:00:00Z \|$' "$LPROJ"; then
+  ok "repair_registry_rows drops phantom field, restores trailing pipe (NF==8)"
+else
+  fail "repair_registry_rows did not normalize malformed row: $(grep rr01 "$LPROJ")"
+fi
+
+# acquire_tend_lock helper: returns "ACQUIRED" on stdout iff the lock was taken.
+# (acquire calls exit 0 on backoff, so the trailing echo only runs on success.)
+acquire_result() { ( export ROOT="$LOCKTMP"; source "$FUNCS"; acquire_tend_lock && echo ACQUIRED ) 2>/dev/null || true; }
+LK="$LOCKTMP/.orchestrate/.tend.lock"
+
+# 13c. NEVER steal a lock whose owner PID is alive — even with an ancient mtime
+#      (this is the exact race: a 300s launchd cycle barging into a long live cycle)
+rm -f "$LK"
+sleep 30 & LIVEPID=$!
+printf '%s %s\n' "$LIVEPID" "2020-01-01T00:00:00Z" > "$LK"; touch -t 202001010000 "$LK"
+if [[ "$(acquire_result)" != *ACQUIRED* ]] && grep -q "^$LIVEPID " "$LK" 2>/dev/null; then
+  ok "acquire_tend_lock backs off a LIVE owner regardless of age (race fixed)"
+else
+  fail "acquire_tend_lock stole a live owner's lock — concurrent-tend race not fixed"
+fi
+kill "$LIVEPID" 2>/dev/null || true; wait "$LIVEPID" 2>/dev/null || true
+
+# 13d. reclaim a DEAD owner's lock once it is stale (age > LOCK_STALE_GRACE)
+sleep 1 & DEADPID=$!; kill "$DEADPID" 2>/dev/null || true; wait "$DEADPID" 2>/dev/null || true
+printf '%s %s\n' "$DEADPID" "2020-01-01T00:00:00Z" > "$LK"; touch -t 202001010000 "$LK"
+if [[ "$(acquire_result)" == *ACQUIRED* ]]; then
+  ok "acquire_tend_lock reclaims a dead+stale owner's lock"
+else
+  fail "acquire_tend_lock failed to reclaim a dead+stale lock (would deadlock tend)"
+fi
+
+# 13e. do NOT reclaim a DEAD owner's lock while still fresh (< grace) — avoids racing a just-started session
+printf '%s %s\n' "$DEADPID" "2026-06-27T00:00:00Z" > "$LK"   # fresh mtime (just written)
+if [[ "$(acquire_result)" != *ACQUIRED* ]]; then
+  ok "acquire_tend_lock waits out the grace window before reclaiming a dead lock"
+else
+  fail "acquire_tend_lock reclaimed a dead lock before the grace window"
 fi
 
 echo ""

@@ -48,10 +48,12 @@ count_needs_human_actionable() {
     done_phases=$(grep -c '✓ complete' "$tf" 2>/dev/null) || done_phases=0
     if [[ "$phases" -gt 0 && "$phases" -eq "$done_phases" ]]; then
       count=$(( count + 1 ))     # completion-eligible
+    elif grep -q '^bypassed_at:' "$tf" 2>/dev/null; then
+      :                          # parked (any block type) → bypass, never re-process
     elif ! grep -q '^human_resolution:' "$tf" 2>/dev/null; then
       count=$(( count + 1 ))     # not yet evaluated → needs first-pass check
     fi
-    # else: has human_resolution + incomplete phases → genuine blocker → bypass
+    # else: bypassed_at OR human_resolution + incomplete phases → genuine blocker → bypass
   done < <(awk -F'|' '
     /^\|/ && $2 !~ /^[[:space:]]*ID[[:space:]]*$/ && $2 !~ /^-+$/ {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", $6)
