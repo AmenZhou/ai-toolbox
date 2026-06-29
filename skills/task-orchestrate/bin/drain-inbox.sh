@@ -70,7 +70,14 @@ extract_title() {
 
 # Risky-op patterns (Gating Criteria). Scanned across the whole task file so a
 # risky op described in Goal, Context, or Acceptance Criteria is caught.
-RISKY_OP_RE='kubectl (apply|scale|delete|patch|rollout)|INSERT |UPDATE |DELETE |DROP |ALTER |TRUNCATE|rm -rf|rm -f|git push --force|force.push|force-push|delete branch|branch deletion|send email|post to slack|trigger deploy|deploy pipeline'
+# Two classes, because case sensitivity differs:
+#   CI — unambiguous shell/infra ops, safe to match case-insensitively.
+#   CS — SQL DML keywords, matched UPPERCASE-only (case-sensitive). Real SQL in a
+#        task spec is uppercase; lowercase English words "update/delete/drop/alter"
+#        are NOT risky ops, so matching them case-insensitively wrongly gates every
+#        "update the docs" / "delete the old reference" task. Keep these uppercase.
+RISKY_OP_RE_CI='kubectl (apply|scale|delete|patch|rollout)|rm -rf|rm -f|git push --force|force.push|force-push|delete branch|branch deletion|send email|post to slack|trigger deploy|deploy pipeline'
+RISKY_OP_RE_CS='INSERT |UPDATE |DELETE |DROP |ALTER |TRUNCATE'
 
 has_gate_reason() {
   # Explicit human override: a non-empty `gate_reason:` line forces a gate.
@@ -78,7 +85,9 @@ has_gate_reason() {
 }
 
 file_has_risky_op() {
-  grep -qiE "$RISKY_OP_RE" "$1" 2>/dev/null
+  grep -qiE "$RISKY_OP_RE_CI" "$1" 2>/dev/null && return 0
+  grep -qE "$RISKY_OP_RE_CS" "$1" 2>/dev/null && return 0
+  return 1
 }
 
 # Gating is risk-based, not location-based. A file under gated/ or marked
