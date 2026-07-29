@@ -67,6 +67,8 @@ last_updated: <ISO>
 
 Status values: `pending` · `running` · `awaiting_go` · `awaiting_critic` · `complete` · `failed` · `needs_human`
 
+**Cancelled vs failed:** The registry enum has no `cancelled` value (NF==8 DOMAIN unchanged). A dashboard **Cancel** on a gated (`awaiting_go`) task sets registry status **`failed`** but also stamps durable **`cancelled_at:`** + **`cancel_reason:`** markers into `.orchestrate/tasks/{ID}.md` (mirrors the `bypassed_at:` pattern). The monitor classifies `failed`+`cancelled_at:` as **"Cancelled"** (grey badge, terminal, non-actionable) — distinct from a genuine **`failed`** row (no marker → "Failed — review required"). `bin/tend-need-action.sh` excludes all `failed` rows from `NEED_ACTION`, including cancelled ones — they are never re-surfaced or re-queued.
+
 ### Per-task file — `.orchestrate/tasks/{ID}.md`
 
 Same schema as the former `.task-orchestrate-state-{ID}.md`. The `id`, `task`, `complexity`, `mode`, `total_phases`, `phases` block and OPERATING RULES are identical — only the file location changes.
@@ -131,11 +133,18 @@ bash .orchestrate/bin/cleanup-stale-inbox.sh "$(pwd)"
 PROJ=.orchestrate/project.md
 NEED_ACTION=0
 
-# Stalled tasks in registry? (table rows only — not Shared Context prose)
-grep -qE '^\|[^|]+\|[^|]+\|[^|]+\| (awaiting_critic|awaiting_go) \|' "$PROJ" 2>/dev/null && NEED_ACTION=1
+# Actionable registry work? (table rows only — not Shared Context prose)
+# NOTE: awaiting_go (gated) is EXCLUDED on purpose — it is notify-only, never
+# auto-executes, and its one human notice already fired in bash at registration
+# (drain-inbox.sh notify_gated_once). Waking the agent for a gated-only registry
+# would spend tokens with nothing to do. This matches the authoritative bash gate
+# in tend-need-action.sh (registry_actionable = pending + awaiting_critic +
+# actionable needs_human).
+grep -qE '^\|[^|]+\|[^|]+\|[^|]+\| (awaiting_critic) \|' "$PROJ" 2>/dev/null && NEED_ACTION=1
 
-# Inbox has non-deferred items? (auto path or gated path)
-for f in .orchestrate/inbox/*.md .orchestrate/inbox/gated/*.md; do
+# Inbox has non-deferred AUTO items? Only root inbox/*.md count — gated/*.md drain
+# to notify-only awaiting_go rows (handled once in bash), so they do NOT raise action.
+for f in .orchestrate/inbox/*.md; do
   [ -f "$f" ] || continue
   grep -qE '^deferred_at:' "$f" 2>/dev/null && continue
   NEED_ACTION=1
@@ -181,13 +190,13 @@ When reading an inbox file:
 - If the file contains `source: self`: register as `mode: auto` unless the improvement **Goal** explicitly mentions a risky operation (see Gating Criteria below). Risky-op `source: self` files register as `mode: gated`, status `awaiting_go`. Non-risky `source: self` improvements auto-execute under `tend go auto`.
 - If the file is plain text (no `## Goal` section): treat the entire content as the goal, but flag at registration: `⚠ inbox file <name> has no structured context — plan phase may need clarification`.
 - If the file has the structured format: extract Goal as task summary, Context as shared background for the plan phase, ACs as phase acceptance criteria seeds.
-- **Gating is risk-based, not location-based.** A file is registered `mode: gated`, status `awaiting_go` **only when its content meets the Gating Criteria below (a genuine risky op) OR it carries an explicit `gate_reason:` line** (the human override). A bare `mode: gated` marker or placement under `.orchestrate/inbox/gated/` is a *hint*, not a hard gate: if the task involves no risky op and has no `gate_reason:`, **de-gate** it — register `mode: auto`, status `pending` — and log the de-gate. Do **not** gate a task just because it is safe but happened to be filed under `gated/` (e.g. inbox-log-analyzer enhancement findings). Genuinely-gated tasks under **`tend`** or **`tend go auto`**: register in T-2, send PushNotification — never auto-execute.
+- **Gating is risk-based, not location-based.** A file is registered `mode: gated`, status `awaiting_go` **only when its content meets the Gating Criteria below (a genuine risky op) OR it carries an explicit `gate_reason:` line** (the human override). A bare `mode: gated` marker or placement under `.orchestrate/inbox/gated/` is a *hint*, not a hard gate: if the task involves no risky op and has no `gate_reason:`, **de-gate** it — register `mode: auto`, status `pending` — and log the de-gate. Do **not** gate a task just because it is safe but happened to be filed under `gated/` (e.g. inbox-log-analyzer enhancement findings). Genuinely-gated tasks under **`tend`** or **`tend go auto`**: register in T-2 — `drain-inbox.sh` emits the single "needs your go" notice in bash at drain (once per ID, idempotent via the `gated-notified.tsv` sidecar) — never auto-execute. The AI does **not** re-notify them on subsequent cycles (see T-4 `awaiting_go`).
 
 **Inbox layout:**
 | Path | Gating decision | `tend` | `tend go auto` (launchd) |
 |------|-----------------|--------|-------------------------|
 | `.orchestrate/inbox/*.md` | auto unless risky-op or `gate_reason:` | drain → notify | drain → execute |
-| `.orchestrate/inbox/gated/*.md` | gated only if risky-op or `gate_reason:`; else **de-gated to auto** | drain → notify | de-gated → execute · genuinely-gated → notify (never auto-exec) |
+| `.orchestrate/inbox/gated/*.md` | gated only if risky-op or `gate_reason:`; else **de-gated to auto** | drain → notify once (bash) | de-gated → execute · genuinely-gated → notify once at drain (bash); never auto-exec, never re-notified |
 
 **Gating Criteria — `mode: gated` only when the task explicitly involves (any one is sufficient):**
 1. Live kubectl mutations (scale, patch, rollout, apply, delete) — also blocked by kube hook
@@ -234,17 +243,17 @@ For each task in the registry:
 
 **`awaiting_critic` (mode: auto):** Read its task file (`.orchestrate/tasks/{ID}.md`). Re-read this SKILL.md's Critic section. Run critic assessment inline. Write verdict + checkpoint. If ✅ and mode auto: continue execution loop. Append action to heartbeat.log.
 
-**`awaiting_go` (mode: gated):**
-- **Always (both `tend` and `tend go auto`):** Do NOT advance. Send `PushNotification`: `⏸ [{ID}] "{summary}" — gated, needs your "go"`. Log it. Gated tasks never auto-execute regardless of tend mode — they require explicit human `go <ID>` or `go auto <ID>`.
+**`awaiting_go` (mode: gated):** **SKIP entirely — do NOT read the task file, do NOT send a PushNotification, do NOT write a per-cycle log line.** The one-time "gated — needs your go" human notice is owned by **bash at registration** (`drain-inbox.sh` `notify_gated_once` fires once per ID via `osascript` and stamps the `.orchestrate/logs/gated-notified.tsv` sidecar). Re-notifying here on every dispatched cycle was a pure token + notification-spam leak (R-1, `.orchestrate/notes/r-1_gated_token_paths.md`) — it is removed. The registry-row summary is all you read; never open `.orchestrate/tasks/{ID}.md` for an `awaiting_go` row during the per-cycle scan. Gated tasks still never auto-execute regardless of tend mode — they require an explicit human `go <ID>` or `go auto <ID>` (delivered via the dashboard or an interactive session), which is unchanged.
+  - *Fallback (host without `osascript`):* `drain-inbox.sh` still records the sidecar marker but emits no desktop notice; in that case only — and only for a row missing from the sidecar — send a single `PushNotification`, then rely on the marker so it is never re-sent.
 
 **`pending` tasks (from inbox drain this cycle OR already registered):**
 - **Mode `tend`:** Send `PushNotification`: `📋 [{N} new task(s) queued — type "go" or "go auto" to start]`. Log.
 - **Mode `tend go auto`:** Execute pending tasks in **parallel batches of up to 3**. `awaiting_go` tasks are never auto-executed — skip during batch collection.
 
   **Parallel batch execution protocol:**
-  1. Collect ALL `pending` task IDs from the registry (not just drained this cycle). Skip `awaiting_go`, `needs_human`, `running`, `complete`, `failed`.
+  1. Collect ALL `pending` task IDs from the registry (not just drained this cycle), **plus** any `running` row that has neither a `.orchestrate/tasks/{ID}.md` file nor a `tend-auto — dispatching "..." ({ID})` heartbeat line. Those rows were bash-pre-marked `running` by `run-job.sh`'s `mark_pending_tasks_as_running()` (RS01) moments before this session was dispatched — on a fresh T-4 scan they are unclaimed work, not a sibling's in-progress task (the tend lock guarantees no live sibling exists). Skip `awaiting_go`, `needs_human`, `complete`, `failed`, and any `running` row that DOES have a task file or dispatch line (genuinely in progress — the batch that owns it will finish it). **Defense-in-depth (20260725-inbox-4C3D): also skip any row whose `mode` column is `gated`, even if its `status` reads `pending`.** A `pending`+`gated` row should never exist — `requeue-orphaned-running.sh`'s stale-orphan reset now respects `mode` and sends gated rows to `awaiting_go`, not `pending` — but if one is ever found anyway (hand-edit, other bug), do not fold it into the auto-execution batch; leave it for a human `go`/`go auto <ID>`. **Cross-task `depends_on:` (CROSS-2, 20260727-inbox-7D4A):** a task file's `depends_on:` may hold ANOTHER TASK's real registry ID (from `drain-inbox.sh`'s `resolve_depends_on()`, CROSS-1 — set from a `blocked_by_ticket:` header or `**Blocked by:**` prose) rather than a same-file phase number. `mark_pending_tasks_as_running()` already enforces this in bash — before flipping a `pending` row to `running`, it checks whether the task file's `depends_on:` matches the registry-ID shape (`YYYYMMDD-inbox-XXXX`) and, if so, looks up that other row's `status`; a row referencing a not-yet-`complete` task is left `pending` and a skip is logged (naming the blocker and, if it's `gated`/`awaiting_go`, saying so explicitly) instead of being dispatched. Since this bash gate runs before T-4 even sees the registry, a row this session's T-4 scan finds `pending` has already cleared this check — no separate LLM-side re-check is required, but never hand-dispatch a task around this gate (e.g. via `go auto <ID>`) without first confirming its `depends_on:` target is `complete`.
   2. Take the first batch of up to 3 IDs.
-  3. For each task in the batch: mark as `running` in project.md (sequential, before dispatch), create `.orchestrate/tasks/{ID}.md` plan file if missing. Append to heartbeat.log: `[<ISO>] tend-auto — dispatching "<task title>" ({ID}) [batch N]`.
+  3. For each task in the batch: mark as `running` in project.md (sequential, before dispatch) by calling `.orchestrate/bin/update-registry-row.sh <ROOT> <ID> <mode> <current_phase> running <now-ISO>` to refresh `last_activity` at the moment of claim, create `.orchestrate/tasks/{ID}.md` plan file if missing. If the source inbox file carries `followup_for:`/`kind:` header lines, copy them verbatim as literal top-level lines at the very top of the constructed task file (not just into Context prose) — downstream anti-recursion checks in `enqueue-review-and-tests.sh`/`enqueue-wiki-sync.sh` grep the task file, not the original inbox file, for these headers. Append to heartbeat.log: `[<ISO>] tend-auto — dispatching "<task title>" ({ID}) [batch N] [session=<SHELL_PROBE_TOKEN>]` — the literal token value from this session's own shell-capability preflight directive (see `shell_probe_directive()` in `run-job.sh`), or `[session=no-token]` if this session was never given one (e.g. an interactively-invoked session, not dispatched via `run-job.sh`). Session/PID attribution (20260725-inbox-6B7E): this ties the line to the specific top-level session that wrote it, distinguishing it from a sibling top-level session, an Agent-tool subagent it spawned, or an out-of-band session — see `heartbeat.log`'s `[pid=$$]` suffix (added to every `run-job.sh`-written line by `log_heartbeat()`) for the complementary wrapper-process-level signal.
   4. Launch the batch as **parallel Agent calls** (max 3 simultaneous). Each agent prompt must include:
      - Full task file content (`.orchestrate/tasks/{ID}.md`)
      - SKILL.md Execution Loop instructions (paste relevant sections)
@@ -252,16 +261,18 @@ For each task in the registry:
      - `## Shared Context` from project.md (verbatim)
      - Instruction: "Run the full auto execution loop for this task. When all phases are done, end your response with a `## TASK RESULT` block: `status: complete|needs_human|failed`, `summary: <one line>`, `phases_done: N`."
      - Instruction: "Do NOT update project.md — the parent session handles registry writes."
+     - Instruction: "Write a top-level `files_changed: <paths>` line into the task file itself (or `files_changed: none` if nothing changed) — `enqueue-review-and-tests.sh` greps the task file for `^files_changed:` to classify the change; leaving it only inside phase-block prose risks the 6b review/tests follow-up being silently skipped."
   5. After **all agents in the batch return**: for each agent result — read `## TASK RESULT`, update project.md row (`running` → final status), run Completion sequence (archive, MANIFEST) for any `complete` tasks. Log each outcome.
   6. **Blocked tasks never block the batch:** if an agent returns `needs_human` or `failed`, checkpoint its result immediately and continue — do not wait or retry within this batch. Log: `[<ISO>] tend-auto — task <ID> blocked (needs_human); continuing queue`.
   7. If more `pending` tasks remain after the batch, repeat from step 2 with the next batch.
 
-  **Mode `tend go auto <ID>`:** Execute ONLY task `<ID>`. Skip T-1/T-2 (run-job.sh already did cleanup/drain). Skip T-4 general scan. Find `.orchestrate/tasks/{ID}.md`, run the full auto execution loop, update project.md row on completion. Used when run-job.sh pre-assigns tasks to parallel agent sessions.
+  **Mode `tend go auto <ID>`:** Execute ONLY task `<ID>`. Skip T-1/T-2 (run-job.sh already did cleanup/drain). Skip T-4 general scan. Find `.orchestrate/tasks/{ID}.md`, run the full auto execution loop — the loop's own **Pre-execution duplicate-completion guard** (see Execution Loop below) fires before phase work begins, same as every other entry path — update project.md row on completion. Used when run-job.sh pre-assigns tasks to parallel agent sessions.
 
 **`needs_human` tasks:**
 - Read task file at `.orchestrate/tasks/{ID}.md`. If the file is missing:
   - **Ghost-reset auto-job re-queue:** if the registry row is `mode: auto` AND `.orchestrate/logs/heartbeat.log` contains a `ghost-reset {ID}: running→needs_human` line (the job was stalled and reset by `run-job.sh`, never wrote a task file), set the registry row to `status: pending`, append `[<ISO>] tend-auto — re-queued ghost-reset auto job {ID} (no task file, stalled run)` to heartbeat.log, and let the next pending scan execute it. These are stalled automatable jobs (idempotent daily runs like wiki-ingest / inbox-log-analyzer), not genuine human blockers. **Churn guard:** before re-queueing, the bash requeue sites bump a shared counter (`bin/churn-guard.sh` `cg_increment`); a job re-processed `CG_THRESHOLD` (default 3) times without converging is **parked** instead of re-queued — see **Churn guard** below.
   - Otherwise (no ghost-reset line, or `mode: gated`), skip. Genuine human-blocked tasks have task files with `human_resolution: BLOCKED ON HUMAN` and no ghost-reset line — they never match the re-queue rule.
+  - **Verify on-disk state before redoing work (ghost-reset re-execution):** when picking up a re-queued task that carries `requeue_count >= 1` (task file or sidecar) and shows zero prior phase output, do a quick on-disk check for that phase's declared outputs/edits (`grep`/`diff` the target file(s)) before repeating the work — a connection-lost or session-death event can occur AFTER a phase's substantive edit but BEFORE its checkpoint write, so `status: pending` phases can be misleading. If the check confirms the change is already in place, checkpoint the phase as complete on that evidence rather than blindly reapplying it (task `20260718-inbox-A893` found its SKILL.md edit already applied byte-identical across all mirrors after exactly this kind of ghost-reset).
 - Count phase sections (`### Phase N`). If **every** phase has `status: ✓ complete`, run the normal **Completion** sequence inline: update registry row to `complete`, archive task file to `orchestrate-history/`, append MANIFEST entry, delete task file from `.orchestrate/tasks/`.
 - Append to heartbeat.log: `[<ISO>] tend — auto-resolved needs_human "<task title>" ({ID}) — all phases complete`
 - If any phase is incomplete or missing `✓ complete`: run the **Second-Pass Auto-Resolution Check** before leaving the task blocked.
@@ -290,6 +301,8 @@ A task may only be left `needs_human` when its file states a **concrete external
 - **A script the agent can just run** locally (it being "cross-project" or "looks risky" is not a block — run it).
 - "I didn't try", "looked risky", "cross-project write", "config write" — none of these are concrete external dependencies. Attempt the action first.
 
+**Transient tool-level rejection (retry before trusting a prior park):** a genuine Write/Shell **Rejected** event on a cross-project or local path (the tool call itself was refused, not the agent second-guessing) is real for *that* session, so parking `needs_human` at the time was correct — but the rejection can be **session-scoped, not a durable project ACL**. Tasks `20260724-inbox-7496`/`089C` both parked on an actual Rejected Write/Shell call to `/Users/haimengzhou/apps/inbox-zero`; a later tend session's identical Write call succeeded with no settings change in between. When picking up a task parked for this reason, the first move should be to **retry the exact same Write/Shell call once** before re-deriving `needs`/`why`/`to_clear` from the task file — it may have silently cleared.
+
 **Structured human ask (genuine blockers):** to land `needs_human`, the task file MUST carry `needs:`, `why:`, `to_clear:` (or `## needs` / `## why` / `## to_clear` sections) naming the concrete external dependency from the valid list above. Free-text `BLOCKED ON HUMAN`, "cross-project write", or "config write" alone fails the clear-human-ask criterion — the agent must attempt self-resolution instead.
 
 **Auto-finalize done-but-running rows (Completion is not atomic):** the running-row Completion path. A tend/agent session can write every phase block in `.orchestrate/tasks/{ID}.md` to `status: ✓ complete` (and may even archive the task file) but die BEFORE flipping the registry row `running → complete`. T-4 re-queues only `needs_human` rows, so the done-but-running row would otherwise sit `running` forever. `.orchestrate/bin/finalize-completed-tasks.sh` runs the bash analog of the Completion sequence to reap them: for each `running`/`needs_human` row it finalizes to `complete` when EITHER (1) the task file exists and the count of `status: ✓ complete` phase blocks equals `total_phases:` (conservative — never finalize partial work), OR (2) an archive for the ID already exists in `orchestrate-history/`. On finalize it flips the row to `complete` IN PLACE (preserving the NF==8 invariant), archives to `orchestrate-history/{STAMP}-{ID}-{slug}.md` + a MANIFEST line if not already archived (no dup), deletes the stale task file, and logs an `auto-finalize — completed {ID}` heartbeat line. Idempotent (a second run is a clean no-op). It runs from **`run-job.sh` preflight** AFTER `repair_registry_rows` and BEFORE `reset_stale_running_tasks` (so a finished-but-running ghost is completed, not bounced to `needs_human`), and from **`rescue.sh`** as a safety net (before its stale-running reset). Regression: `.orchestrate/tests/test-finalize-completed-tasks.sh`.
@@ -314,7 +327,14 @@ Before writing `needs_human` and skipping a task with incomplete phases, you MUS
 
 **If none of the signals confirm:** apply the **Human-Only Block Classifier** (above) before parking. The task may be left `needs_human` ONLY if the block is a concrete external dependency (live cluster/infra op, external service recovery, missing human decision/credential) recorded in structured `needs:`/`why:`/`to_clear:` form. A locally-executable action — cross-project file write, reversible settings/config write, a runnable script — is NOT a valid block: attempt it and set the row back to `pending`. Only when the classifier confirms a genuine human-only block: **park it — do not re-evaluate every cycle:** write `bypassed_at: <ISO>` and `bypass_reason: <one-line why it cannot move on>` into the task file (header or blocking phase block), and leave the registry row at `needs_human`. See **Bypass — park blocked tasks** below.
 
-**All other statuses:** skip.
+**`running` tasks with no task file — claim, don't wait:** a `running` row with (no `.orchestrate/tasks/{ID}.md` file) AND (no `tend-auto — dispatching "..." ({ID})` line anywhere in heartbeat.log for that ID), found during THIS session's own T-4 scan, is this session's own unclaimed work, not an orphan to wait out. `run-job.sh`'s `mark_pending_tasks_as_running()` (RS01) always flips pending→running immediately before dispatching the very agent session meant to execute it, and the tend lock guarantees no other live session could be the true owner — so there is no "sibling dispatch" to race. **Do not apply a staleness gate here and do not treat it as "someone else's job, leave it untouched."** Fold it directly into the pending-task batch collection (step 1 above) and dispatch it now, same as any `pending` row — at the moment of claiming, also call `.orchestrate/bin/update-registry-row.sh <ROOT> <ID> <mode> <current_phase> running <now-ISO>` to refresh `last_activity` (matching step 3's pending→running refresh), in addition to the `tend-auto — dispatching "<title>" ({ID})` heartbeat line — once dispatched/executing inline, the Execution Loop's **Pre-execution duplicate-completion guard** (below) still runs before phase work begins, so a row that turns out to already be archived (e.g. completed by whatever wrote it before this session's claim) is caught and reconciled rather than re-executed.
+- **Root-cause incident:** three consecutive tasks (`20260714-inbox-3563`, `20260714-inbox-2F9F`, `20260719-inbox-7887`) churned to a 3x park purely because 3 consecutive dispatched agent sessions each independently reasoned "`last_activity` is under a minute old, must be a sibling pre-assigned dispatch session — leave it untouched," then concluded idle. There never was a sibling; every one of those sessions WAS the intended owner and simply declined to claim its own row. Waiting fixed nothing — the next cycle's bash preflight (`requeue-orphaned-running.sh` reset → `mark_pending_tasks_as_running()` re-mark) always re-stamped the row `running` with a fresh timestamp microseconds before the next agent started, so it never once appeared "stale enough" to any live session. The task itself was never poisoned or blocked; it was simply never dispatched.
+- A `running` row that already has a task file or a matching dispatch heartbeat line IS genuinely in progress — skip it; let the batch that owns it finish.
+- **Residual lock-bypass race (accepted, narrow):** this claim-now rule has a small TOCTOU window between a session reading a `running`/no-file/no-heartbeat row during its T-4 scan and that same session writing its own task-file/heartbeat claim signal — if the tend lock were ever bypassed or two sessions raced past it, both could observe the row as unclaimed and both claim it, since there is no atomic claim-then-verify step, only the "write the claim signal immediately" convention. This is accepted as a pre-existing, narrow risk: it requires an actual tend-lock bypass to manifest, which is already a broken precondition the whole tend system assumes doesn't happen, and the prior staleness-wait behavior offered no real protection against a true lock-bypass race either — it only delayed action while leaving the same double-claim window open. If this is ever observed in practice, the fix would be an atomic per-ID claim lock (e.g. `mkdir .orchestrate/locks/{ID}.claim` as an exclusivity check before dispatch) rather than reintroducing the staleness gate this rule was designed to remove.
+
+**Bash backstop (3C1D) — safety net only, not the primary path:** `.orchestrate/bin/requeue-orphaned-running.sh` (300s staleness gate, reset `running`→`pending`) still runs in `run-job.sh`'s tend preflight and in `rescue.sh`, and still matters for the one case a live agent session cannot see: no agent session ran at all this cycle (the dispatched CLI crashed or never started before reading the registry). A bash-only pass has no way to know whether a live session is about to claim the row, so it is right to wait before resetting it. A live agent mid-T-4-scan has no such uncertainty — per the rule above, it claims a no-file/no-dispatch-line `running` row immediately rather than mirroring this same 300s wait. Do not reintroduce a staleness check into the LLM path — that is precisely the RS01 dispatch-starvation bug (see incident above), not a safety improvement.
+
+**All other statuses** (`complete`, `failed`): skip.
 
 **Bypass — park blocked tasks (do not re-process every cycle):**
 
@@ -349,6 +369,12 @@ Lock is released by the `trap` from T-0.
 ---
 
 ## Inbox Mode
+
+> **Canonical inbox — staging is always ai-console (regardless of cwd).** Every NEW inbox ticket this skill writes — the `inbox "<plain text>"` sub-mode, follow-up files, improvement files — goes to the single live control plane:
+> - auto → `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/<slug>-<ISO>.md`
+> - gated → `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/gated/<slug>-<ISO>.md`
+>
+> This is the ONLY inbox the launchd `tend`/`drain-inbox`/`monitor`/`rescue` jobs watch (all run `WorkingDirectory=/Users/haimengzhou/apps/ai-console`), so a ticket staged anywhere else is orphaned. Never resolve the inbox by walking up from cwd to a project-local `.orchestrate/` — those are dormant traps. For a ticket targeting another repo, keep the inbox = ai-console and make the file/script paths inside the ticket **absolute**, with `cd <repo>` before its tests. **Draining/reading** logic below uses cwd-relative `.orchestrate/inbox/` paths — that is correct because those run only under the cwd=ai-console launchd jobs; only the *write/staging* destination is hard-pinned.
 
 Invoked by `inbox`, `inbox go`, `inbox go auto`, or `inbox "<plain text>"`. Operates on live files in `.orchestrate/inbox/` and `.orchestrate/inbox/gated/` — **not** on registry rows already in `awaiting_go` (use `resume` + `go auto <ID>` for those).
 
@@ -405,7 +431,7 @@ When user provides plain text (via `inbox "..."` or bare text after display):
 2. Infer `## Goal` from user text (1–3 sentences).
 3. Infer `## Context` from `.orchestrate/project.md ## Shared Context` if relevant.
 4. Generate 2 `## Acceptance Criteria` bullets.
-5. Show structured preview; on approve, write to `.orchestrate/inbox/<slug>-<ISO>.md` (or `inbox/gated/` if user requests gated).
+5. Show structured preview; on approve, write to the **canonical ai-console inbox** — `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/<slug>-<ISO>.md` (or `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/gated/<slug>-<ISO>.md` if gated), regardless of cwd. Never stage into a cwd-relative project-local `.orchestrate/`.
 
 Default new human items to `mode: auto` unless user says "gated" (or write to `inbox/gated/`).
 
@@ -414,6 +440,8 @@ Default new human items to `mode: auto` unless user says "gated" (or write to `i
 ## State File & Resume
 
 **New task:** Generate ID `YYYYMMDD-HHMMSS`. Create `.orchestrate/tasks/{ID}.md`. Ensure `.orchestrate/project.md` exists (create with template if not). Register row in project.md registry.
+
+**Carrying forward `followup_for:`/`kind:` headers:** If the source inbox file being drained into this task carries `followup_for:`/`kind:` header lines, copy them verbatim as literal top-level lines at the very top of the constructed task file — not merely paraphrased into `## Context` prose. Downstream anti-recursion checks (`enqueue-review-and-tests.sh`, `enqueue-wiki-sync.sh`) grep the constructed task file, not the original inbox file, for these headers.
 
 **Resume:** Scan `.orchestrate/tasks/` for active task files.
 - None found → ask "What task would you like to orchestrate?"
@@ -465,7 +493,11 @@ Precedence: reasoning > execution > simple > instructional.
 
 Read `## Shared Context` from `project.md` before planning — it contains durable decisions and constraints from prior tasks. Incorporate relevant context into the plan (phase design, executor choices, acceptance criteria).
 
+Immediately after reading Shared Context and before drafting the plan, pull a bounded slice of cross-project wiki knowledge: invoke `/wiki-context-pack "<task title/goal>" --budget 1500` once per task (not re-fetched per phase), and write the result verbatim into the task file under a new `## Wiki Context` section so later phases can reuse it without re-querying. Skip this pull entirely when the task's title/Goal matches a wiki-related job (`wiki-*`, `*-wiki-ingest`, `daily-wiki-digest`, or any ticket whose Design section is itself about wiki maintenance) — avoids recursive/wasteful calls. If `wiki-context-pack` errors, returns empty, or the vault isn't configured, degrade gracefully: proceed with planning unchanged and write `## Wiki Context\n(unavailable — proceeded without it)`.
+
 **Mandatory final phase:** Every plan must include a final `Test & Verify` phase `[inline · execution]`, numbered as Phase N (= total phases). Its acceptance criteria: (1) all output files declared in prior phases exist on disk, (2) detected test suite passes or "no test runner detected", (3) for any background script or launchd job changed: dry-run against a controlled environment passes in both happy-path and failure/recovery scenarios (see Background Job Dry-Run), (4) when inbox ACs or summary name a project-local smoke script, run it (see Project-local smoke scripts). Omit only for tasks that produce zero file changes (pure queries, documentation with no outputs).
+
+**Reconcile-and-document literal/numeric ACs:** when a ticket's hard count/literal AC (e.g. `ls web/*.html | wc -l == 11`) conflicts with verified project reality (the real value is 10), do NOT fail the phase or silently pass on the asserted number. Instead reconcile-and-document: run the check, record the *actual* value with evidence in `test_evidence`/verify.log, treat the AC as met at the corrected value, and note the off-by-one (the ticket's total was a guessed/remembered count, not an enumerated sum).
 
 ```
 TASK PLAN — `<summary>`  Complexity: Lightweight|Moderate|Complex (N phases)
@@ -504,15 +536,29 @@ Update task file `mode` immediately:
 
 Update project.md registry row: `status: running`.
 
+**Immediately after this write — before any phase research/work:** write `.orchestrate/tasks/{ID}.md` (a stub is fine: header + phase list from the plan, phases `pending`) or append a `tend-auto — dispatching "<title>" ({ID})` heartbeat line. Do not defer either until Phase 1's Step A capture. This applies to every path that marks a row `running` — the gated `go`/`go auto` transition here, the T-4 batch-dispatch mark-before-launch step, and a tend session that chooses to execute a pre-assigned task's phases directly inline in its own context rather than spawning a subagent for it. Without one of these two signals promptly in place, `requeue-orphaned-running.sh` (and the T-4 "orphaned-row check" below) cannot distinguish a row that is genuinely being worked inline from a crashed/failed dispatch, and will correctly-per-its-own-rules requeue it to `pending` out from under you once its 300s staleness gate passes — a real incident (task 4FA5) where an inline execution session spent ~9 minutes on research before its first task-file write and got its own row requeued mid-task by a concurrent tend cycle.
+
 ---
 
 ## Execution Loop
 
 **Self-refresh at start of each turn:** re-read this skill file and the task file. Skip only if this is the first turn after Skill tool was just invoked.
 
+**Pre-execution duplicate-completion guard (mandatory, run before evaluating Ready phases — 20260725-inbox-6B7E):** before selecting/running the next phase for this ID, do a cheap check for whether `orchestrate-history/` already contains an archive for it — reusing the same archive-existence pattern `finalize-completed-tasks.sh`'s `find_archive_for_id()` implements (anchor on `-{ID}-` in the filename, after the timestamp prefix):
+```bash
+ls .orchestrate/../orchestrate-history/*-"{ID}"-*.md 2>/dev/null   # or: grep -l "{ID}" orchestrate-history/*.md 2>/dev/null
+```
+- **No hit:** proceed normally — this is the common case; the check costs one `ls`/`grep`.
+- **Hit:** this ID is already done — a sibling top-level session, an earlier cycle, or (rarer) this same session's own prior work already completed and archived it. Do **not** run (or continue) the phase loop for it. Skip straight to the Completion sequence's reconcile behavior: confirm the registry row reflects `complete` (flip it if it still shows `running`), confirm a MANIFEST line exists for the archive (do not create a duplicate — see `finalize-completed-tasks.sh`'s `backfill_manifest_for_existing_archive` for the same idempotency pattern), then append `[<ISO>] tend-auto — pre-execution duplicate detected {ID}; already archived (<archive filename>); skipped re-execution [session=<SHELL_PROBE_TOKEN or no-token>]` to heartbeat.log instead of a normal dispatch/completion line, and move on to the next task.
+- **Why this catches more than a once-at-claim check:** `Self-refresh at start of each turn` above already re-enters this section once per phase/turn, so this guard naturally re-fires at every phase boundary for a multi-phase task, not just once before Phase 1 — a sibling completion that lands mid-task is caught at the next phase boundary rather than only when this session reaches its own Completion step. (See the 20260724-inbox-7F72/0DE3 regression walkthrough in `20260725-inbox-6B7E`'s phase log for a worked example, including the honest caveat that a check run in the same instant as claim/dispatch can still miss if the sibling has not finished archiving yet — the value is in re-checking cheaply at every subsequent phase boundary rather than only at final Completion.)
+- **Scope:** this is a pure read-then-skip short-circuit, not a claim mechanism — it does not change `acquire_tend_lock()` exclusivity or `mark_pending_tasks_as_running()` (RS01), and it is not the heavier atomic per-ID claim-lock (`mkdir .orchestrate/locks/{ID}.claim`) described in the Residual lock-bypass race note below, which remains out of scope.
+- Applies uniformly to every entry point that reaches this Execution Loop for a claimed ID: T-4's parallel batch dispatch (the subagent runs this the moment its own loop starts), `tend go auto <ID>` mode's direct single-ID execution, and the "claim, don't wait" inline-execution path.
+
 **Ready phases** = all `depends_on` entries are `✓ complete` AND status is `pending`.
 
 ### Inline phase execution
+
+**Verify a ticket's stated causal narrative before acting on it:** if a task's Goal/Context asserts a specific causal claim about why something is in its current state — especially "X was deliberately done/removed by completed task `<ID>`" or "Y is redundant because of Z precedence" — spot-check that claim against the referenced task's actual archive (`orchestrate-history/`, or its live `.orchestrate/tasks/{ID}.md` if still present) before treating it as ground truth for planning the fix. A ticket can cite specific, real task IDs and still be wrong about what those tasks actually did — e.g. citing a task as having "completed" a removal when its archived phase shows `✗ failed (blocked — ...)`/bypassed and never executed. Acting on an unverified narrative can compound the original error (e.g. permanently removing something that was never actually superseded) instead of fixing it. Found on task `20260729-inbox-F5CA`: a ticket blamed a missing permissions-config entry on a "completed" PERM-CHMOD-IMPL/VERIFY chain that, per its own archive, had been bypassed without ever running.
 
 **human_resolution:** Before running (or retrying) a phase, check the phase block in the task file for a `human_resolution:` line. If present, prepend this to your context for the phase:
 > "Human resolved this block with: `<text>`. Proceed using this answer."
@@ -536,15 +582,17 @@ Evaluate against acceptance criteria inline. Assign: **PASS** · **PARTIAL: \<ga
 
 If `files_changed` non-empty: run Bash lint/build/test. Downgrade to PARTIAL if fails.
 
-**Phase log write (mandatory):** Append the full PHASE OUTPUT block to `.orchestrate/logs/{ID}-phase{N}.log`:
+**Top-level files_changed (mandatory when non-empty):** If this phase's `files_changed` is non-empty, append/update a top-level `files_changed: <paths>` line in the task file itself (union across all phases run so far — not only inside this phase's `## PHASE OUTPUT` block's `files_changed` field or prose). This mirrors the Agent phase execution instruction below — `enqueue-review-and-tests.sh`'s `collect_files()` greps the task file for `^files_changed:` and falls back to phase logs only if that's absent; omitting this top-level line lets a real code change silently skip the 6b/6c review-and-tests enqueue (see task 20260724-213946, where an all-inline task made a real code change but the "no code changes — nothing enqueued" fallback fired because no top-level line was written).
+
+**External-repo commit hygiene (inline or Agent-dispatched phases alike):** If any `files_changed` path resolves outside this project's own root (e.g. a fix applied under a different repo in `~/apps/`), run `git -C <target-repo-root> status --short` right after making the change, then either commit locally in that repo with a descriptive message (`git -C <target-repo-root> commit -m "<message>"` — local commit only, never `git push` without explicit approval) or record in `test_evidence` exactly why it was left uncommitted (e.g. "batching with an in-flight follow-up", "awaiting human review before commit"). Without this, a real fix can sit uncommitted indefinitely with no signal from the task file that it's incomplete from a repo-hygiene standpoint — a linecook fix sat uncommitted across 4 completed registry rows before a later task finally committed it (task 20260729-inbox-6B23/DDF6).
+
+**Phase log write (mandatory — atomic, single call):** Append the full PHASE OUTPUT block to `.orchestrate/logs/{ID}-phase{N}.log` via the atomic helper, in ONE call:
 ```bash
-mkdir -p .orchestrate/logs
-# Include retry counter when R > 0 so retries are visually distinct from the original run
-LABEL="Phase N"
-[ "${RETRIES:-0}" -gt 0 ] && LABEL="Phase N (retry ${RETRIES})"
-echo "=== ${LABEL} — <name> $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> .orchestrate/logs/{ID}-phase{N}.log
-echo "<full PHASE OUTPUT block>" >> .orchestrate/logs/{ID}-phase{N}.log
+echo "<full PHASE OUTPUT block>" | bash .orchestrate/bin/append-phase-log.sh "$ROOT" "{ID}" "N" "<name>" "${RETRIES:-0}"
 ```
+This writes the `=== Phase N (retry R) — <name> <ISO> ===` header (R only when > 0) AND the body to `.orchestrate/logs/{ID}-phase{N}.log` in a single invocation, and refuses to write anything if the body is empty. A body missing `## PHASE OUTPUT` (the raw-text fallback below) is still written, marked with a `[no PHASE OUTPUT block — raw agent text below]` line instead of being dropped. **Never split this into a separate header `echo` followed later by a body append** — that exact split (a header written to mark progress, with the body append deferred and then never run) is the root cause behind task 20260717-inbox-60E4's phase1/phase2 logs containing only header lines with no PHASE OUTPUT (see task 20260718-inbox-1DF9). This applies to every path that completes a phase, including a tend session that takes over a stalled/re-dispatched task and executes its phases inline in its own context.
+
+Passing `${RETRIES:-0}` is still required, but the script also **auto-derives** the retry number from headers already present in that phase's log file and uses whichever is higher — so if your own `$RETRIES` tracking resets or is lost across a turn (e.g. after a markerless raw-text fallback attempt), the next call for the same phase N still gets labeled `(retry N)` correctly instead of silently repeating a plain `Phase N` header (task 20260720-inbox-69E3).
 
 **State write is mandatory after every inline phase** — follow Steps A/B/C immediately. Never defer or batch.
 
@@ -561,6 +609,7 @@ Announce `▶ Phase N — <name>`.
 4. Acceptance criteria: "This phase is complete when: 1. … 2. … 3. …"
 5. Required output: `## PHASE OUTPUT` block with files_changed / summary / confidence / blockers / acceptance_criteria_met / test_evidence
 6. If skill embedded: paste SKILL.md body directly — do NOT invoke Skill tool from within agent
+7. Instruction: also write a top-level `files_changed: <paths>` line into the task file itself (not only inside the per-phase `## PHASE OUTPUT` block's `files_changed` field or prose) — `enqueue-review-and-tests.sh`'s `collect_files()` greps the task file for `^files_changed:` and falls back to phase logs only if that's absent; a top-level line lets it classify the change without guessing
 
 **Parallel phases:** launch as multiple Agent calls in one message (max 6). Wait for all before assessing.
 
@@ -568,7 +617,7 @@ Announce `▶ Phase N — <name>`.
 
 After agent returns: extract `## PHASE OUTPUT`. If missing → treat as ⚠️ with gap "no PHASE OUTPUT block".
 
-**Phase log write (mandatory):** Append the full PHASE OUTPUT block (or the raw agent return text if block is missing) to `.orchestrate/logs/{ID}-phase{N}.log` — same retry-aware format as inline phases above (`Phase N (retry R)` when R > 0).
+**Phase log write (mandatory — atomic, single call):** Append the full PHASE OUTPUT block (or the raw agent return text if block is missing) to `.orchestrate/logs/{ID}-phase{N}.log` using the same `.orchestrate/bin/append-phase-log.sh` helper as inline phases above — one call, header + body together, `Phase N (retry R)` when R > 0. Never write the header via a separate `echo` first "to mark progress" and come back for the body later — that split is the exact 60E4 root cause (task 20260718-inbox-1DF9).
 
 ### Critic & micro-verifier (always inline)
 
@@ -607,6 +656,8 @@ test_evidence: dry-run 3/3 scenarios pass; launchctl list com.orchestrate.rescue
 ```
 
 If a script has no controllable inputs (reads only live system state), document why dry-run is not feasible and use `launchctl list` + log inspection instead.
+
+**Regression "teeth" tests — back up before breaking a tracked file, restore from the backup.** When a Test & Verify or tests-follow-up step must temporarily break a **tracked** source file to prove a regression actually fails (a "does this test have teeth?" check), first back the file up with `cp <file> <file>.bak` (or `git stash` / a `git checkout -- <file>` restore point) and restore it **from that backup** — NEVER reconstruct the file from model context (that risks silent truncation/drift and, for a control-plane `bin/` script, near-corruption). After restoring, confirm `git diff --stat` for that file is empty.
 
 ### Project-local smoke scripts (Test & Verify)
 
@@ -705,7 +756,7 @@ ARCHIVE_STAMP="$(date -u +%Y%m%d-%H%M%S)"
 
 Use the **same** `COMPLETED_AT` for:
 - registry `last_activity` (exact ISO, not the word `now`)
-- heartbeat lines: `[${COMPLETED_AT}] tend-auto — completed …`
+- heartbeat lines: `[${COMPLETED_AT}] tend-auto — completed "<task title>" ({ID}) — archived [session=<SHELL_PROBE_TOKEN>]` (or `[session=no-token]` if this session has none — see the T-4 step 3 dispatching-line note above for the same convention; 20260725-inbox-6B7E)
 - verify log header: `=== Verification run ${COMPLETED_AT} ===`
 
 Use the **same** `ARCHIVE_STAMP` for the archive filename prefix: `orchestrate-history/${ARCHIVE_STAMP}-${ID}-${slug}.md`
@@ -715,18 +766,43 @@ Use `date -u +%Y-%m-%d` (from `COMPLETED_AT`) for the MANIFEST date column.
 On each phase checkpoint (Step C ✅), also set registry `last_activity` to `$(date -u +%Y-%m-%dT%H:%M:%SZ)` so partial progress is accurate.
 
 **1. Archive task file:**
+- **Pre-archive duplicate-existence check (mandatory, run BEFORE any `cp`/`append-manifest-line.sh`/`rm` below — 20260725-inbox-F338):** a concurrent bash backstop (`finalize-completed-tasks.sh`, invoked from `run-job.sh`/`rescue.sh` preflight) can archive+delete this same task file in the window between this session's last phase check and reaching Completion. The unconditional `cp` below has no existence check, so when the backstop wins that race, the `cp` silently fails, the `echo "tags: ..." >>` step below still creates a new near-empty file at a *different* `ARCHIVE_STAMP`, and `append-manifest-line.sh` still appends a real MANIFEST line pointing at that near-empty duplicate — a genuine corrupt/duplicate archive entry (see 20260725-inbox-CE53). Guard against this the same way the Execution Loop's **Pre-execution duplicate-completion guard** (above) guards phase re-entry:
+  ```bash
+  ls .orchestrate/../orchestrate-history/*-"{ID}"-*.md 2>/dev/null   # or: grep -l "{ID}" orchestrate-history/*.md 2>/dev/null
+  ```
+  - **No hit:** proceed with the archive steps below unchanged — this is the common case.
+  - **Hit (archive already exists for this ID):** skip the `cp`/MANIFEST-append/`rm` entirely — do not touch the archive file, do not run `append-manifest-line.sh` again. Reconcile instead: confirm the registry row reflects `complete` (flip it via `update-registry-row.sh` if it still shows `running`), confirm a MANIFEST line exists for that archive filename (`grep` `orchestrate-history/MANIFEST.md`; do not append a second line if one is already present). Append `[<ISO>] tend-auto — pre-archive duplicate detected {ID}; already archived (<archive filename>); reconciled` to heartbeat.log instead of the normal completion archive line, then continue to step 2 (Update project.md registry) and the rest of Completion as normal — only the physical archive/copy/delete is skipped.
 - Ensure `~/apps/ai-console/orchestrate-history/` exists.
 - Copy `.orchestrate/tasks/{ID}.md` → `orchestrate-history/${ARCHIVE_STAMP}-${ID}-<slug>.md` (use `ARCHIVE_STAMP` from timestamp contract above — not a separate guessed time)
 - Add `tags:` line to archive copy.
-- **Mandatory:** Append one line to `orchestrate-history/MANIFEST.md` using exact format `YYYY-MM-DD | filename | summary | tag1, tag2`. Skipping MANIFEST breaks History tab tags/search; the monitor also scans on-disk archives as a safety net, but MANIFEST is the canonical index — never omit it.
+- **Mandatory:** Append one line to `orchestrate-history/MANIFEST.md` via `.orchestrate/bin/append-manifest-line.sh <ROOT> <date:YYYY-MM-DD> <filename> <summary> <tags>` (canonical format `YYYY-MM-DD | filename | summary | tag1, tag2`) — never hand-roll an `echo >>` or any other bracket/timestamp variant; the helper validates the date and rejects fields containing `|`. Skipping MANIFEST breaks History tab tags/search; the monitor also scans on-disk archives as a safety net, but MANIFEST is the canonical index — never omit it.
 - Delete original task file from `.orchestrate/tasks/`.
+- **Pre-archive files_changed self-check (mandatory, run BEFORE copying/deleting):** if ANY phase's `files_changed` (from `.orchestrate/logs/{ID}-phase*.log` or the phase's `## PHASE OUTPUT` block) was non-empty, the task file MUST already have a top-level `files_changed:` line. Check with `grep -q '^files_changed:' .orchestrate/tasks/{ID}.md`. If the grep fails but any phase shows non-empty `files_changed`, derive the union of paths from the phase blocks/logs and insert a `files_changed: <union>` line into the task file NOW, before archiving — do not proceed to archive/delete until the line is present. This catches the exact omission (an inline phase that changed files but never wrote the top-level line) that silently causes 6b/6c review-and-tests to skip with "no code changes — nothing enqueued" (see task 20260724-213946).
 - **Self-check before marking complete:** archive file exists on disk AND matching MANIFEST line was appended (grep `filename` in MANIFEST.md).
 - **No duplicate registry rows** for the same inbox execution — if a job is re-registered under a new ID, remove or alias the stale row; use `HISTORY_REGISTRY_ALIASES` in monitor when IDs must coexist temporarily.
 - **Cross-project task summaries** (and archive MANIFEST lines) must include the project slug (e.g. `sy-promotion`) so History search finds them.
 
 **2. Update project.md registry:** set `status: complete`, `last_activity: <COMPLETED_AT>` (the exact ISO from timestamp contract — never a rounded placeholder).
 
-> **Registry-row invariant (every writer/checker MUST hold this).** A valid data row is `| ID | summary | mode | phase | status | last_activity |` — exactly 8 `|`-fields with an EMPTY trailing `$8`. The canonical corruption check is `awk -F'|' 'NF!=8 || $8!=""'` — a bare `NF!=8` is INSUFFICIENT because the historic phantom-timestamp corruption (`... | last_activity | new_ts`, no trailing pipe) is NF==8 with a NON-empty `$8` and a bare check misses it. Update rows IN PLACE (never append a column). Reference impls: `repair_registry_rows` (run-job.sh), `checkRegistryInvariant` (monitor server.js), `.orchestrate/tests/test-registry-invariant.sh`.
+> **Registry-row invariant (every writer/checker MUST hold this).** A valid data row is `| ID | summary | mode | phase | status | last_activity |` — exactly 8 `|`-fields with an EMPTY trailing `$8`. The canonical *structural* check is `awk -F'|' 'NF!=8 || $8!=""'` — a bare `NF!=8` is INSUFFICIENT because the historic phantom-timestamp corruption (`... | last_activity | new_ts`, no trailing pipe) is NF==8 with a NON-empty `$8` and a bare check misses it.
+>
+> **NF==8 is NECESSARY but NOT SUFFICIENT.** A *field-shift* corruption — e.g. an off-by-one awk update that overwrites the `mode` column with a phase number (`auto`→`2`) — preserves the 8-column count AND the empty trailing `$8`, so it sails past the structural check while the row is semantically corrupt. Every checker MUST therefore ALSO assert a value DOMAIN on the two enum columns: **mode (awk `$4`) ∈ {auto, gated}** and **status (awk `$6`) ∈ {pending, running, awaiting_go, awaiting_critic, complete, failed, needs_human}**. The full check is additive: `NF!=8 OR $8!="" OR mode∉domain OR status∉domain`. (The structural breach can be auto-repaired by collapsing columns; a field-shift cannot — the value is genuinely wrong — so it surfaces as a WARNING for a human.) Update rows IN PLACE (never append a column). Reference impls: `repair_registry_rows` (run-job.sh), `checkRegistryInvariant` (monitor server.js), `.orchestrate/tests/test-registry-invariant.sh`.
+>
+> **Row-update — use the helper, not hand-rolled awk.** `.orchestrate/bin/update-registry-row.sh <ROOT> <ID> <mode> <current_phase> <status> <last_activity>` sets fields BY COLUMN NAME (never by positional literal), validates mode/status against the domain enums before writing, refuses cleanly (no write) on an unknown ID or bad enum, and is idempotent. This removes the need to hand-derive `awk` field positions — the exact mistake that has repeatedly produced field-shift corruption (a phase number landing in the mode column, a timestamp in the status column) while still passing the bare `NF==8` structural check:
+> ```bash
+> .orchestrate/bin/update-registry-row.sh "$ROOT" "$ID" auto "$PHASE" complete "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+> ```
+> Regression: `.orchestrate/tests/test-update-registry-row.sh`. If the helper is ever unavailable, fall back to hand-rolled awk using the field map below — but prefer the helper:
+> ```bash
+> # awk field map for a data row:  $1="" $2=ID $3=summary $4=mode $5=current_phase $6=status $7=last_activity $8="" (trailing)
+> awk -F'|' -v OFS='|' -v id="$ID" -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+>   /^\|[[:space:]]*[0-9]/ && NF==8 {
+>     rid=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",rid)
+>     if (rid==id) { $6=" complete "; $7=" " ts " " }   # $4=mode $5=current_phase $6=status $7=last_activity
+>   }
+>   { print }
+> ' "$PROJ" > "$PROJ.tmp" && mv "$PROJ.tmp" "$PROJ"
+> ```
 
 **3. Update Shared Context** — see section below.
 
@@ -851,6 +927,24 @@ Gap: <what was left undelivered or only partially done>
 
 Append to heartbeat.log: `[<ISO>] follow-up — enqueued followup-<slug> from task <ID>`
 
+**6b. Auto-enqueue review + tests follow-ups (code-changing tasks only):**
+
+Every task that **changed code** must get an INDEPENDENT review pass and test pass in a *fresh* tend cycle — this **supplements** (does not replace) the inline critic + Test & Verify gate (R-1 Decision 3). Run this sub-step always at Completion, after Goal Self-Assessment and before Improvement Suggestions.
+
+- **Trigger (code-change predicate, R-1 Decision 2):** fire only when the aggregate `files_changed:` across all phase blocks contains ≥1 code/test/script/config file (`*.ts *.js *.py *.go *.sh *.sql *.yaml *.json` … `Dockerfile Makefile *.plist`), EXCLUDING pure docs/log/registry/archive/control-plane paths (`*.md *.txt`, `.orchestrate/logs/**`, `.orchestrate/project.md`, `orchestrate-history/**`, `MANIFEST.md`, `.orchestrate/notes/**`, `.orchestrate/inbox/**`). A zero-code-change task (pure docs/query) enqueues NEITHER ticket.
+- **Anti-recursion (R-1 Decision 4):** if THIS task itself carries a `followup_for:` header (it IS a review/tests ticket), enqueue NOTHING — terminal. This check takes precedence over the trigger.
+- **Mechanism:** the deterministic shell path is authoritative — `.orchestrate/bin/finalize-completed-tasks.sh` calls `enqueue-review-and-tests.sh <ID>` from its reaper (so unattended `tend` always enforces it even if this model session dies mid-Completion). The model path simply mirrors that: run `ENQ_ROOT=<root> ENQ_INBOX_ROOT=<root> bash .orchestrate/bin/enqueue-review-and-tests.sh <ID>`. The helper writes exactly one `kind: review` + one `kind: tests` ticket to the canonical ai-console inbox with headers `followup_for: <ID>` + `kind: …` + `mode: auto` + `source: self`, **dedups** against inbox/registry/history by the `(followup_for, kind)` pair (idempotent — safe if both the model and the bash backstop fire), and writes NO `gate_reason:` / no risky-op literals so the tickets drain to `pending` and tend go auto runs them (R-1 Decisions 5/7).
+- Append to heartbeat.log (the helper does this): `[<ISO>] enqueue — filed followup-review-<ID>-<stamp> …` (or `skip <ID> …` for docs-only / `followup_for:` / dedup).
+
+**6c. Auto-enqueue wiki-sync (every completed task):**
+
+Every completed task should get its outcome captured into the Obsidian wiki via a *fresh* tend cycle, not wait for the daily batch job — this **supplements** (does not replace or modify) `orchestrate-daily-wiki-ingest`, which keeps writing the operational `Orchestration/Daily/` activity log for every task unconditionally. Run this sub-step always at Completion, alongside 6b, before Improvement Suggestions.
+
+- **Trigger:** fires for **every** completed task, subject only to the two anti-recursion guards below — there is no longer a code-change/research-keyword gate (removed 2026-07-25, WIKI-1: a code-changing task with no research signal, e.g. a plain bug fix, previously got a review+tests follow-up but no wiki-sync follow-up, so its outcome was never captured except in the daily operational log). The enqueued ticket's own Instructions (see Mechanism) still tell the executing agent to judge substantiveness and skip writing a page for trivial content — the *ticket* always gets filed, but a *wiki page* is only written when the content warrants it.
+- **Anti-recursion:** if the source task itself carries a `followup_for:` header (it IS already a follow-up ticket), enqueue NOTHING — terminal. Also skips when the task's title/tags match a wiki-* job itself (`wiki-ingest`, `wiki-capture`, `wiki-update`, `orchestrate-daily-wiki-ingest`, `daily-wiki-digest`) to avoid recursive wiki-of-wiki noise.
+- **Mechanism:** the deterministic shell path is authoritative — `.orchestrate/bin/finalize-completed-tasks.sh` calls `enqueue-wiki-sync.sh <ID>` from its reaper (structurally mirrors `enqueue-review-and-tests.sh`, independent of and additional to it — any code-changing task fires both a review+tests ticket and a wiki-sync ticket, since 6b's code-change gate and 6c's now-unconditional trigger are independent checks). The model path mirrors that: run `ENQ_ROOT=<root> ENQ_INBOX_ROOT=<root> bash .orchestrate/bin/enqueue-wiki-sync.sh <ID>`. The helper writes exactly one `kind: wiki-sync` ticket to the canonical ai-console inbox with headers `followup_for: <ID>` + `kind: wiki-sync` + `mode: auto` + `source: self`, **dedups** against inbox/registry/history by the `(followup_for, kind=wiki-sync)` pair, and writes NO `gate_reason:` / no risky-op literals so the ticket drains to `pending` and tend go auto runs it.
+- Append to heartbeat.log (the helper does this): `[<ISO>] enqueue — filed followup-wiki-sync-<ID>-<stamp> …` (or `skip <ID> …` for `followup_for:` / wiki-job / dedup — there is no code-change/no-keyword skip path anymore, since WIKI-1 removed that gate).
+
 **7. Improvement Suggestions:**
 
 Print the suggestions block to the user:
@@ -904,18 +998,29 @@ triggered_by: <task ID>
 ## Context
 Triggered by task `<ID>` — <task summary>.
 Observation: <what was seen — retry count, gap text, repeated partial verdict>
-Applies to: <path in ai-toolbox>  ·  Installed at: ~/.claude/skills/<name>/SKILL.md
+Applies to: <path in ai-toolbox>  ·  Installed at: ~/.claude/skills/<name>/SKILL.md (SKILL.md edits only — see Script-divergence below; a bin script has no ~/.claude mirror)
 
 ## Acceptance Criteria
-- SKILL.md section "<X>" updated as described
-- sync.sh run; installed copy reflects the change
+- SKILL.md section "<X>" updated as described (or: bin script `<script>` updated)
+- For a SKILL.md edit: sync.sh run, installed `~/.claude/skills/<name>/SKILL.md` reflects the change. For a bin script: change mirrored to the project `.orchestrate/bin/<script>` (sync.sh does NOT copy `bin/` — no ~/.claude bin mirror exists)
 - make test passes (or "no test runner detected")
 ```
 
 **Categories** (set `Applies to:` accordingly):
 - Orchestrator → `ai-toolbox/skills/task-orchestrate/SKILL.md`
 - Invoked skill → `ai-toolbox/skills/<name>/SKILL.md`
+- Orchestrate bin script (`.orchestrate/bin/*.sh` — rescue.sh, run-job.sh, drain-inbox.sh, etc.) → `ai-toolbox/skills/task-orchestrate/bin/<script>`
 - Project → project-specific paths (tests, `.orchestrate/`, docs)
+
+**Script-divergence — live-copy count differs by file type:**
+- A **SKILL.md** has **3 live copies**: the ai-toolbox source (`skills/<name>/SKILL.md`), the `~/.claude/skills/<name>/SKILL.md` installed by `sync.sh`, and the project skill dir (`.cursor/.claude` skills) when `RUNNER=cursor`.
+- A **bin script** has only **2 live copies**: the ai-toolbox source (`skills/task-orchestrate/bin/<script>`) and the project copy (`.orchestrate/bin/<script>`, installed by `install-launchd.sh`). **`sync.sh` syncs only `SKILL.md`, never `bin/`** — so there is NO `~/.claude/.../bin/` mirror. Do not assert a phantom `~/.claude/skills/task-orchestrate/bin/<script>` copy for bin scripts; mirror edits between the ai-toolbox source and `.orchestrate/bin/` only.
+
+**Delimited-field validation — reject embedded newlines, not just the delimiter.** Any new helper script that validates a free-text field destined for a single-line delimited record (a MANIFEST.md row, a registry row, etc.) must reject an embedded newline in the same validation pass as the delimiter character (`|`) — a value containing `\n` silently splits into multiple physical lines instead of being rejected, even though the delimiter check alone passes it. Its regression test suite must include a newline-in-field case alongside the delimiter-in-field case (`append-manifest-line.sh`'s test suite missed this until an independent review caught it — see `20260725-inbox-R72B`).
+
+**Pattern-class bug fixes — grep sibling scripts, not just the file you're touching.** When a bug fix in one `.orchestrate/bin/*.sh` script addresses a *pattern class* (an un-anchored substring match standing in for an exact-line match, an unescaped delimiter, an off-by-one field index, etc.) rather than a one-off logic error, grep the rest of `.orchestrate/bin/` for the same literal pattern/regex before treating the fix as complete. The same bug can be duplicated across sibling scripts that read the same task-file or registry-row convention. `finalize-completed-tasks.sh`'s `task_file_all_phases_complete()` was fixed once for an un-anchored `grep -c '✓ complete'` substring match that false-positived on `status: ✓ complete (PARTIAL vs. acceptance — ...)` lines — but `tend-need-action.sh`'s `count_needs_human_actionable()`, which reads the exact same task-file convention, had the identical bug and was never touched by that fix. It resurfaced independently a day later on a live tend cycle, on the same task ID, nearly causing a repeat of the exact wrong auto-completion that had already been corrected once (`20260725-inbox-TNAP1`, following `20260725-inbox-CE42`/`20260725-054542`).
+
+**Doc-coupled tests — update assertions alongside intentional T-1/T-4 (or any documented-behavior) edits.** `.orchestrate/tests/test-task-orchestrate.sh` contains `skill_has` assertions that grep for **literal SKILL.md prose** (e.g. the exact strings `awaiting_go (gated) is EXCLUDED` from the T-1 NEED_ACTION example, `**SKIP entirely` from the T-4 `awaiting_go` block, and `Gated tasks still never auto-execute`). These are doc-conformance guards, not behavioral regressions: when you deliberately reword a documented T-1/T-4 behavior, the matching `skill_has` pattern will FAIL until you update it to the new wording. Treat such a failure as "the doc-conformance test caught my edit," not a bug — re-point the assertion at the new text in the same change.
 
 Append to heartbeat.log:
 - Filed: `[<ISO>] self-improve — filed improvement-<slug> from task <ID>`
