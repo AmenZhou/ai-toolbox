@@ -31,21 +31,35 @@ registry_row() {
 }
 
 set_pending() {
-  local id="$1" reason="$2"
+  local id="$1" reason="$2" since_epoch="${3:-0}"
   # Churn guard: a re-queue (needs_human → pending) is a re-processing. Bump the
   # shared counter; if ${id} has now churned ${CG_THRESHOLD:-3}× without
   # converging, park it (needs_human + bypass markers) + file an investigation job
   # INSTEAD of re-queueing, so a poison task does not loop forever.
-  if type cg_increment >/dev/null 2>&1; then
+  #
+  # Use cg_increment_unless_transient (not raw cg_increment) so a requeue driven
+  # by run-job.sh's own auto-injected "Auto-reset: task stuck in running ..."
+  # human_resolution line is classified the SAME way the ghost-reset step
+  # already classified it. Without this, a shell_incapable/transient ghost-reset
+  # — correctly skipped (not counted) at reset time by run-job.sh's
+  # cg_increment_unless_transient call — got counted anyway the moment this
+  # requeue leg picked up that injected line and unconditionally cg_increment'd,
+  # double-penalizing dispatch-starvation cycles that never reached any real
+  # phase work (root cause of the 20260729-inbox-2408/C94E false churn park —
+  # 3 consecutive shell_incapable cycles, each correctly "not counted" at
+  # ghost-reset, still parked the task via this leg's blind increment).
+  if type cg_increment_unless_transient >/dev/null 2>&1; then
+    cg_increment_unless_transient "$id" "$since_epoch" >/dev/null 2>&1 || true
+  elif type cg_increment >/dev/null 2>&1; then
     cg_increment "$id" >/dev/null 2>&1 || true
-    if cg_park_if_churned "$id" 2>/dev/null; then
-      local pnow line
-      pnow="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      line="[${pnow}] tend-auto — churn-guard parked ${id} after ${CG_THRESHOLD:-3} re-queues (requeue-unblocked path); not re-queued"
-      echo "$line" >>"$HEARTBEAT"
-      echo "$line"
-      return 0
-    fi
+  fi
+  if type cg_park_if_churned >/dev/null 2>&1 && cg_park_if_churned "$id" 2>/dev/null; then
+    local pnow line
+    pnow="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    line="[${pnow}] tend-auto — churn-guard parked ${id} after ${CG_THRESHOLD:-3} re-queues (requeue-unblocked path); not re-queued"
+    echo "$line" >>"$HEARTBEAT"
+    echo "$line"
+    return 0
   fi
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -90,14 +104,24 @@ closure_in_file() {
 
 requeue_count=0
 
-while IFS='|' read -r _ task_id _ _ _ status _; do
+while IFS='|' read -r _ task_id _ _ _ status last_activity _; do
   task_id="${task_id// /}"
   status="${status// /}"
+  last_activity="$(printf '%s' "$last_activity" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
   [[ "$status" == "needs_human" ]] || continue
   [[ -z "$task_id" || "$task_id" == "ID" ]] && continue
 
   tf="$TASKS/${task_id}.md"
   [[ -f "$tf" ]] || continue
+
+  # since_epoch for cg_increment_unless_transient's shell_incapable/transient
+  # window check — the row's last_activity (when it went needs_human), so the
+  # classifier looks at the ghost-reset that actually produced this state, not
+  # whatever agent log happens to be newest on disk.
+  since_epoch=0
+  if [[ -n "$last_activity" ]]; then
+    since_epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$last_activity" +%s 2>/dev/null || echo 0)"
+  fi
 
   # Skip EXTERNAL blockers unless an explicit requeue signal is satisfied
   if grep -qE '^blocked_on:[[:space:]]*EXTERNAL' "$tf" 2>/dev/null; then
@@ -111,7 +135,7 @@ while IFS='|' read -r _ task_id _ _ _ status _; do
     ref="$(grep -E '^requeue_when_exists:' "$tf" | head -1 | sed 's/^requeue_when_exists:[[:space:]]*//')"
     ref="${ref/#\~/$HOME}"
     if closure_in_file "$ref"; then
-      set_pending "$task_id" "requeue_when_exists satisfied ($ref)"
+      set_pending "$task_id" "requeue_when_exists satisfied ($ref)" "$since_epoch"
       requeue_count=$(( requeue_count + 1 ))
       continue
     fi
@@ -122,7 +146,7 @@ while IFS='|' read -r _ task_id _ _ _ status _; do
   while IFS= read -r ref; do
     ref="${ref/#\~/$HOME}"
     if closure_in_file "$ref"; then
-      set_pending "$task_id" "to_clear signal satisfied ($ref)"
+      set_pending "$task_id" "to_clear signal satisfied ($ref)" "$since_epoch"
       requeue_count=$(( requeue_count + 1 ))
       break
     fi
@@ -133,7 +157,7 @@ while IFS='|' read -r _ task_id _ _ _ status _; do
   # Human injected resolution that is NOT a BLOCKED marker → requeue
   if grep -qE '^human_resolution:' "$tf" && \
      ! grep -qE '^human_resolution:.*BLOCKED ON HUMAN' "$tf"; then
-    set_pending "$task_id" "human_resolution injected (non-blocked)"
+    set_pending "$task_id" "human_resolution injected (non-blocked)" "$since_epoch"
     requeue_count=$(( requeue_count + 1 ))
   fi
 
