@@ -82,14 +82,207 @@ cg__set_taskfile() {
   fi
 }
 
+# cg__row_mode <ID> — the row's `mode` column (field 4) from project.md, or
+# empty if the row isn't found. Registry is the authoritative source (available
+# even for no-task-file ghost jobs), unlike the task file's own `mode:` line
+# which may be stale or absent. Mirrors the awk-read pattern already used by
+# cg__park_registry / cg__close_investigation_row below.
+cg__row_mode() {
+  local id="$1" proj
+  proj="$(cg__root)/.orchestrate/project.md"
+  [[ -f "$proj" ]] || return 0
+  awk -F'|' -v id="$id" '
+    /^\|[[:space:]]*[0-9A-Za-z]/ && NF>=8 {
+      rid=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",rid)
+      if (rid==id) { m=$4; gsub(/^[[:space:]]+|[[:space:]]+$/,"",m); print m; exit }
+    }
+  ' "$proj"
+}
+
 # cg_increment <ID> — bump the counter in BOTH layers; echo the new count.
+# CHURN-GATED-IMPL: `mode: gated` rows are exempt — the counter must not move
+# for a row awaiting human `go`, no matter how many times a detector re-matches
+# a stale human_resolution/stall marker on it (20260730-inbox-988B / the 9D5A
+# requeue_count-past-400 incident). Returns the count UNCHANGED, with no
+# sidecar/task-file write, when the row is gated.
 cg_increment() {
   local id="$1" cur new
+  if [[ "$(cg__row_mode "$id")" == "gated" ]]; then
+    cg_count "$id"
+    return 0
+  fi
   cur="$(cg_count "$id")"
   new=$(( cur + 1 ))
   cg__set_sidecar "$id" "$new"
   cg__set_taskfile "$id" "$new"   # no-op if task file absent
   echo "$new"
+}
+
+# Transient infra-death patterns — a run that died on one of these hit no poison
+# and made no progress; it should be retried like a C3 one-shot transient, not
+# counted toward the poison-park threshold. Override via CG_TRANSIENT_PATTERN.
+CG_TRANSIENT_PATTERN="${CG_TRANSIENT_PATTERN:-API Error: Connection closed mid-response|Connection closed mid-response|Connection error|Connection reset|ECONNRESET|EPIPE|ETIMEDOUT|socket hang up|Error: 429|HTTP 429|Too Many Requests|Request timed out|network error}"
+
+# cg__latest_agent_log — path of the most recently modified per-session agent log
+# (`.orchestrate/logs/YYYYMMDD-HHMMSS-agent.log`, written by run-job.sh:run_agent),
+# or empty when none exists. This is the "just-reset run's" log at ghost-reset time,
+# because reset_stale_running_tasks/rescue run in preflight BEFORE the next agent
+# session opens its own log.
+cg__latest_agent_log() {
+  local root logdir
+  if [[ -n "${ZSH_VERSION:-}" ]]; then setopt local_options nullglob; fi
+  root="$(cg__root)"
+  logdir="$root/.orchestrate/logs"
+  [[ -d "$logdir" ]] || return 0
+  ls -t "$logdir"/*-agent.log 2>/dev/null | head -1
+}
+
+# cg__agent_log_since <since_epoch> — path of the EARLIEST *-agent.log whose
+# mtime is >= since_epoch, or empty when none qualifies. Used to attribute an
+# async/delayed ghost-reset (rescue.sh, or any detector that runs long after the
+# actual failed dispatch) to the log for THAT SPECIFIC stale row, rather than
+# "whatever happens to be newest on disk right now" (cg__latest_agent_log).
+# BC7C: cg__latest_agent_log's doc comment assumes the detector runs
+# synchronously, right after the failing session, so "latest" == "that run's
+# log" — true for run-job.sh's own reset_stale_running_tasks, called inline in
+# the same preflight. It is NOT true for rescue.sh, a separately-scheduled
+# process that can fire hours after the row went stale: by then an unrelated,
+# later, successful tend cycle may have written a newer agent log, so
+# cg__latest_agent_log picks THAT (unrelated, non-transient, no-progress) log
+# instead of the actual crashed dispatch attempt — misclassifying a genuine
+# transient-infra death (e.g. a recurring "Connection closed mid-response" CLI
+# crash) as a real re-processing and inflating the churn counter toward a false
+# park. Using the row's last_activity epoch as `since_epoch` finds the log from
+# the dispatch attempt that actually made this row stale.
+cg__agent_log_since() {
+  local since="$1" root logdir f m best="" best_mtime=0
+  if [[ -n "${ZSH_VERSION:-}" ]]; then setopt local_options nullglob; fi
+  root="$(cg__root)"
+  logdir="$root/.orchestrate/logs"
+  [[ -d "$logdir" ]] || return 0
+  for f in "$logdir"/*-agent.log; do
+    [[ -f "$f" ]] || continue
+    m="$(date -r "$f" +%s 2>/dev/null || echo 0)"
+    [[ "$m" -ge "$since" ]] || continue
+    if [[ -z "$best" || "$m" -lt "$best_mtime" ]]; then
+      best="$f"; best_mtime="$m"
+    fi
+  done
+  printf '%s' "$best"
+}
+
+# cg_is_transient_reset [LOGFILE] [SINCE_EPOCH] — return 0 (true) when the
+# resolved agent log shows ONLY a transient connection/infra error with ZERO
+# task progress. Progress evidence (a `## PHASE OUTPUT` block or a `✓ complete`
+# checkpoint) DISQUALIFIES "transient" — a run that did real work then failed is a
+# genuine re-processing and must count. Returns 1 (false) when the log is absent,
+# shows progress, or shows no transient error at all.
+#
+# Log resolution: an explicit LOGFILE always wins (tests / callers with a known
+# log). Otherwise, when SINCE_EPOCH (the stale row's last_activity, epoch
+# seconds) is given, use cg__agent_log_since to find the log from the dispatch
+# attempt that actually made this row stale — falling back to
+# cg__latest_agent_log only when no such log exists or SINCE_EPOCH is omitted
+# (preserves the original synchronous-caller behavior in run-job.sh).
+cg_is_transient_reset() {
+  local log="${1:-}" since="${2:-0}"
+  if [[ -z "$log" ]]; then
+    if [[ "$since" =~ ^[0-9]+$ && "$since" -gt 0 ]]; then
+      log="$(cg__agent_log_since "$since")"
+    fi
+    [[ -n "$log" ]] || log="$(cg__latest_agent_log)"
+  fi
+  [[ -n "$log" && -f "$log" ]] || return 1
+  # Any progress marker means the run was not a clean transient death — count it.
+  if grep -qE '## PHASE OUTPUT|✓ complete' "$log" 2>/dev/null; then
+    return 1
+  fi
+  # Must actually carry a transient connection/infra error to qualify.
+  grep -qiE "$CG_TRANSIENT_PATTERN" "$log" 2>/dev/null
+}
+
+# cg__heartbeat_shell_incapable_since <since_epoch> — return 0 (true) when
+# heartbeat.log carries a "... session has no shell capability; deferred" line
+# — the marker run_with_fallback (run-job.sh) writes either after BOTH runners
+# (primary + secondary) failed that dispatch cycle's shell-capability probe, OR
+# after only the primary runner failed when CURSOR_FALLBACK=never (no secondary
+# is probed in that config) — timestamped at/after since_epoch. Either way, no
+# session reached this task's phase work that cycle. Returns 1 when no such
+# line qualifies, or heartbeat.log is absent. since_epoch bounds the scan to
+# the window in which THIS row went stale; heartbeat.log accumulates
+# unboundedly across unrelated tasks/cycles, so an unscoped scan would
+# misattribute some other, older shell-incapable cycle to this reset.
+cg__heartbeat_shell_incapable_since() {
+  local since="$1" hb line ts epoch
+  hb="$(cg__heartbeat)"
+  [[ -f "$hb" ]] || return 1
+  while IFS= read -r line; do
+    ts="$(printf '%s' "$line" | grep -oE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\]' | tr -d '[]')"
+    [[ -n "$ts" ]] || continue
+    epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null || echo 0)"
+    [[ "$epoch" -ge "$since" ]] && return 0
+  done < <(grep -E 'no shell capability; deferred' "$hb" 2>/dev/null)
+  return 1
+}
+
+# cg_is_shell_incapable_reset <SINCE_EPOCH> — return 0 (true) when this
+# ghost-reset was caused by dispatch-side shell-capability starvation rather
+# than the task's own phase work failing. A dispatch cycle where BOTH runners
+# fail the shell-probe (see run-job.sh's shell_probe_directive/shell_probe_failed)
+# never demonstrates it can run a Bash command, so it cannot have reached ANY
+# task's actual phase work that cycle either — the 20260728-inbox-36DC
+# investigation found exactly this: 3 consecutive dispatch-starvation cycles
+# parked a perfectly healthy task purely on this ghost-reset → requeue loop.
+# SINCE_EPOCH (the stale row's last_activity) is REQUIRED (>0) — unlike a
+# single agent log, heartbeat.log has no natural "latest" fallback, so an
+# unscoped search would risk attributing an unrelated historical
+# shell-incapable cycle to today's reset. As an extra guard (mirrors
+# cg_is_transient_reset), a resolved agent log showing real progress in the
+# window still disqualifies this classification — the task cannot be "no
+# session ever reached its phase work" if one visibly did.
+cg_is_shell_incapable_reset() {
+  local since="${1:-0}"
+  [[ "$since" =~ ^[0-9]+$ && "$since" -gt 0 ]] || return 1
+  cg__heartbeat_shell_incapable_since "$since" || return 1
+  local log
+  log="$(cg__agent_log_since "$since")"
+  [[ -n "$log" ]] || log="$(cg__latest_agent_log)"
+  if [[ -n "$log" && -f "$log" ]] && grep -qE '## PHASE OUTPUT|✓ complete' "$log" 2>/dev/null; then
+    return 1   # a session did reach real phase work — genuine reset, must count
+  fi
+  return 0
+}
+
+# cg_increment_unless_transient <ID> [SINCE_EPOCH] — the ghost-reset re-queue
+# entry point. Bumps the churn counter UNLESS the just-reset run died on a
+# transient infra error with zero progress (cg_is_transient_reset), or the
+# reset was caused by dispatch-side shell-capability starvation rather than the
+# task's own phase work failing (cg_is_shell_incapable_reset) — in either case
+# the counter is left untouched (the run is retried like a one-shot transient)
+# and a heartbeat line is logged. Echoes the new count on a real bump,
+# `transient`, or `shell_incapable` when skipped. SINCE_EPOCH (optional): the
+# stale row's last_activity in epoch seconds — pass this from any detector that
+# may run asynchronously/long after the row went stale (rescue.sh) so both
+# checks are attributed to the right window; see cg__agent_log_since.
+cg_increment_unless_transient() {
+  local id="$1" since="${2:-0}"
+  if cg_is_transient_reset "" "$since"; then
+    local hb iso
+    hb="$(cg__heartbeat)"; mkdir -p "$(dirname "$hb")"
+    iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "[${iso}] churn-guard — transient-infra ghost-reset for ${id}, not counted" >> "$hb"
+    echo "transient"
+    return 0
+  fi
+  if cg_is_shell_incapable_reset "$since"; then
+    local hb iso
+    hb="$(cg__heartbeat)"; mkdir -p "$(dirname "$hb")"
+    iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "[${iso}] churn-guard — dispatch-starvation (shell_incapable) ghost-reset for ${id}, not counted" >> "$hb"
+    echo "shell_incapable"
+    return 0
+  fi
+  cg_increment "$id"
 }
 
 # cg_reset <ID> — zero the counter on completion (remove sidecar row + zero file line).
@@ -106,6 +299,83 @@ cg_reset() {
     tftmp="$(mktemp "${TMPDIR:-/tmp}/cg-tf.XXXXXX")"
     grep -vE '^requeue_count:' "$tf" > "$tftmp" && mv "$tftmp" "$tf"
   fi
+  # 19D7: a task that reached `complete` has no convergence failure — auto-close
+  # any still-active investigate-churn ticket filed by a mid-flight-reset false
+  # positive, so tend never spends a cycle diagnosing-then-closing it by hand.
+  cg_close_investigation "$id"
+}
+
+# cg_close_investigation <ID> — move any still-active investigate-churn ticket for
+# <ID> out of the live inbox into processed/, stamping a closure marker. Called on
+# completion (via cg_reset) so a false-positive churn ticket never runs. The
+# triggered_by line stays intact so cg_file_investigation's dedup still sees it and
+# never re-files. Idempotent; no-op when no active ticket exists.
+cg_close_investigation() {
+  local id="$1" root inbox f base iso
+  # zsh (the sourced tend-agent shell) aborts on an unmatched glob; make it expand
+  # to nothing instead. Function-local via local_options — auto-restored on return,
+  # and a no-op under bash (where the loop is already unmatched-glob-safe).
+  if [[ -n "${ZSH_VERSION:-}" ]]; then setopt local_options nullglob; fi
+  root="$(cg__root)"
+  inbox="$root/.orchestrate/inbox"
+  [[ -d "$inbox" ]] || return 0
+  iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  for f in "$inbox"/investigate-churn-"${id}"-*.md; do
+    [[ -f "$f" ]] || continue
+    mkdir -p "$inbox/processed"
+    base="$(basename "$f")"
+    printf '\nclosed_at: %s\nclosed_reason: target %s reached complete — mid-flight-reset false positive\n' \
+      "$iso" "$id" >> "$f"
+    mv "$f" "$inbox/processed/$base" 2>/dev/null || true
+  done
+  # 19D7b: the false-positive ticket may already have been DRAINED into its own
+  # registry row (an `Investigate churn — <id>` task) with its inbox file moved to
+  # processed/ BEFORE the target completed — the live-inbox scan above then finds
+  # nothing, and the moot investigation runs as a full task (recursive churn: the
+  # investigation can itself stall and ghost-reset, filing yet another ticket). Also
+  # auto-complete any non-terminal registry row whose summary names THIS target as an
+  # investigate-churn task. The archive-gap backfill in finalize-completed-tasks.sh
+  # archives the now-complete row on its next pass.
+  cg__close_investigation_row "$id"
+}
+
+# cg__close_investigation_row <target> — close a DRAINED investigate-churn registry
+# row for <target> once <target> is complete. Finds a non-terminal row whose summary
+# reads `Investigate churn — <target> …`, flips it to complete (NF==8-safe), drops
+# its ghost task file, and logs. Idempotent: a complete/failed row is skipped, so a
+# second call is a clean no-op. No-op when no such row exists.
+# 4474 fix: the match MUST be ANCHORED to the start of the summary (index()==1), not a
+# substring (index()>0). The 6b auto-enqueue creates sibling follow-up rows summarized
+# `Review of Investigate churn — <target> …` and `Tests for Investigate churn —
+# <target> …`, which CONTAIN this needle. An unanchored match closed those still-active
+# review/tests rows and rm'd their task files (live wrong-row corruption). Anchoring to
+# position 1 requires `Investigate churn — <target>` to be the summary PREFIX, excluding
+# the `Review of`/`Tests for` prefixes.
+cg__close_investigation_row() {
+  local target="$1" proj inv_id now tmp hb
+  proj="$(cg__root)/.orchestrate/project.md"
+  [[ -f "$proj" ]] || return 0
+  inv_id="$(awk -F'|' -v t="$target" '
+    function trim(s){ gsub(/^[[:space:]]+|[[:space:]]+$/,"",s); return s }
+    /^\|[[:space:]]*[0-9A-Za-z]/ && NF>=8 {
+      summ=trim($3); st=trim($6); rid=trim($2)
+      if (index(summ, "Investigate churn — " t)==1 && st!="complete" && st!="failed") {
+        print rid; exit
+      }
+    }' "$proj")"
+  [[ -n "$inv_id" ]] || return 0
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
+  awk -F'|' -v OFS='|' -v id="$inv_id" -v now="$now" '
+    /^\|[[:space:]]*[0-9A-Za-z]/ && NF>=8 {
+      rid=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",rid)
+      if (rid==id) { $6=" complete "; $7=" " now " "; if (NF>8){NF=8;$8=""} }
+    }
+    { print }
+  ' "$proj" > "$tmp" && mv "$tmp" "$proj"
+  rm -f "$(cg__taskfile "$inv_id")" 2>/dev/null || true
+  hb="$(cg__heartbeat)"; mkdir -p "$(dirname "$hb")"
+  echo "[${now}] churn-guard — auto-closed investigate-churn row ${inv_id} (target ${target} complete — mid-flight-reset false positive)" >> "$hb"
 }
 
 # cg__park_registry <ID> — force the registry row to needs_human (NF==8-safe).
@@ -162,8 +432,30 @@ cg__write_bypass() {
 # nothing when deduped.
 cg_file_investigation() {
   local id="$1" root inbox iso dest f
+  # zsh sourced-shell safety: the dedup glob below must expand to nothing on no
+  # match, not abort. Function-local (auto-restored); no-op under bash.
+  if [[ -n "${ZSH_VERSION:-}" ]]; then setopt local_options nullglob; fi
   root="$(cg__root)"
   inbox="$root/.orchestrate/inbox"
+  # 19D7 outcome-aware suppression: if the target task has already reached
+  # `complete`, its counter hitting the threshold was a mid-flight-reset false
+  # positive — there is no convergence failure to investigate. Do not file.
+  local proj0 st0 summ0
+  proj0="$root/.orchestrate/project.md"
+  if [[ -f "$proj0" ]]; then
+    st0="$(awk -F'|' -v id="$id" '/^\|/ { rid=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",rid); if(rid==id){ s=$6; gsub(/^[[:space:]]+|[[:space:]]+$/,"",s); print s; exit } }' "$proj0")"
+    [[ "$st0" == "complete" ]] && return 0
+    # Recursion guard: never file an investigate-churn job for a task that is
+    # itself an investigate-churn job. Its fresh ID escapes the triggered_by
+    # dedup below, so without this a churning investigation spawns another
+    # investigation without bound (the 2026-07-24 auth-outage cascade: one
+    # expired-OAuth run-job failure orphaned every dispatched task, and each
+    # parked investigate-churn task filed a new one — ~18 tasks in 3 chains).
+    summ0="$(awk -F'|' -v id="$id" '/^\|/ { rid=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",rid); if(rid==id){ s=$3; gsub(/^[[:space:]]+|[[:space:]]+$/,"",s); print s; exit } }' "$proj0")"
+    case "$summ0" in
+      [Ii]nvestigate\ churn*) return 0 ;;
+    esac
+  fi
   mkdir -p "$inbox" "$inbox/processed" 2>/dev/null || true
   # Dedup: skip if any inbox file (active or processed) already targets this ID.
   for f in "$inbox"/*.md "$inbox"/processed/*.md; do
@@ -206,6 +498,13 @@ cg_file_investigation() {
 # and does NOT double-file (investigation dedup on triggered_by).
 cg_park_if_churned() {
   local id="$1"
+  # CHURN-GATED-IMPL: a `mode: gated` row is never parked, regardless of its
+  # count — defense-in-depth alongside the cg_increment guard above, in case a
+  # caller invokes this without going through cg_increment first, or a race
+  # lets the count reach threshold before a mode transition is observed.
+  if [[ "$(cg__row_mode "$id")" == "gated" ]]; then
+    return 1
+  fi
   local count
   count="$(cg_count "$id")"
   if [[ "${count:-0}" -lt "$CG_THRESHOLD" ]]; then
@@ -221,13 +520,17 @@ cg_park_if_churned() {
   mkdir -p "$(dirname "$hb")"
   iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local invname="investigate-churn-${id}"
-  echo "[${iso}] churn-guard — blocked ${id} after ${CG_THRESHOLD} re-processings; filed ${invname}" >> "$hb"
+  if [[ -n "$filed" ]]; then
+    echo "[${iso}] churn-guard — blocked ${id} after ${CG_THRESHOLD} re-processings; filed ${invname}" >> "$hb"
+  else
+    echo "[${iso}] churn-guard — blocked ${id} after ${CG_THRESHOLD} re-processings; no investigation filed (self-referential churn job or target complete/deduped)" >> "$hb"
+  fi
   return 0
 }
 
 # Standalone dispatch for tests / scripting.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  fn="${1:?usage: churn-guard.sh <cg_increment|cg_count|cg_reset|cg_park_if_churned|cg_file_investigation> <ROOT> <ID> [args]}"
+  fn="${1:?usage: churn-guard.sh <cg_increment|cg_increment_unless_transient|cg_is_transient_reset|cg_is_shell_incapable_reset|cg_count|cg_reset|cg_park_if_churned|cg_file_investigation> <ROOT> <ID> [args]}"
   CG_ROOT="${2:?ROOT required}"
   shift 2
   "$fn" "$@"

@@ -31,7 +31,7 @@ registry_row() {
 }
 
 set_pending() {
-  local id="$1" reason="$2" since_epoch="${3:-0}"
+  local id="$1" reason="$2" since_epoch="${3:-0}" mode="${4:-}"
   # Churn guard: a re-queue (needs_human → pending) is a re-processing. Bump the
   # shared counter; if ${id} has now churned ${CG_THRESHOLD:-3}× without
   # converging, park it (needs_human + bypass markers) + file an investigation job
@@ -65,11 +65,20 @@ set_pending() {
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
-  awk -F'|' -v OFS='|' -v id="$id" -v now="$now" '
+  # Gated rows must never be silently re-queued straight to `pending` — that
+  # would drop the human-approval gate and let the row get swept into the next
+  # `tend go auto` auto-execution batch unattended (20260725-inbox-4C3D, the
+  # same invariant requeue-orphaned-running.sh already enforces for its own
+  # reset path). `mode: auto` rows keep flipping to `pending`; `mode: gated`
+  # rows flip to `awaiting_go` instead — mirrors
+  # requeue-orphaned-running.sh's reset_status pattern verbatim.
+  local reset_status="pending"
+  [[ "$mode" == "gated" ]] && reset_status="awaiting_go"
+  awk -F'|' -v OFS='|' -v id="$id" -v now="$now" -v new_status="$reset_status" '
     $0 ~ "\\| " id " \\|" {
       for (i=1; i<=NF; i++) {
         f = $i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", f)
-        if (f == "needs_human") $i = " pending "
+        if (f == "needs_human") $i = " " new_status " "
       }
       # Registry-write rule (Shared Context 2026-06-27): stamp last_activity in $7,
       # NEVER $8. Writing $8 appended a phantom field PAST the trailing pipe (NF==8
@@ -104,8 +113,9 @@ closure_in_file() {
 
 requeue_count=0
 
-while IFS='|' read -r _ task_id _ _ _ status last_activity _; do
+while IFS='|' read -r _ task_id _ mode _ status last_activity _; do
   task_id="${task_id// /}"
+  mode="${mode// /}"
   status="${status// /}"
   last_activity="$(printf '%s' "$last_activity" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
   [[ "$status" == "needs_human" ]] || continue
@@ -135,7 +145,7 @@ while IFS='|' read -r _ task_id _ _ _ status last_activity _; do
     ref="$(grep -E '^requeue_when_exists:' "$tf" | head -1 | sed 's/^requeue_when_exists:[[:space:]]*//')"
     ref="${ref/#\~/$HOME}"
     if closure_in_file "$ref"; then
-      set_pending "$task_id" "requeue_when_exists satisfied ($ref)" "$since_epoch"
+      set_pending "$task_id" "requeue_when_exists satisfied ($ref)" "$since_epoch" "$mode"
       requeue_count=$(( requeue_count + 1 ))
       continue
     fi
@@ -146,7 +156,7 @@ while IFS='|' read -r _ task_id _ _ _ status last_activity _; do
   while IFS= read -r ref; do
     ref="${ref/#\~/$HOME}"
     if closure_in_file "$ref"; then
-      set_pending "$task_id" "to_clear signal satisfied ($ref)" "$since_epoch"
+      set_pending "$task_id" "to_clear signal satisfied ($ref)" "$since_epoch" "$mode"
       requeue_count=$(( requeue_count + 1 ))
       break
     fi
@@ -157,7 +167,7 @@ while IFS='|' read -r _ task_id _ _ _ status last_activity _; do
   # Human injected resolution that is NOT a BLOCKED marker → requeue
   if grep -qE '^human_resolution:' "$tf" && \
      ! grep -qE '^human_resolution:.*BLOCKED ON HUMAN' "$tf"; then
-    set_pending "$task_id" "human_resolution injected (non-blocked)" "$since_epoch"
+    set_pending "$task_id" "human_resolution injected (non-blocked)" "$since_epoch" "$mode"
     requeue_count=$(( requeue_count + 1 ))
   fi
 
