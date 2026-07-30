@@ -108,7 +108,7 @@ status: complete
 
 Body sections:
 - **Summary** — one paragraph from manifest summary + task line
-- **What changed** — bullet list from phase checkpoints / PHASE OUTPUT summaries
+- **What changed** — bullet list from phase checkpoints / PHASE OUTPUT summaries. When the archive has no `### Phase` summary blocks (condensed batch-completion archives written with frontmatter then a `## What was done` / `## What changed` bullet list and no `### Phase` headers), populate this section from that archive's `## What was done` / `## What changed` bullets instead. Fall back to the manifest summary only if both the phase blocks and those bullet lists are absent.
 - **Learnings** — bullets from Shared Context updates or Improvement Suggestions (omit section if none)
 
 Compile into existing pages — do not duplicate if the page already exists for the same `sources` entry.
