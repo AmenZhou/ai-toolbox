@@ -23,6 +23,8 @@ All filtering in subsequent steps uses `$TODAY` (local date) for file mtimes and
 
 ## Step 2 — Collect Today's Processed Inbox Jobs
 
+> **Read-only against the canonical inbox.** This skill does NOT stage inbox task files — it only *reads* the live ai-console control plane (`/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/processed/`) and writes its digest to the Obsidian wiki / `docs/daily/` fallback. It runs under cwd=ai-console, so the cwd-relative reads below are correct; no inbox-write pin is needed.
+
 Scan `.orchestrate/inbox/processed/` for `.md` files whose modification date matches today.
 
 ```bash
