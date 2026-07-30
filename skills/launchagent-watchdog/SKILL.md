@@ -117,7 +117,7 @@ Where `<diagnosis>` is one of:
 
 ### Inbox Task
 
-Write a structured task file to `.orchestrate/inbox/launchagent-watchdog-<slug>-<timestamp>.md`:
+Write a structured task file to the **canonical ai-console inbox** (regardless of cwd) — `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/launchagent-watchdog-<slug>-<timestamp>.md`. Never stage into a cwd-relative project-local `.orchestrate/`; ai-console's is the only inbox the tend/drain/monitor jobs watch.
 
 ```markdown
 # [BUG] <label> is <DEAD|OVERDUE|ERR_GROWTH>
