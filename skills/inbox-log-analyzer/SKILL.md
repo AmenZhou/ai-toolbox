@@ -154,19 +154,21 @@ The title-prefix comparison above only catches duplicates that are worded simila
 
 ## Step 5 — Write Inbox Files
 
-For each actionable finding that passed deduplication (respect the **10-file per-cycle cap**), write a file using this path format:
+> **Canonical inbox — always ai-console, regardless of cwd.** This skill can be run manually (`/inbox-log-analyzer`) from any project's cwd, so the inbox-write destination is hard-pinned to the single live control plane: `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/`. Never write findings to a cwd-relative project-local `.orchestrate/` — those are dormant traps that nothing drains. (The launchd job `com.orchestrate.inbox-analyzer` already runs `WorkingDirectory=/Users/haimengzhou/apps/ai-console`; this pin makes manual runs correct too.)
+
+For each actionable finding that passed deduplication (respect the **10-file per-cycle cap**), write a file using this absolute path format:
 
 **Bugs (auto execution):**
 ```
-.orchestrate/inbox/analyzer-<slug>-<timestamp>.md
+/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/analyzer-<slug>-<timestamp>.md
 ```
 
 **Enhancements (human validation required):**
 ```
-.orchestrate/inbox/gated/analyzer-<slug>-<timestamp>.md
+/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/gated/analyzer-<slug>-<timestamp>.md
 ```
 
-Create `.orchestrate/inbox/gated/` if absent.
+Create `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/gated/` if absent.
 
 Where:
 - `<slug>` = the finding title lowercased, spaces replaced with `-`, non-alphanumeric characters removed, truncated to 40 characters
