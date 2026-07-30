@@ -148,6 +148,50 @@ st2="$(awk -F'|' -v id="$GID" '$0 ~ "\\| "id" \\|" { gsub(/^[ \t]+|[ \t]+$/,"",$
 [[ "$st2" == "needs_human" ]] && ok "row left parked at needs_human" \
   || fail "expected row status needs_human — got '$st2'"
 
+# ── Case C: mode:gated row requeues to awaiting_go, never pending (§2b companion fix) ──
+# 20260730-inbox-988B / 20260730-inbox-AB08 verification: once churn-guard.sh's
+# mode-aware guard means cg_park_if_churned no longer intercepts a gated row's
+# set_pending() call, the unconditional awk flip at the bottom of set_pending()
+# would (pre-fix) sweep the row straight to `pending` — silently dropping the
+# human-approval gate and letting it get swept into the next `tend go auto`
+# batch (the exact 20260725-inbox-4C3D hazard). Fix: mode is threaded into
+# set_pending() and a gated row's reset target is `awaiting_go`, not `pending`.
+echo ""
+echo "── Case C: mode:gated needs_human row requeues to awaiting_go, never pending ────────"
+setup_work
+GATEID="20260730-gatedreq"
+cat > "$W/.orchestrate/tasks/${GATEID}.md" <<EOF
+id: $GATEID
+task: test gated requeue target
+mode: gated
+total_phases: 1
+
+## Phases
+### Phase 1
+status: pending
+human_resolution: Auto-reset: task stuck in running for 700s (tend session likely died)
+EOF
+cat > "$W/.orchestrate/project.md" <<EOF
+# Test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $GATEID | test gated requeue target | gated | 1 | needs_human | 2026-07-30T09:00:00Z |
+EOF
+bash "$W/.orchestrate/bin/requeue-unblocked.sh" "$W" >/dev/null
+
+gst3="$(awk -F'|' -v id="$GATEID" '$0 ~ "\\| "id" \\|" { gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit }' "$W/.orchestrate/project.md")"
+if [[ "$gst3" == "awaiting_go" ]]; then
+  ok "gated row requeued to awaiting_go (human-approval gate preserved)"
+elif [[ "$gst3" == "pending" ]]; then
+  fail "gated row was swept to pending — human-approval gate silently dropped (regression!)"
+else
+  fail "gated row landed in unexpected status: '$gst3'"
+fi
+gc3="$(count_of "$GATEID")"
+[[ "$gc3" == "0" ]] && ok "gated row's churn counter stayed 0 through the requeue" \
+  || fail "gated row's churn counter moved: $gc3 (expected 0)"
+
 echo ""
 echo "── Results ───────────────────────────────────────"
 echo "  Passed: $PASS"

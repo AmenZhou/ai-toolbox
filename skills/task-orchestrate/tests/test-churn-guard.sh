@@ -12,10 +12,11 @@ set -uo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CG="${CG:-$PROJECT_ROOT/.orchestrate/bin/churn-guard.sh}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -d "$PROJECT_ROOT/bin" ]] || { echo "FATAL: $PROJECT_ROOT/bin not found — PROJECT_ROOT path computation is broken (expected .../task-orchestrate/bin)" >&2; exit 1; }
+CG="${CG:-$PROJECT_ROOT/bin/churn-guard.sh}"
 CG_SRC="${CG_SRC:-/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/bin/churn-guard.sh}"
-REQUEUE="${REQUEUE:-$PROJECT_ROOT/.orchestrate/bin/requeue-unblocked.sh}"
+REQUEUE="${REQUEUE:-$PROJECT_ROOT/bin/requeue-unblocked.sh}"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
@@ -252,6 +253,479 @@ einv="$(ls "$W/.orchestrate/inbox/"investigate-churn-$EID-*.md 2>/dev/null | wc 
   || fail "expected 1 investigation file, got $einv"
 [[ "$(malformed_rows)" == "0" ]] && ok "end-to-end preserved NF==8 invariant" \
   || fail "end-to-end broke invariant: $(malformed_rows) bad row(s)"
+
+echo ""
+echo "── Case C: 19D7 outcome-aware investigate-churn suppression ────────────────"
+# A mid-flight reset can bump a task's churn counter to the threshold even though
+# the task is actively completing. When the target has reached `complete`, its
+# churn count was a false positive — no investigate-churn ticket should linger.
+
+CID=20260628-midflight
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $CID | mid-flight completed task | auto | 1 | complete | 2026-01-01T00:00:00Z |
+EOF
+
+echo ""
+echo "12. cg_file_investigation does NOT file when target row is already complete"
+bash "$CGW" cg_file_investigation "$W" "$CID" >/dev/null 2>&1 || true
+c11="$(ls "$W/.orchestrate/inbox/"investigate-churn-$CID-*.md 2>/dev/null | wc -l | tr -d ' ')"
+[[ "$c11" == "0" ]] && ok "no investigation filed for complete target (suppressed)" \
+  || fail "filed $c11 investigation ticket(s) for a complete target"
+
+echo ""
+echo "13. cg_close_investigation auto-closes a live ticket when target completes"
+# Simulate a ticket filed while the task was still running (status not complete),
+# then the task completes and cg_reset → cg_close_investigation moves it out.
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $CID | mid-flight completed task | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+bash "$CGW" cg_file_investigation "$W" "$CID" >/dev/null 2>&1 || true
+filed="$(ls "$W/.orchestrate/inbox/"investigate-churn-$CID-*.md 2>/dev/null | wc -l | tr -d ' ')"
+# Now the task completes; cg_reset (called on complete) closes the ticket.
+bash "$CGW" cg_reset "$W" "$CID" >/dev/null 2>&1 || true
+active="$(ls "$W/.orchestrate/inbox/"investigate-churn-$CID-*.md 2>/dev/null | wc -l | tr -d ' ')"
+proc="$(ls "$W/.orchestrate/inbox/processed/"investigate-churn-$CID-*.md 2>/dev/null | wc -l | tr -d ' ')"
+if [[ "$filed" == "1" && "$active" == "0" && "$proc" == "1" ]]; then
+  ok "ticket filed while running, then auto-closed to processed/ on complete"
+else
+  fail "filed=$filed active=$active processed=$proc (expected 1/0/1)"
+fi
+if [[ "$proc" == "1" ]] && grep -q '^closed_reason:' "$W/.orchestrate/inbox/processed/"investigate-churn-$CID-*.md 2>/dev/null; then
+  ok "closed ticket carries closed_reason marker"
+else
+  fail "closed ticket missing closed_reason marker"
+fi
+
+echo ""
+echo "14. cg_close_investigation closes a DRAINED investigate-churn REGISTRY row"
+# Regression (AEE0): the churn ticket can be drained into its own registry row and
+# moved to processed/ BEFORE the target completes. cg_close_investigation's live-
+# inbox scan then finds nothing, so the moot investigation runs as a full task.
+# When the target is complete, the drained row must also be auto-closed to complete.
+TGT=20260704-inbox-3666
+INVID=20260704-inbox-AEE0
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $TGT | Run inbox-log-analyzer | auto | 1 | complete | 2026-01-01T00:00:00Z |
+| $INVID | Investigate churn — $TGT re-processed 3× | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+# ghost task file for the drained investigation (as a real ghost-reset would have)
+printf '# %s — parked by churn guard\nsource: self\nmode: auto\n' "$INVID" > "$W/.orchestrate/tasks/$INVID.md"
+bash "$CGW" cg_close_investigation "$W" "$TGT" >/dev/null 2>&1 || true
+if [[ "$(status_of "$INVID")" == "complete" ]]; then
+  ok "drained investigate-churn row auto-closed to complete when target complete"
+else
+  fail "drained investigation row status=$(status_of "$INVID") (expected complete)"
+fi
+[[ ! -f "$W/.orchestrate/tasks/$INVID.md" ]] && ok "ghost task file for closed investigation removed" \
+  || fail "ghost task file not removed"
+[[ "$(malformed_rows)" == "0" ]] && ok "drained-row close preserved NF==8 invariant" \
+  || fail "drained-row close broke invariant: $(malformed_rows) bad row(s)"
+# Idempotent: a second call is a clean no-op (row already complete → skipped)
+bash "$CGW" cg_close_investigation "$W" "$TGT" >/dev/null 2>&1 || true
+[[ "$(status_of "$INVID")" == "complete" && "$(malformed_rows)" == "0" ]] \
+  && ok "second close call is an idempotent no-op" \
+  || fail "second close call mutated a terminal row"
+
+echo ""
+echo "15. cg_close_investigation does NOT close sibling 'Review of/Tests for' follow-up rows"
+# Regression (4474): the 6b auto-enqueue files follow-up rows summarized
+# `Review of Investigate churn — <target> …` and `Tests for Investigate churn —
+# <target> …`. An UNANCHORED substring match (index()>0) wrongly matched these active
+# rows and rm'd their task files. The match must be ANCHORED to the summary prefix
+# (index()==1), so only the genuine `Investigate churn — <target> …` row is closed.
+TGT=20260704-inbox-3666
+INVID=20260704-inbox-AEE0
+REVID=20260704-inbox-4474
+TSTID=20260704-inbox-B32D
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $TGT | Run inbox-log-analyzer | auto | 1 | complete | 2026-01-01T00:00:00Z |
+| $INVID | Investigate churn — $TGT re-processed 3× | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+| $REVID | Review of Investigate churn — $TGT re-processed 3× | auto | 1 | running | 2026-01-01T00:00:00Z |
+| $TSTID | Tests for Investigate churn — $TGT re-processed 3× | auto | 1 | running | 2026-01-01T00:00:00Z |
+EOF
+printf '# %s — parked by churn guard\nsource: self\nmode: auto\n' "$INVID" > "$W/.orchestrate/tasks/$INVID.md"
+printf '# %s review\nmode: auto\n' "$REVID" > "$W/.orchestrate/tasks/$REVID.md"
+printf '# %s tests\nmode: auto\n' "$TSTID" > "$W/.orchestrate/tasks/$TSTID.md"
+bash "$CGW" cg_close_investigation "$W" "$TGT" >/dev/null 2>&1 || true
+[[ "$(status_of "$INVID")" == "complete" ]] \
+  && ok "genuine investigate-churn row still auto-closed with siblings present" \
+  || fail "genuine investigation row status=$(status_of "$INVID") (expected complete)"
+[[ "$(status_of "$REVID")" == "running" ]] \
+  && ok "'Review of Investigate churn' sibling row left untouched (running)" \
+  || fail "sibling review row wrongly changed to $(status_of "$REVID")"
+[[ "$(status_of "$TSTID")" == "running" ]] \
+  && ok "'Tests for Investigate churn' sibling row left untouched (running)" \
+  || fail "sibling tests row wrongly changed to $(status_of "$TSTID")"
+[[ -f "$W/.orchestrate/tasks/$REVID.md" && -f "$W/.orchestrate/tasks/$TSTID.md" ]] \
+  && ok "sibling task files preserved (not rm'd)" \
+  || fail "a sibling task file was wrongly deleted"
+[[ ! -f "$W/.orchestrate/tasks/$INVID.md" ]] \
+  && ok "only the genuine investigation ghost task file removed" \
+  || fail "genuine investigation ghost task file not removed"
+
+echo ""
+echo "── Case D: ED94 transient-infra ghost-reset not counted ────────────────────"
+# A ghost-reset caused by a transient infra death (agent log shows ONLY a connection
+# error, ZERO progress) hit no poison and made no progress — it must NOT count toward
+# the poison-park threshold (retried like a C3 one-shot transient). A run that made
+# real progress, or died on no recognized transient error, still counts as today.
+DID=20260705-transient
+mkdir -p "$W/.orchestrate/logs"
+
+echo ""
+echo "16. Transient-only agent log ⇒ cg_increment_unless_transient skips the bump"
+# clear any prior counters/logs from earlier cases for a clean count
+rm -f "$W/.orchestrate/logs/requeue-counts.tsv" 2>/dev/null || true
+: > "$W/.orchestrate/logs/heartbeat.log"
+: > "$W/.orchestrate/logs/20260705-000000-agent.log"
+printf 'Starting run...\nAPI Error: Connection closed mid-response\n' \
+  > "$W/.orchestrate/logs/20260705-000000-agent.log"
+r_t="$(bash "$CGW" cg_increment_unless_transient "$W" "$DID")"
+c_t="$(bash "$CGW" cg_count "$W" "$DID")"
+if [[ "$r_t" == "transient" && "$c_t" == "0" ]]; then
+  ok "transient log: bump skipped (returned '$r_t', count=$c_t)"
+else
+  fail "expected transient/0 — got '$r_t'/$c_t"
+fi
+if grep -qE "churn-guard — transient-infra ghost-reset for $DID, not counted" \
+   "$W/.orchestrate/logs/heartbeat.log" 2>/dev/null; then
+  ok "heartbeat 'transient-infra ghost-reset … not counted' line written"
+else
+  fail "transient heartbeat line missing: $(grep churn-guard "$W/.orchestrate/logs/heartbeat.log" 2>/dev/null || echo none)"
+fi
+
+echo ""
+echo "17. A run that made progress (## PHASE OUTPUT) still counts"
+GDID=20260705-progress
+printf 'work in progress\n## PHASE OUTPUT\nsummary: did real work then died\n' \
+  > "$W/.orchestrate/logs/20260705-010000-agent.log"   # newer mtime → latest
+r_p="$(bash "$CGW" cg_increment_unless_transient "$W" "$GDID")"
+c_p="$(bash "$CGW" cg_count "$W" "$GDID")"
+if [[ "$r_p" == "1" && "$c_p" == "1" ]]; then
+  ok "progress log: counted normally (returned '$r_p', count=$c_p)"
+else
+  fail "expected 1/1 — got '$r_p'/$c_p"
+fi
+
+echo ""
+echo "18. A death with no recognized transient error still counts (conservative)"
+NDID=20260705-noerr
+printf 'ordinary output, clean-ish, no recognized transient error\n' \
+  > "$W/.orchestrate/logs/20260705-020000-agent.log"   # newer mtime → latest
+r_n="$(bash "$CGW" cg_increment_unless_transient "$W" "$NDID")"
+c_n="$(bash "$CGW" cg_count "$W" "$NDID")"
+if [[ "$r_n" == "1" && "$c_n" == "1" ]]; then
+  ok "no-transient-error log: counted normally (returned '$r_n', count=$c_n)"
+else
+  fail "expected 1/1 — got '$r_n'/$c_n"
+fi
+
+echo ""
+echo "19. A genuinely non-converging task still parks at the threshold"
+# latest log is non-transient (progress) so every bump counts; drive to threshold
+PDID=20260705-poison
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $PDID | non-converging task | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+printf 'progress then fail\n## PHASE OUTPUT\nsummary: partial\n' \
+  > "$W/.orchestrate/logs/20260705-030000-agent.log"   # newest → latest, non-transient
+bash "$CGW" cg_increment_unless_transient "$W" "$PDID" >/dev/null
+bash "$CGW" cg_increment_unless_transient "$W" "$PDID" >/dev/null
+p3="$(bash "$CGW" cg_increment_unless_transient "$W" "$PDID")"
+[[ "$p3" == "3" ]] && ok "non-transient bumps reach 3" || fail "expected 3 — got $p3"
+if bash "$CGW" cg_park_if_churned "$W" "$PDID" 2>/dev/null; then
+  ok "non-converging task still parked at threshold (unchanged behavior)"
+else
+  fail "non-converging task did NOT park at count=3"
+fi
+[[ "$(status_of "$PDID")" == "needs_human" ]] && ok "parked row forced to needs_human" \
+  || fail "parked row status=$(status_of "$PDID")"
+[[ "$(malformed_rows)" == "0" ]] && ok "transient-guard park preserved NF==8 invariant" \
+  || fail "park broke invariant: $(malformed_rows) bad row(s)"
+
+echo ""
+echo "── Case E: BC7C since-based agent-log attribution for async detectors ──────"
+# rescue.sh fires on its own schedule, potentially long after a row went stale —
+# unlike run-job.sh's synchronous reset_stale_running_tasks, "the latest
+# *-agent.log on disk right now" is NOT reliably the log for the dispatch attempt
+# that made THIS row stale; an unrelated, later, successful cycle can have written
+# a newer log in between. cg__agent_log_since/SINCE_EPOCH fixes the attribution.
+
+echo ""
+echo "20. cg__agent_log_since picks the EARLIEST log at/after since_epoch, not the newest overall"
+rm -f "$W/.orchestrate/logs"/*-agent.log
+: > "$W/.orchestrate/logs/aaa-agent.log"
+sleep 1
+: > "$W/.orchestrate/logs/bbb-agent.log"
+sleep 1
+: > "$W/.orchestrate/logs/ccc-agent.log"
+since_epoch="$(date -r "$W/.orchestrate/logs/bbb-agent.log" +%s)"
+picked="$(bash "$CGW" cg__agent_log_since "$W" "$since_epoch")"
+if [[ "$picked" == *bbb-agent.log ]]; then
+  ok "cg__agent_log_since($since_epoch) picked bbb (earliest at/after cutoff), not ccc (overall latest)"
+else
+  fail "expected bbb-agent.log — got '$picked'"
+fi
+
+echo ""
+echo "21. cg_increment_unless_transient(SINCE_EPOCH) correctly exempts an old async transient crash even once a newer unrelated non-transient log exists"
+rm -f "$W/.orchestrate/logs/requeue-counts.tsv" 2>/dev/null || true
+: > "$W/.orchestrate/logs/heartbeat.log"
+rm -f "$W/.orchestrate/logs"/*-agent.log
+printf 'Starting run...\nAPI Error: Connection closed mid-response\n' > "$W/.orchestrate/logs/crash-agent.log"
+stale_since="$(date -r "$W/.orchestrate/logs/crash-agent.log" +%s)"
+sleep 1
+printf 'ordinary unrelated successful session, no transient error, no progress marker\n' > "$W/.orchestrate/logs/later-unrelated-agent.log"
+# WITHOUT since_epoch: naive "latest on disk" attribution picks the later unrelated
+# log and wrongly counts the bump — documents the exact bug this case guards against.
+r_naive="$(bash "$CGW" cg_increment_unless_transient "$W" "20260706-async-transient-naive")"
+[[ "$r_naive" == "1" ]] && ok "sanity: naive (no SINCE_EPOCH) attribution miscounts the async crash as real (the bug being fixed)" \
+  || fail "sanity expectation changed — got '$r_naive' (re-check test assumptions)"
+# WITH since_epoch = the crash log's own mtime: correctly attributes to the crash
+# log (not the later unrelated one) and exempts the bump as transient.
+ADID=20260706-async-transient
+r_since="$(bash "$CGW" cg_increment_unless_transient "$W" "$ADID" "$stale_since")"
+c_since="$(bash "$CGW" cg_count "$W" "$ADID")"
+if [[ "$r_since" == "transient" && "$c_since" == "0" ]]; then
+  ok "SINCE_EPOCH attribution correctly exempts the async transient crash (returned '$r_since', count=$c_since)"
+else
+  fail "expected transient/0 — got '$r_since'/$c_since"
+fi
+
+echo ""
+echo "── Case F: AD25 shell_incapable dispatch-starvation not counted ────────────"
+# A ghost-reset caused by dispatch-side shell-capability starvation (BOTH runners
+# failed run-job.sh's shell probe that cycle — run_with_fallback's "no shell
+# capability; deferred" heartbeat line) means no session that cycle ever
+# demonstrated it could run a Bash command, so it could not have reached the
+# task's own phase work either. It must NOT count toward churn like a genuine
+# phase failure (20260728-inbox-36DC / AD25 investigation: a perfectly healthy
+# task was parked purely from 3 consecutive dispatch-starvation cycles).
+
+echo ""
+echo "22. shell_incapable-only ghost-reset ⇒ cg_increment_unless_transient skips the bump"
+rm -f "$W/.orchestrate/logs/requeue-counts.tsv" 2>/dev/null || true
+rm -f "$W/.orchestrate/logs"/*-agent.log
+: > "$W/.orchestrate/logs/heartbeat.log"
+SID=20260707-shellincapable
+since_epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "2026-07-07T00:00:00Z" +%s)"
+printf '[2026-07-07T00:05:00Z] run-job — cursor session has no shell capability; fallback to claude [pid=1]\n' >> "$W/.orchestrate/logs/heartbeat.log"
+printf '[2026-07-07T00:05:10Z] run-job — claude session has no shell capability; deferred [pid=1]\n' >> "$W/.orchestrate/logs/heartbeat.log"
+r_si="$(bash "$CGW" cg_increment_unless_transient "$W" "$SID" "$since_epoch")"
+c_si="$(bash "$CGW" cg_count "$W" "$SID")"
+if [[ "$r_si" == "shell_incapable" && "$c_si" == "0" ]]; then
+  ok "shell_incapable-only reset: bump skipped (returned '$r_si', count=$c_si)"
+else
+  fail "expected shell_incapable/0 — got '$r_si'/$c_si"
+fi
+if grep -qE "churn-guard — dispatch-starvation \(shell_incapable\) ghost-reset for $SID, not counted" \
+   "$W/.orchestrate/logs/heartbeat.log" 2>/dev/null; then
+  ok "heartbeat 'dispatch-starvation ... not counted' line written"
+else
+  fail "shell_incapable heartbeat line missing: $(grep churn-guard "$W/.orchestrate/logs/heartbeat.log" 2>/dev/null || echo none)"
+fi
+
+echo ""
+echo "23. 3 consecutive shell_incapable-only cycles do NOT park at CG_THRESHOLD"
+bash "$CGW" cg_increment_unless_transient "$W" "$SID" "$since_epoch" >/dev/null
+bash "$CGW" cg_increment_unless_transient "$W" "$SID" "$since_epoch" >/dev/null
+c_si3="$(bash "$CGW" cg_count "$W" "$SID")"
+[[ "$c_si3" == "0" ]] && ok "counter stays 0 after 3 shell_incapable-only cycles" \
+  || fail "expected counter 0 after 3 shell_incapable cycles — got $c_si3"
+if bash "$CGW" cg_park_if_churned "$W" "$SID" 2>/dev/null; then
+  fail "shell_incapable-only task wrongly parked at threshold"
+else
+  ok "shell_incapable-only task NOT parked (correctly stayed below threshold)"
+fi
+
+echo ""
+echo "24. Real progress in the window still counts even with a shell_incapable heartbeat line present"
+PSID=20260707-shellincapable-but-progress
+rm -f "$W/.orchestrate/logs"/*-agent.log
+printf 'did real work\n## PHASE OUTPUT\nsummary: reached phase work despite an unrelated shell_incapable cycle\n' \
+  > "$W/.orchestrate/logs/20260707-000100-agent.log"
+r_psi="$(bash "$CGW" cg_increment_unless_transient "$W" "$PSID" "$since_epoch")"
+c_psi="$(bash "$CGW" cg_count "$W" "$PSID")"
+if [[ "$r_psi" == "1" && "$c_psi" == "1" ]]; then
+  ok "progress log disqualifies shell_incapable classification: counted normally (returned '$r_psi', count=$c_psi)"
+else
+  fail "expected 1/1 — got '$r_psi'/$c_psi"
+fi
+
+echo ""
+echo "25. A shell_incapable heartbeat line OUTSIDE the since-window (before last_activity) does NOT suppress the bump"
+rm -f "$W/.orchestrate/logs"/*-agent.log
+OSID=20260707-old-shellincapable
+: > "$W/.orchestrate/logs/heartbeat.log"
+printf '[2026-07-01T00:00:00Z] run-job — cursor session has no shell capability; fallback to claude [pid=1]\n' >> "$W/.orchestrate/logs/heartbeat.log"
+printf '[2026-07-01T00:00:10Z] run-job — claude session has no shell capability; deferred [pid=1]\n' >> "$W/.orchestrate/logs/heartbeat.log"
+later_since="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "2026-07-05T00:00:00Z" +%s)"
+r_old="$(bash "$CGW" cg_increment_unless_transient "$W" "$OSID" "$later_since")"
+c_old="$(bash "$CGW" cg_count "$W" "$OSID")"
+if [[ "$r_old" == "1" && "$c_old" == "1" ]]; then
+  ok "out-of-window shell_incapable line ignored: counted normally (returned '$r_old', count=$c_old)"
+else
+  fail "expected 1/1 — got '$r_old'/$c_old"
+fi
+
+echo ""
+echo "26. A genuinely non-converging task (no shell_incapable signal) still parks at threshold — unweakened"
+GSID=20260707-genuine-poison
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $GSID | genuinely non-converging task | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+: > "$W/.orchestrate/logs/heartbeat.log"
+rm -f "$W/.orchestrate/logs"/*-agent.log
+printf 'progress then fail\n## PHASE OUTPUT\nsummary: partial\n' \
+  > "$W/.orchestrate/logs/20260707-010000-agent.log"
+bash "$CGW" cg_increment_unless_transient "$W" "$GSID" >/dev/null
+bash "$CGW" cg_increment_unless_transient "$W" "$GSID" >/dev/null
+g3="$(bash "$CGW" cg_increment_unless_transient "$W" "$GSID")"
+[[ "$g3" == "3" ]] && ok "genuine non-converging bumps reach 3" || fail "expected 3 — got $g3"
+if bash "$CGW" cg_park_if_churned "$W" "$GSID" 2>/dev/null; then
+  ok "genuinely non-converging task still parks at threshold (real churn detection unweakened)"
+else
+  fail "genuinely non-converging task did NOT park at count=3"
+fi
+[[ "$(malformed_rows)" == "0" ]] && ok "Case F park preserved NF==8 invariant" \
+  || fail "Case F park broke invariant: $(malformed_rows) bad row(s)"
+
+echo ""
+echo "── Case G: CHURN-GATED — mode:gated rows never bumped/parked (20260730-inbox-988B / 9D5A) ──"
+# Regression guard for the mode:gated churn bug (20260730-inbox-AB08 independent
+# verification of 20260730-inbox-988B): a `mode: gated` row legitimately awaiting a
+# human `go` was getting its churn counter bumped and eventually parked by ANY of
+# the 4 call sites (run-job.sh, rescue.sh, requeue-unblocked.sh,
+# requeue-orphaned-running.sh), none of which consulted `mode` before calling
+# cg_increment*/cg_park_if_churned. Fixed via cg__row_mode + guards inside
+# cg_increment and cg_park_if_churned themselves (single chokepoint in
+# churn-guard.sh, so every caller — current or future — is covered uniformly).
+# Live incident: 20260628-inbox-9D5A's requeue_count climbed past 400 this way.
+
+GATEID=20260730-gated-poison
+cat > "$W/.orchestrate/tasks/$GATEID.md" <<EOF
+# $GATEID — gated task awaiting human go
+source: self
+mode: gated
+human_resolution: Auto-reset: task stuck in running for 700s (tend session likely died)
+### Phase 1
+status: needs_human
+EOF
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $GATEID | gated task awaiting human go | gated | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+rm -f "$W/.orchestrate/logs"/*-agent.log
+: > "$W/.orchestrate/logs/heartbeat.log"
+
+echo ""
+echo "27. Assertion A: mode:gated row's counter never bumps across CG_THRESHOLD+2 increments"
+# CG_THRESHOLD is 3 by default inside churn-guard.sh (invoked as a subprocess via
+# $CGW, so its env var isn't in this test script's own scope) — hardcode the
+# same constant the rest of this file already hardcodes (see cases 1-19 above).
+GATED_ITERS=5
+gated_ok=1
+for i in $(seq 1 "$GATED_ITERS"); do
+  before="$(bash "$CGW" cg_count "$W" "$GATEID")"
+  ret="$(bash "$CGW" cg_increment_unless_transient "$W" "$GATEID" 0)"
+  after="$(bash "$CGW" cg_count "$W" "$GATEID")"
+  if [[ "$before" != "0" || "$after" != "0" ]]; then
+    gated_ok=0
+    fail "gated counter moved on iteration $i: before=$before after=$after (ret=$ret)"
+    break
+  fi
+done
+[[ "$gated_ok" == "1" ]] && ok "gated row counter stayed 0 across $GATED_ITERS increment calls"
+grep -q '^requeue_count:' "$W/.orchestrate/tasks/$GATEID.md" \
+  && fail "requeue_count: line was written to a gated row's task file" \
+  || ok "no requeue_count: line ever written to the gated row's task file"
+grep -qF "$GATEID" "$W/.orchestrate/logs/requeue-counts.tsv" 2>/dev/null \
+  && fail "gated row got a sidecar requeue-counts.tsv row" \
+  || ok "no sidecar requeue-counts.tsv row created for the gated row"
+
+echo ""
+echo "28. Assertion B: mode:gated row is never parked, even called CG_THRESHOLD (3) times directly"
+CG_THRESHOLD_TEST=3
+park_ok=1
+for i in $(seq 1 "$CG_THRESHOLD_TEST"); do
+  if bash "$CGW" cg_park_if_churned "$W" "$GATEID" 2>/dev/null; then
+    park_ok=0
+    fail "cg_park_if_churned parked the gated row on call $i (should always return non-zero/not-parked)"
+    break
+  fi
+done
+[[ "$park_ok" == "1" ]] && ok "cg_park_if_churned always declined to park the gated row ($CG_THRESHOLD_TEST calls)"
+[[ "$(status_of "$GATEID")" == "needs_human" ]] && ok "gated row status left exactly as the test set it (needs_human, no bypass rewrite)" \
+  || fail "gated row status unexpectedly $(status_of "$GATEID")"
+grep -q '^bypassed_at:' "$W/.orchestrate/tasks/$GATEID.md" \
+  && fail "gated row task file gained a bypassed_at: marker" \
+  || ok "gated row task file never gained bypassed_at:"
+grep -qE '^bypass_reason:.*churn' "$W/.orchestrate/tasks/$GATEID.md" \
+  && fail "gated row task file gained a bypass_reason: churn marker" \
+  || ok "gated row task file never gained bypass_reason: churn"
+
+echo ""
+echo "29. Assertion C (contrast): an otherwise-identical mode:auto row is UNAFFECTED — still bumps and parks"
+AUTOID=20260730-auto-contrast
+cat > "$W/.orchestrate/tasks/$AUTOID.md" <<EOF
+# $AUTOID — auto task, contrast case
+source: self
+mode: auto
+human_resolution: Auto-reset: task stuck in running for 700s (tend session likely died)
+### Phase 1
+status: needs_human
+EOF
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $AUTOID | auto task, contrast case | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+rm -f "$W/.orchestrate/logs"/*-agent.log
+: > "$W/.orchestrate/logs/heartbeat.log"
+a1="$(bash "$CGW" cg_increment_unless_transient "$W" "$AUTOID" 0)"
+a2="$(bash "$CGW" cg_increment_unless_transient "$W" "$AUTOID" 0)"
+a3="$(bash "$CGW" cg_increment_unless_transient "$W" "$AUTOID" 0)"
+if [[ "$a1$a2$a3" == "123" ]]; then
+  ok "contrast mode:auto row's counter DOES climb (1,2,3) — fix is mode-selective, not a blanket disable"
+else
+  fail "contrast auto counter wrong: $a1,$a2,$a3 (expected 1,2,3)"
+fi
+if bash "$CGW" cg_park_if_churned "$W" "$AUTOID" 2>/dev/null; then
+  ok "contrast mode:auto row DOES park at threshold (park_if_churned returned 0)"
+else
+  fail "contrast mode:auto row did NOT park at count=3 (regression: fix over-applied)"
+fi
+[[ "$(malformed_rows)" == "0" ]] && ok "Case G preserved NF==8 invariant" \
+  || fail "Case G broke invariant: $(malformed_rows) bad row(s)"
 
 echo ""
 echo "── Results ───────────────────────────────────────"
