@@ -77,7 +77,9 @@ For each unprocessed log file, read its full content. Identify findings in two c
 | `blockers:` field is non-empty and marked `pre-existing` | Recurring blocker — track for recurrence |
 | Verify log contains "no test runner detected" and the log or related context references source files | Suggest adding tests to the project |
 
-Collect all findings as a list: `{ type: "bug"|"enhancement", title: string, log: filename, excerpt: string (1–3 lines), task_id: string|null, related_files: string[] }`.
+**Recurring blocker findings — capture substance, not just location:** When filing a `blockers:` pre-existing enhancement, additionally capture `blocker_excerpt` — the raw `blockers: pre-existing ...` line (or the 1–2 lines around it) verbatim, trimmed of whitespace. This raw text feeds the substance-keyed suppression in Step 4, which is what lets the same underlying blocker collapse to one entry even when a *different* log file re-surfaces it.
+
+Collect all findings as a list: `{ type: "bug"|"enhancement", title: string, log: filename, excerpt: string (1–3 lines), task_id: string|null, related_files: string[], blocker_excerpt: string|null (only for "blockers: pre-existing" enhancement findings — see Step 4) }`.
 
 ---
 
@@ -103,6 +105,48 @@ For each candidate finding:
 4. If a near-duplicate title match exists, skip writing that finding (log as title-duplicate).
 
 This prevents the same issue from generating multiple tickets across repeated cycles — including after T-2 moves files to `processed/`.
+
+### Substance-keyed suppression for recurring blockers
+
+The steps above key on `log_basename`, so the same underlying issue re-files every time a *new* log happens to carry the same `blockers: pre-existing ...` text — the judgment "already documented, skip" has to be re-derived from scratch each cycle. Recurring-blocker enhancements (Step 3's `blockers:` pre-existing rule) get a substance-based key instead, so one filed decision persists across every future log that repeats the same blocker.
+
+For each candidate finding where `type == "enhancement"` and it carries a non-null `blocker_excerpt` (i.e. matches the Recurring-blocker rule):
+
+1. Normalize `blocker_excerpt` into a `blocker_key`:
+   - Lowercase.
+   - Strip filenames (`\S+\.log`, `\S+\.md`), task/ticket IDs (4-char alphanumeric codes like `D159`, `A1CF`, and compound IDs like `20260721-inbox-D159`), and ISO dates/timestamps — these vary per occurrence even when the underlying blocker is identical.
+   - Collapse whitespace to single spaces; trim.
+   - Truncate to the first 120 normalized characters.
+2. Load `state.suppressed_blockers` from `.orchestrate/logs/inbox-analyzer-state.json` (array of `{ "blocker_key": string, "first_log": string, "first_seen": ISO timestamp }`; create empty array if absent).
+3. If `blocker_key` exactly matches an existing entry's `blocker_key`: skip this finding entirely — log it as substance-duplicate (`recurring blocker already filed, log <log_basename>`). Do **not** write a new inbox file and do **not** re-append to `finding_hashes` or `suppressed_blockers`.
+4. Otherwise, this is the first time this substance has been seen:
+   - Compute its `finding_hash` as `lowercase("enhancement|recurring-blocker|" + blocker_key)` — **not** the standard `type|title|log_basename` formula — so the hash itself is log-independent.
+   - Run it through the normal per-candidate dedup checks (hash lookup against `finding_hashes`, title near-duplicate match against the corpus) using this substance-based hash and the Step 5 title format below.
+   - If it passes dedup and is written in Step 5, append `{ "blocker_key": blocker_key, "first_log": log_basename, "first_seen": "<ISO timestamp>" }` to `state.suppressed_blockers`, in addition to the normal `finding_hash` append to `state.finding_hashes` in Step 6. This is what makes every future occurrence of the same substance collapse silently instead of re-filing.
+
+This mirrors the wiki-sync "judge substance, skip if already documented" pattern: the first occurrence still gets a real judgment (filed to `gated/` for human review, same as any enhancement); every subsequent occurrence of the *same substance* — regardless of which log surfaces it — is a structural no-op instead of a fresh interpretation.
+
+All other finding types (bugs, and enhancements that are not recurring-blockers) are unaffected — they continue to use the standard `type|title|log_basename` hash and per-log matching exactly as before.
+
+### Keyword-overlap check for likely substance-duplicates (differently-titled tickets)
+
+The title-prefix comparison above only catches duplicates that are worded similarly. It misses cases where a *new* candidate finding and an *already-filed* ticket describe the same root cause but use different wording — e.g. an auto-generated title built from a log excerpt vs. a human-authored ticket title from a prior manual or self-improvement pass. Run this check for every bug/enhancement finding that survives the hash + title-prefix checks above (it is an **additional** filter before Step 5, not a replacement for them).
+
+1. **Extract distinctive keywords** from the candidate's `excerpt` and `blocker_excerpt` (if non-null):
+   - A file basename with an extension (`\S+\.(sh|ts|js|py|md|json|log|yml|yaml)`), e.g. `test-task-orchestrate.sh`, `run-job.sh`.
+   - A distinctive path fragment or symbol, e.g. `.orchestrate/`, `PROJECT_ROOT`.
+   - A function/script/variable-like identifier of 4+ characters containing an underscore, a `::`, or camelCase, or any backtick-quoted token in the excerpt.
+   - A distinctive error string: the text after `error:` / `Error:` / `fails` / `failed` up to the next punctuation mark, lowercased.
+   - **Exclude** generic tokens that appear in nearly every log/ticket and carry no signal: `log`, `test`, `task`, `phase`, `pending`, `inbox`, `error`, `failed`, `blocker`, `blockers`, `pre-existing`, and 4-char alphanumeric ticket IDs (same low-signal category already stripped by the `blocker_key` normalization above).
+   - Keep at most the 8 most distinctive keywords per finding, favoring file basenames and backtick-quoted identifiers first.
+2. **Search corpus:** in addition to the three dedup-corpus directories loaded at the top of Step 4, also load `.orchestrate/project.md` (registry summaries) and `orchestrate-history/MANIFEST.md` (one-line archive index). For all five sources, search the **full file body** (not just the first line/title) for each extracted keyword, case-insensitive substring match.
+3. **Match threshold:** treat the candidate as a **likely substance-duplicate** of an existing file/entry if **2 or more** of its distinctive keywords appear in that same file/entry — or **1 keyword** if that keyword is a full file basename (e.g. `test-task-orchestrate.sh`), since basenames alone are highly distinctive.
+4. **On a match — flag, don't silently skip:**
+   - Do **not** suppress the finding the way hash/title/blocker-key duplicates are suppressed above — a keyword overlap is a heuristic, not a proof, and false positives here cost one review line, not a lost finding.
+   - Still write the finding in Step 5, but prepend a line to its `## Context` block: `- ⚠ Possible duplicate of <matched file/entry path>: overlapping keywords <comma-separated matched keywords> — confirm this isn't already covered before acting.`
+   - If the finding is a **bug** (normally auto-filed to `.orchestrate/inbox/`), instead write it to `.orchestrate/inbox/gated/` so a human confirms it isn't a duplicate before it auto-executes; note the redirect in the Step 7 summary (count separately as "flagged possible duplicate, routed to gated/"). Enhancements already default to `gated/` — no path change needed there, just the Context note.
+
+**Worked example (regression reference):** ticket `20260726-inbox-8CA8` fixed a `PROJECT_ROOT`-path bug across 19 files matching `.orchestrate/tests/test-*.sh` inside `ai-toolbox`, deliberately excluding `test-task-orchestrate.sh` by design (documented in `8CA8`'s own ticket body). A later log, `20260727-inbox-5639-phase1.log`, surfaced a recurring blocker whose `blocker_excerpt` read: `blockers: pre-existing (test-task-orchestrate.sh section 6 fails in ai-toolbox due to missing .orchestrate/ dir ...)`. The auto-generated candidate title, `[ENHANCE] Recurring blocker: blockers: pre-existing (test-t...`, shares no 60-character prefix with `8CA8`'s human-authored title (`ai-toolbox test-orchestrate tests can't run standalone — PROJECT_ROOT path bug...`), so the title-prefix check above would **not** have caught it. But the excerpt's distinctive keywords — `test-task-orchestrate.sh`, `.orchestrate/`, `PROJECT_ROOT` — all also appear in `8CA8`'s filed ticket body, so this keyword-overlap check flags it as a likely substance-duplicate of `8CA8` and prompts confirmation instead of silently re-filing a ticket for territory that was already deliberately addressed (or worse, silently missing that `test-task-orchestrate.sh` was deliberately *excluded* from `8CA8`'s fix, which is the nuance that actually matters).
 
 **Per-cycle cap:** write at most **10** inbox files per cycle (Step 5). If more findings pass dedup, file the highest-priority ones first (bugs before enhancements) and defer the rest to the next cycle (leave those logs unmarked in `state.analyzed` so they are retried).
 
@@ -142,6 +186,7 @@ Use this exact structured format:
 - Excerpt: `<relevant 1–3 line excerpt from the log, verbatim>`
 - Task ID: <task ID extracted from the log filename if present, otherwise "unknown">
 - Related files: <comma-separated list of any filenames or paths mentioned in the log, or "none">
+- Blocker key (recurring-blocker findings only): <the `blocker_key` computed in Step 4, omit this line for all other findings>
 
 ## Acceptance Criteria
 - <specific, measurable criterion 1>
@@ -152,6 +197,7 @@ Use this exact structured format:
 **Title guidelines:**
 - Bugs: `[BUG] <what failed> in <log file basename>`
 - Enhancements: `[ENHANCE] <what is missing> in <log file basename>`
+- Recurring-blocker enhancements (non-null `blocker_excerpt`, see Step 4): `[ENHANCE] Recurring blocker: <normalized blocker summary, ≤60 chars> (first seen: <log file basename>)` — keep the blocker summary in the stable leading portion of the title, since that's what Step 4's title near-duplicate match compares; push the log basename to the parenthetical tail so a *different* triggering log doesn't defeat cross-log matching.
 
 **Mode annotation:**
 - For **bug** findings: write to `.orchestrate/inbox/` — no mode annotation (defaults to auto execution).
@@ -166,7 +212,7 @@ mode: gated
 ...
 ```
 
-After writing each file, append its `finding_hash` to `state.finding_hashes`.
+After writing each file, append its `finding_hash` to `state.finding_hashes`. For recurring-blocker findings, also append the `{blocker_key, first_log, first_seen}` entry to `state.suppressed_blockers` (see Step 4).
 
 **Excerpt guidelines:**
 - Pull the exact lines from the log that triggered the detection.
@@ -179,6 +225,7 @@ After writing each file, append its `finding_hash` to `state.finding_hashes`.
 
 Append every newly processed log filename (basename only) to `state.analyzed`.
 Append every `finding_hash` for files written this cycle to `state.finding_hashes` (preserve existing entries).
+Append every `{blocker_key, first_log, first_seen}` entry for recurring-blocker findings written this cycle to `state.suppressed_blockers` (preserve existing entries) — see Step 4's substance-keyed suppression.
 
 Write the updated state back to `.orchestrate/logs/inbox-analyzer-state.json` as formatted JSON:
 ```json
@@ -189,11 +236,18 @@ Write the updated state back to `.orchestrate/logs/inbox-analyzer-state.json` as
   ],
   "finding_hashes": [
     "bug|acceptance criteria missing in 20260618-inbox-14|20260618-inbox-14-phase1.log"
+  ],
+  "suppressed_blockers": [
+    {
+      "blocker_key": "pre-existing mirror drift in test-drain-inboxsh test-task-orchestratesh",
+      "first_log": "20260721-inbox-d159-phase1.log",
+      "first_seen": "2026-07-22T13:04:49Z"
+    }
   ]
 }
 ```
 
-Preserve any filenames already in the list — never truncate or reset the array unless the user explicitly deletes the state file.
+Preserve any entries already in these lists — never truncate or reset any of the three arrays unless the user explicitly deletes the state file.
 
 ---
 
