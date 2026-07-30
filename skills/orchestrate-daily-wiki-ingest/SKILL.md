@@ -186,3 +186,5 @@ orchestrate-daily-wiki-ingest complete
   Vault:          <path>
   Log:            .orchestrate/logs/wiki-ingest-daily.log
 ```
+
+**PHASE OUTPUT `files_changed:` — always path-qualify the sidecars.** When this run is driven by task-orchestrate and you emit a `files_changed:` line, list the state and log files with their full `.orchestrate/logs/` path (`.orchestrate/logs/wiki-ingest-state.json`, `.orchestrate/logs/wiki-ingest-daily.log`) — never the bare basenames. A bare `wiki-ingest-state.json` token defeats the `*/logs/*` exclusion in `enqueue-review-and-tests.sh` `is_code_change` and spuriously enqueues review+tests on a zero-code wiki run. (The predicate also excludes `*-state.json` defensively, but path-qualifying is the correct source.)
