@@ -1,23 +1,42 @@
 ---
 name: breakdown-to-inbox
-description: Turn a job (spec, plan doc, rough notes, or the current conversation) into a set of well-structured, right-sized engineering tickets and stage them in the task-orchestrate inbox as individual task files — with dependencies and execution order. Use when the user says "break this down into tickets and push to inbox", "ticketize and queue these tasks", "plan and push to orchestrate", "turn this spec into inbox tasks", "decompose this into orchestrate tickets", or "split this work into inbox jobs". This is the multi-ticket decomposer + inbox writer. For refining ONE ticket (add ACs / a test plan / flesh out a single ticket) defer to the ticket-planning skill instead. Never starts execution — stages tasks and stops at the orchestrate go-gate.
-version: 1.0.0
+description: Turn a job (spec, plan doc, rough notes, or the current conversation) into a set of well-structured, right-sized engineering tickets and stage them in the task-orchestrate inbox as individual task files — with dependencies and execution order. Use when the user says "break this down into tickets and push to inbox", "ticketize and queue these tasks", "plan and push to orchestrate", "turn this spec into inbox tasks", "decompose this into orchestrate tickets", or "split this work into inbox jobs". This is the multi-ticket decomposer + inbox writer. For refining ONE ticket (add ACs / a test plan / flesh out a single ticket) defer to the ticket-planning skill instead. Every unit of work becomes three chained tickets — Investigation/Plan → Implementation → Verification. Open questions answerable by investigation are resolved there; questions that need human judgment or access the agent doesn't have STOP the breakdown and ask the human. Never starts execution — stages tasks and stops at the orchestrate go-gate.
+version: 2.0.0
 ---
 
 # breakdown-to-inbox
 
-Decompose a job into multiple right-sized engineering tickets and write each as an individual
-task file in the task-orchestrate inbox, so a downstream `tend` run can pick them up in
-dependency order. This formalizes the manual "write N tickets to `.orchestrate/inbox/`" workflow.
+Decompose a job into multiple right-sized units of work, and write each unit as **three chained
+task files** — Investigation/Plan, Implementation, Verification — in the task-orchestrate inbox,
+so a downstream `tend` run can pick them up in dependency order. This formalizes the manual
+"write N tickets to `.orchestrate/inbox/`" workflow.
 
 **Scope boundary:** This skill *decomposes* a job into many tickets and *stages* them in the inbox.
 To refine a single existing ticket (add ACs, write a test plan, flesh one out), use **ticket-planning**.
-This skill reuses ticket-planning's 6-section format inline — it does not invoke it at runtime, so there
-is no hard runtime dependency.
+This skill reuses ticket-planning's format inline as a base, plus one additional section (**Out of
+Scope / Prohibitions**, Step 3) that ticket-planning does not have — it does not invoke ticket-planning
+at runtime, so there is no hard runtime dependency and no requirement to keep the two skills' section
+counts in sync.
 
 **HARD RULE:** This skill NEVER starts execution. It stages tasks and stops at "staged — awaiting go".
 task-orchestrate always requires an explicit "go" from the human before any task runs. Do not run
 `/orch`, `tend`, `drain-inbox.sh`, or any executor.
+
+**CORE PRINCIPLE — every unit gets Investigation/Plan → Implementation → Verification.** A unit of
+work is never staged as a single implementation ticket. It is always staged as three tickets in a
+chain: an **Investigation/Plan** ticket that researches the unit and writes a concrete plan artifact,
+an **Implementation** ticket (Blocked by the investigation) that executes exactly that plan, and a
+**Verification** ticket (Blocked by the implementation) that independently checks the result against
+the investigation's acceptance criteria. See Step 2.
+
+**CORE PRINCIPLE — research first, ask only when research can't resolve it.** When decomposition hits
+an open question, try to resolve it inside the relevant unit's Investigation/Plan ticket (reading code,
+docs, config — see Step 2). That covers most unknowns and needs no human input. But if a question
+requires **human judgment, a product/business decision, credentials or access the agent doesn't have,
+or an irreversible choice between materially different designs**, do **not** guess and do **not** stage
+a ticket that papers over it — **STOP the breakdown and ask the human directly** (Step 1a). Resolve the
+answer, then continue decomposing. The go-gate (Step 8) is still always required before execution, but
+it is no longer the *only* point at which the human may be asked something.
 
 ---
 
@@ -30,24 +49,88 @@ The job is one of: a spec/plan doc (path or pasted), rough notes, or the current
 - Note: existing constraints, target repos/paths, data/counts, CLI interfaces, naming conventions,
   cluster/infra dependencies, and anything that affects gating (Step 5) or ordering (Step 4).
 
-If the job is too vague to produce even two distinct tickets, ask ONE clarifying question and stop.
-Otherwise proceed — resolve ambiguity with sensible defaults and record them in each ticket's
-**Open Questions**.
+## Step 1a — Stop and ask, but only when investigation genuinely can't resolve it
 
-## Step 2 — Decompose into right-sized units
+Most open questions belong inside a unit's **Investigation/Plan** ticket (Step 2) — they get answered
+by reading code, docs, config, or existing data, with no human involved. Default to that path.
 
-Split the job into discrete tickets. **Right-sizing heuristic:**
+Only interrupt the breakdown and ask the human directly when a question is **not answerable by
+investigation** — i.e. it requires:
+- a **human judgment or product/business decision** (e.g. "should this feature be opt-in or default-on"),
+- **credentials, access, or context the agent does not have** (e.g. a decision that lives in someone's
+  head, a system the agent can't reach),
+- a choice between **materially different, hard-to-reverse designs** where guessing wrong would mean
+  redoing real work (not just re-running a script).
 
-- One ticket = one unit a single agent can finish in **one focused session**.
-- **Split** when a ticket's Acceptance Criteria would exceed ~5, or the work spans multiple
-  subsystems/repos, or it mixes investigation with implementation.
+When that happens:
+1. Stage whatever units/tickets are *not* blocked by the question (don't hold the whole job hostage
+   to one unclear part).
+2. Print the specific question(s) to the human, each with the options you see and your recommendation.
+3. STOP — do not stage the blocked unit's tickets yet, do not proceed to Step 7/8 for the blocked
+   portion. Wait for the human's answer, then resume decomposition for that unit only.
+
+This is narrower than "ask about anything unclear" — a question you *could* answer yourself by reading
+the repo is not a reason to stop. Reserve stopping for things only the human can actually settle.
+
+## Step 2 — Decompose into right-sized units, each staged as three chained tickets
+
+Split the job into discrete **units of work**. **Right-sizing heuristic:**
+
+- One unit = one thing a single agent can implement in **one focused session**.
+- **Split** when a unit's Acceptance Criteria would exceed ~5, or the work spans multiple
+  subsystems/repos.
 - **Merge** trivially-coupled fragments (e.g. "add field" + "add the one test for that field").
-- Give each ticket a meaningful, work-area ID (e.g. `DS-1`, `P3-3`, `INFRA-1`) plus a short title.
+- Give each unit a meaningful, work-area ID (e.g. `DS-1`, `P3-3`, `INFRA-1`) plus a short title.
 
-## Step 3 — Apply the ticket-planning 6-section format (per ticket)
+**Every unit becomes exactly three tickets, chained in this order:**
 
-Each ticket MUST have a dependency header line + all 6 sections, in this order. Descriptions must be
-**self-contained** — a reader must not need to open another doc to execute the ticket.
+1. **`<ID>-INV` — Investigation/Plan.** Researches the unit and produces a concrete, written
+   implementation plan artifact. This is where open questions get resolved (Step 1a) — by reading
+   code/docs/config, not by guessing. Stays read-only / non-mutating: it investigates and plans, it
+   does not ship the change.
+2. **`<ID>-IMPL` — Implementation.** `Blocked by: <ID>-INV`. Executes *exactly* the plan the
+   investigation ticket produced — it does not re-derive the approach. References the plan artifact
+   by path instead of re-explaining the reasoning.
+3. **`<ID>-VERIFY` — Verification.** `Blocked by: <ID>-IMPL`. Independently checks the implementation
+   against the investigation ticket's Acceptance Criteria — re-runs tests, reviews the actual diff, and
+   diffs the actual changed files against the investigation ticket's **Out of Scope / Prohibitions**
+   list to confirm nothing on that list was touched. Written as if performed by someone other than the
+   implementer: it must not simply trust the implementer's own claim of success.
+
+This structure **replaces** the old conditional "research ticket" pattern — investigation is no longer
+optional or reserved for materially-gating unknowns; every unit gets one. If a unit is truly trivial
+(e.g. a one-line config change with an obvious, undisputed plan), the Investigation ticket's plan can be
+short, but it still exists so Implementation and Verification have something concrete to point at.
+
+A unit's **Investigation/Plan** ticket MUST:
+- have **Acceptance Criteria** that are *a plan recorded in a concrete artifact* (e.g.
+  `reports/<area>/<id>-inv_plan.md`) covering: the approach, files/commands involved, and the exact
+  Acceptance Criteria the Implementation ticket must satisfy and the Verification ticket must check,
+- name, in its **Design**, exactly where to look (files, dashboards, commands) to get any answers,
+- if it hits a question it cannot resolve itself, follow Step 1a instead of guessing.
+
+## Step 3 — Apply the ticket template format (per ticket)
+
+Each ticket MUST have a dependency header line + all 7 sections, in this order. Descriptions must be
+**self-contained** — a reader must not need to open another doc to execute the ticket (the Implementation
+and Verification tickets should still point at the Investigation ticket's plan artifact for the full
+rationale, but their own Description/AC/Implementation Plan/Test Plan must make sense standalone).
+
+**Count-based acceptance criteria — derive, never guess.** Any AC that hard-asserts a count
+(`ls web/*.html | wc -l == 11`, "should be N files", "exactly N rows") MUST be computed by
+**enumerating the specific artifacts** the ticket itself names — existing baseline + to-be-created —
+and asserting their sum. Never carry a standalone remembered/assumed total. Before emitting the AC,
+run the self-consistency check `existing_count + new_count == asserted_total`; if it fails, fix the
+number (this catches off-by-one totals at authoring time). If the baseline count is unknown, do not
+guess it — make it the job of the unit's Investigation/Plan ticket and assert the sum once that lands.
+
+**"0 failures" ACs — carve out install-integration tests.** Any AC that hard-asserts a blanket pass
+across a ported, cloned, or newly-authored test suite ("every test file runs and reports 0 failures",
+"all tests pass") MUST first check for tests that depend on live local state not guaranteed on a fresh
+checkout — a running service, an installed binary, a loaded launchd/cron job, network/DB access, etc.
+Either exclude those tests from the AC's scope explicitly (name the file(s)) or add a carve-out clause
+to the AC text itself (e.g. "... 0 failures, excluding `test-launch-agent.js` which requires a live
+local install"). Don't let a genuinely environment-dependent test masquerade as a regression later.
 
 ```markdown
 ### [ID] — [Short title]
@@ -64,85 +147,163 @@ naming conventions, and constraints. Self-contained — no "as described in the 
 - [ ] Independently verifiable by someone other than the author
 - [ ] Scoped to this ticket only (no cross-ticket ACs)
 
+**Out of Scope / Prohibitions**
+- Explicit boundary: files, systems, or behaviors this ticket must NOT touch, even if related or
+  tempting to fix along the way while in the area.
+- If nothing beyond the Acceptance Criteria's own boundary needs calling out, write "None beyond the
+  Acceptance Criteria above." — do not leave this section blank or omit it.
+
 **Open Questions**
-- Unresolved decisions/blockers. Write "None." if there are none. Record defaults you chose here.
+- Unresolved decisions/blockers. Write "None." if there are none.
+- If a question is answerable by investigation, it belongs in `<ID>-INV`, not here as a bare question.
+- If a question needs the human (Step 1a), it must already be resolved before this ticket is staged —
+  a staged ticket should never carry an unanswered human-judgment question.
 
 **Design**
-Technical approach: architecture/data-model decisions, libraries/patterns to use, and what NOT to do.
-For an investigation ticket, describe how to find the answer (what to look at, who to ask).
+Technical approach: architecture/data-model decisions, libraries/patterns to use. (Negative constraints —
+what NOT to touch — belong in **Out of Scope / Prohibitions** above, not here; do not duplicate them.)
+For the Investigation/Plan ticket, describe how to find the answer (what to look at) and what the plan
+artifact must contain. For Implementation, point at the plan artifact instead of re-deriving the approach.
+For Verification, describe how to check independently (re-run tests, diff the actual changed files
+against the Out of Scope / Prohibitions list) — not just re-trust the implementer.
 
 **Implementation Plan**
 1. Ordered, concrete steps — what to create/modify, what to run, what to check at each step.
 
 **Test Plan**
 Specific verification: exact commands / queries / API calls with expected values
-(prefer `SELECT count(*) = X` over "verify count is correct").
+(prefer `SELECT count(*) = X` over "verify count is correct"). For the Verification ticket this section
+*is* most of the ticket's substance.
 ```
 
 ## Step 4 — Compute dependencies + execution order
 
-- For each ticket, fill **Blocked by:** (must finish first) and **Blocks:** (this unblocks) using
-  data/artifact/precondition flow (e.g. "seed script" blocks "run that uses the seed").
-- Detect cycles — if any exist, break them by re-splitting or merging tickets.
-- Produce a **wave grouping**: Wave 1 = tickets with no unmet dependencies; later waves depend on
-  earlier ones. This is the order a `tend` run should execute them in.
+- Within a unit, the chain is fixed: `<ID>-INV` blocks `<ID>-IMPL` blocks `<ID>-VERIFY`.
+- Across units, fill **Blocked by:**/**Blocks:** using data/artifact/precondition flow. Point
+  cross-unit dependencies at the specific stage that actually produces or needs the dependency —
+  e.g. if unit B's plan depends on unit A's shipped change, `B-INV` is `Blocked by: A-IMPL` (not
+  `A-VERIFY`, unless B genuinely needs A to be *verified* correct first, not just implemented).
+- Detect cycles — if any exist, break them by re-splitting or merging units.
+- Produce a **wave grouping**: Wave 1 = tickets with no unmet dependencies (typically the `-INV`
+  tickets of independent units); later waves depend on earlier ones. This is the order a `tend` run
+  should execute them in. Waves will naturally interleave INV/IMPL/VERIFY stages across units.
+
+**Structural marker for cross-ticket blockers (not just prose).** Whenever a ticket's **Blocked by:**
+line names another ticket that is *also being staged in this same batch* (i.e. you know its exact
+filename because you're writing it too), also emit a `blocked_by_ticket: <that other ticket's exact
+filename, without .md>` header line on the blocked ticket (Step 6). This is what lets `drain-inbox.sh`
+carry the dependency into the materialized task file's `depends_on:` field structurally — instead of
+leaving `depends_on: none` with the ordering living only as prose inside `## Goal`/Description, which
+a downstream `tend` run cannot act on. Only emit the header when the referenced ticket is part of this
+same batch (so its filename is known); if the blocker is an already-registered ticket from a prior run
+(you only know its task ID, not an inbox filename), omit the header — `drain-inbox.sh` can only resolve
+refs it can match against tickets it is registering in the current drain, and inventing an ID is worse
+than leaving `depends_on: none` with the prose intact.
 
 ## Step 5 — Classify each ticket auto vs gated (risk-based, NOT location-based)
 
-Default is **`mode: auto`** (write to inbox root). Mark a ticket **gated** only when it involves:
+Default is **`mode: auto`** (write to inbox root). Gating is **risk-based** — it depends on what the
+ticket *does*, not on who authored it. Mark a ticket **gated** only when its actual work involves:
 
 - destructive ops (`rm -rf`, `DROP`/`DELETE`/`TRUNCATE`, force-push),
 - Kubernetes / infra mutations (`kubectl apply|scale|delete|patch|rollout`, `helm` mutate),
-- `source: self` sensitive changes (editing the orchestrate control plane / this skill set),
 - sending email / posting to Slack / triggering a deploy,
-- or an explicit user request to gate it.
+- or an explicit user request to gate it (an explicit `gate_reason:` line).
+
+**`source: self` alone does NOT gate.** Editing the orchestrate control plane / this skill set (a
+SKILL.md edit, a `bin/` script change, adding a test) is a reversible, locally-verifiable code change —
+it is `mode: auto` unless its *work* hits one of the risky ops above or the user explicitly asks to gate
+it. This mirrors the live `drain-inbox.sh` rule (risk-based, not source/location-based): a `source: self`
+ticket with no risky op and no `gate_reason:` is registered `auto`/`pending`, and the inline critic +
+the auto review/tests enforcement are the safety net for such code changes — not a human gate.
+
+> **Do NOT write a `gate_reason:` line just because a ticket edits the control plane** — that forces a
+> false gate (and a ticket that merely *mentions* a risky op inside a prohibition, e.g. "never force-push",
+> must not be gated either; describe such constraints without spelling raw risky-op keywords where possible).
 
 A gated ticket's Implementation Plan must stop at a review artifact (e.g. write the mutating command
 to `/tmp/kube-cmd-*.sh`) and NOT execute the risky step — it awaits human approval.
 
+**Per-stage gating within a unit.** Gate each stage independently based on what *it* does, not what
+the unit as a whole does — an Investigation ticket is read-only and is almost never gated even when its
+unit's Implementation is; a Verification ticket is also almost always `auto` (it observes/checks, it
+doesn't mutate) unless the verification itself requires a risky op (rare). Only the `-IMPL` ticket
+typically inherits the unit's real gating classification.
+
 ## Step 6 — Write each ticket as an inbox task file
 
-Resolve the inbox: from the project root, `<root>/.orchestrate/inbox/`. The default project root is the
-current working directory's nearest ancestor containing `.orchestrate/` (for this console:
-`/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/`). Create `gated/` if a gated ticket needs it.
+Resolve the inbox: **always** the single live control plane —
+`/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/` — regardless of the current working directory.
+This is the only inbox the running `tend`/`drain-inbox`/`monitor` (dashboard) launchd jobs watch (they all
+run with `WorkingDirectory=/Users/haimengzhou/apps/ai-console`), so tickets written anywhere else are
+orphaned and never picked up or shown. Do **not** walk up from cwd to a project-local `.orchestrate/`
+(e.g. `sy_promotion_merchant_scraper/.orchestrate/`) — those are dormant. For a ticket that operates on a
+*different* project's files, keep the inbox path as ai-console and make the file/script paths inside the
+ticket **absolute** (point at the target repo). Create `gated/` if a gated ticket needs it.
 
-**Routing**
+**Routing** (`<root>` = `/Users/haimengzhou/apps/ai-console`)
 - `auto` ticket → `<root>/.orchestrate/inbox/<slug>-<ts>.md`
 - `gated` ticket → `<root>/.orchestrate/inbox/gated/<slug>-<ts>.md`
 
 **Filename:** `<kebab-slug>-YYYYMMDDTHHMMSS.md`
-- `<kebab-slug>` = ticket ID + title, lowercased, spaces→`-`, non-alphanumerics stripped, ~40 chars.
-- `YYYYMMDDTHHMMSS` = compact UTC timestamp, e.g. `20260628T035429`.
+- `<kebab-slug>` = ticket ID (including the `-inv`/`-impl`/`-verify` suffix) + title, lowercased,
+  spaces→`-`, non-alphanumerics stripped, ~40 chars — e.g. `p3-3-inv-unit-cost-ramp-plan`.
+- `YYYYMMDDTHHMMSS` = compact UTC timestamp, e.g. `20260628T035429`. Give each of a unit's three
+  tickets a distinct timestamp (even a few seconds apart) so filenames never collide.
 
 **Header** (at the very top, before the `# ` title) — these are the fields drain-inbox.sh reads:
 ```
 mode: auto            # or "gated"
 source: self          # who originated it (e.g. "self" for skill-staged, or a person/system)
 triggered_by: <job-id-or-session-tag>   # provenance, e.g. 20260627-redis-p3prep-session
+blocked_by_ticket: <other-ticket's-filename-without-.md>   # ONLY when this ticket's Blocked by:
+                                                            # line names another ticket being staged
+                                                            # in THIS SAME batch (see Step 4)
 ```
-Then a blank line, then `# <ID> — <Short title>`, then the dependency header line + the 6 sections.
+Then a blank line, then `# <ID> — <Short title>`, then the dependency header line + the 7 sections.
 
 **Why these exactly:** drain-inbox.sh gates a file if it lives in `gated/`, OR has a `^mode: gated$`
 line, OR is `source: self` AND its `## Goal`/`Description` mentions a risky op. So a correctly-routed
 + headered file is drop-in compatible — drain-inbox.sh registers it in `project.md` with the right mode
-(auto→`pending`, gated→`awaiting_go`) and moves it to `processed/`.
+(auto→`pending`, gated→`awaiting_go`) and moves it to `processed/`. It also resolves `blocked_by_ticket:`
+(if present and the referenced ticket has already been registered earlier in the same drain batch) into
+a real `depends_on:` ID on the materialized `.orchestrate/tasks/{ID}.md` — see Step 4.
 
 ## Step 7 — Print a summary table + dependency graph
 
-Output to the console (do NOT write a separate report file):
+Output to the console (do NOT write a separate report file). Every unit contributes three rows:
 
 ```
-── Staged tickets ─────────────────────────────────────────
-| ID   | Title                         | mode  | depends on |
-|------|-------------------------------|-------|------------|
-| DS-1 | Seed MCC fixtures             | auto  | —          |
-| P3-3 | Unit-cost ramp runbook        | auto  | DS-1       |
-| P3-9 | Redis proxy restart (review)  | gated | —          |
+── Staged tickets ──────────────────────────────────────────────────
+| ID          | Title                          | stage  | mode  | depends on   |
+|-------------|--------------------------------|--------|-------|--------------|
+| DS-1-INV    | Fixture count + seed plan      | inv    | auto  | —            |
+| DS-1-IMPL   | Seed MCC fixture accounts      | impl   | auto  | DS-1-INV     |
+| DS-1-VERIFY | Verify seeded fixtures         | verify | auto  | DS-1-IMPL    |
+| P3-9-INV    | Diagnose redis-proxy no-master | inv    | auto  | —            |
+| P3-9-IMPL   | Restart redis-proxy (review)   | impl   | gated | P3-9-INV     |
+| P3-9-VERIFY | Confirm proxy healthy          | verify | auto  | P3-9-IMPL    |
+| P3-3-INV    | Ramp runbook plan              | inv    | auto  | DS-1-VERIFY, P3-9-VERIFY |
+| P3-3-IMPL   | Run unit-cost ramp             | impl   | auto  | P3-3-INV     |
+| P3-3-VERIFY | Verify ramp results            | verify | auto  | P3-3-IMPL    |
 
 Dependency waves (execution order):
-  Wave 1:  DS-1, P3-9
-  Wave 2:  P3-3   (after DS-1)
-───────────────────────────────────────────────────────────
+  Wave 1:  DS-1-INV, P3-9-INV
+  Wave 2:  DS-1-IMPL, P3-9-IMPL           (after their own -INV)
+  Wave 3:  DS-1-VERIFY, P3-9-VERIFY       (after their own -IMPL)
+  Wave 4:  P3-3-INV                       (after DS-1-VERIFY, P3-9-VERIFY)
+  Wave 5:  P3-3-IMPL                      (after P3-3-INV)
+  Wave 6:  P3-3-VERIFY                    (after P3-3-IMPL)
+──────────────────────────────────────────────────────────────────────
+```
+
+Then add a **Recommended next step** line (this is the "tell me what to do next" the human asked for) —
+derived from the waves. Example:
+
+```
+Recommended next step: go — run Wave 1 (DS-1-INV + P3-9-INV). Both are read-only investigations that
+produce plans for their unit's implementation; nothing mutates until Wave 2. P3-9-IMPL is gated — review
+/tmp/kube-cmd-redis-proxy-restart.sh before approving the Redis mutation when Wave 2 reaches it.
 ```
 
 ## Step 8 — STOP at the go-gate
@@ -153,6 +314,9 @@ N ticket(s) staged in .orchestrate/inbox/ (and gated/ where applicable) — awai
 Nothing has been executed. Reply "go" (or run /orch) to drain and start the run.
 ```
 Then STOP. Do not drain, do not run tend, do not start any executor. The human owns the go decision.
+The skill's job is to research, stage, and *recommend* — not to ask the human a question to proceed
+**at this stage**; any question that genuinely needed the human was already asked and resolved back in
+Step 1a, before this point.
 
 ---
 
@@ -161,102 +325,160 @@ Then STOP. Do not drain, do not run tend, do not start any executor. The human o
 **Job:** "We need the Phase 3 unit-cost ramp ready, but it depends on seeded MCC fixtures, and the
 shared Redis is reporting no master, which blocks the cluster run."
 
-This decomposes into 3 tickets. Two are shown in full below (both 6 sections + a dependency line);
-the table/graph is in Step 7's format.
+This decomposes into 3 units → 9 tickets. The `DS-1` unit is shown in full below (all three tickets,
+each 7 sections + a dependency line); `P3-9` and `P3-3` are summarized in Step 7's table format.
 
 ---
 
-### DS-1 — Seed MCC fixture accounts for the ramp
+### DS-1-INV — Resolve MCC fixture count/persona mix and write the seed plan
 
 **Target:** `/Users/haimengzhou/apps/ads-phase2-review` (branch `feature/phase-3-prep`)
-**Blocks:** P3-3 (the ramp reads these accounts).  ·  **Blocked by:** None.
+**Blocks:** DS-1-IMPL.  ·  **Blocked by:** None.
 
 **Description**
-The P3-3 unit-cost ramp queries a known set of MCC (manager) accounts that must exist before the run.
-This ticket makes the seed script idempotent and verifies the expected account count exists, so the
-scarce cluster window is not spent provisioning data. No cluster execution is in scope here.
+The seed step needs to know how many MCC fixture accounts the unit-cost ramp exercises, which persona
+mix, and the exact idempotent seeding approach. This ticket resolves all of that read-only from the
+ramp spec, the existing persona config, and the current seed script, and writes one authoritative plan
+that DS-1-IMPL executes without re-deriving anything.
 
 **Acceptance Criteria**
-- [ ] `scripts/seed_mcc_fixtures.sh` is idempotent (re-running does not create duplicates).
-- [ ] After a run, `SELECT count(*) FROM mcc_accounts WHERE fixture = true` returns exactly 50.
-- [ ] The seed count and how to re-run are documented in `reports/phase3/ds-1_fixtures.md`.
+- [ ] `reports/phase3/ds-1-inv_plan.md` states the required fixture count and persona breakdown, citing
+  the ramp spec section / persona config file + line.
+- [ ] The plan names the exact idempotency mechanism (`ON CONFLICT DO NOTHING` on the existing
+  `scripts/seed_mcc_fixtures.sh`) and the exact verification query DS-1-IMPL and DS-1-VERIFY must both use.
+- [ ] If the spec is silent on the count, the plan states the chosen default and why.
+
+**Out of Scope / Prohibitions**
+- Do not modify `scripts/seed_mcc_fixtures.sh` or any data — this ticket is read-only planning.
+- Do not seed fixtures into any environment (UAT or otherwise) — that execution is DS-1-IMPL's job.
 
 **Open Questions**
-- Fixture count: defaulting to 50 (matches the documented ramp persona mix); confirm if the ramp needs more.
+- None — this ticket exists to remove the open question, not to carry one.
 
 **Design**
-- Pure data setup against the UAT DB; reuse the existing `seed_mcc_fixtures.sh` rather than a new path.
-- Idempotency via `ON CONFLICT DO NOTHING`; do NOT delete existing non-fixture accounts.
+- Read-only: grep the ramp spec and `config/personas.yml`; do NOT modify data or run the seed here.
+- Where to look: `docs/phase3/unit_cost_ramp.md` (persona mix), `config/personas.yml` (counts per persona),
+  `scripts/seed_mcc_fixtures.sh` (current seed logic, to plan the idempotency guard against it).
 
 **Implementation Plan**
-1. Read `scripts/seed_mcc_fixtures.sh` and add an `ON CONFLICT DO NOTHING` guard on the insert.
-2. Run the seed against UAT; capture stdout.
-3. Verify the count query returns 50; record it in `reports/phase3/ds-1_fixtures.md`.
+1. Read the ramp spec + persona config; extract the required fixture count and per-persona split.
+2. Read `seed_mcc_fixtures.sh`; decide exactly how the idempotency guard fits into it.
+3. Write the plan (count + breakdown + source citations + exact guard + verification query) to
+   `reports/phase3/ds-1-inv_plan.md`.
+
+**Test Plan**
+- `test -f reports/phase3/ds-1-inv_plan.md` and it contains an explicit integer fixture count.
+- The doc cites at least one source file:line and states an exact `SELECT count(*) ...` verification query.
+
+---
+
+### DS-1-IMPL — Seed MCC fixture accounts per the DS-1-INV plan
+
+**Target:** `/Users/haimengzhou/apps/ads-phase2-review` (branch `feature/phase-3-prep`)
+**Blocks:** DS-1-VERIFY.  ·  **Blocked by:** DS-1-INV.
+
+**Description**
+Execute exactly the plan in `reports/phase3/ds-1-inv_plan.md` — add the idempotency guard it specifies
+to `scripts/seed_mcc_fixtures.sh` and run it against UAT. No cluster execution is in scope here.
+
+**Acceptance Criteria**
+- [ ] `scripts/seed_mcc_fixtures.sh` has the idempotency guard from `ds-1-inv_plan.md` (re-running does
+  not create duplicates).
+- [ ] After a run, the verification query from `ds-1-inv_plan.md` returns the count that document specifies.
+- [ ] Run output is captured in `reports/phase3/ds-1-impl_run.md`.
+
+**Out of Scope / Prohibitions**
+- Do not modify `config/personas.yml` or any persona source config — only apply the idempotency guard
+  `ds-1-inv_plan.md` specifies to `scripts/seed_mcc_fixtures.sh`.
+- Do not run the unit-cost ramp or touch cluster execution — that is P3-3's scope, not DS-1's.
+
+**Open Questions**
+- None — fixture count and approach are fixed by `ds-1-inv_plan.md`.
+
+**Design**
+- Follow `ds-1-inv_plan.md` exactly; do not re-derive the approach or second-guess the resolved count.
+
+**Implementation Plan**
+1. Read `reports/phase3/ds-1-inv_plan.md` for the target count `N` and the guard to add.
+2. Add the guard to `scripts/seed_mcc_fixtures.sh`.
+3. Run the seed against UAT; capture stdout to `reports/phase3/ds-1-impl_run.md`.
 
 **Test Plan**
 - Run the seed twice; second run prints `0 inserted`.
-- `psql -c "SELECT count(*) FROM mcc_accounts WHERE fixture = true"` → `50`.
-- `test -f reports/phase3/ds-1_fixtures.md`.
+- Run the verification query from `ds-1-inv_plan.md` → returns `N`.
 
 ---
 
-### P3-9 — Restart redis-proxy to clear "no master" (review-gated)
+### DS-1-VERIFY — Independently verify the seeded fixtures
 
-**Target:** `/Users/haimengzhou/apps/ads-phase2-review` · **Cluster:** `ads-uat-cluster-3`, ns `ads`
-**Blocks:** P3-3 (cluster ramp needs a healthy Redis).  ·  **Blocked by:** None for the read-only
-diagnosis; the fix step is human-gated (K8s mutation).
+**Target:** `/Users/haimengzhou/apps/ads-phase2-review` (branch `feature/phase-3-prep`)
+**Blocks:** P3-3-INV.  ·  **Blocked by:** DS-1-IMPL.
 
 **Description**
-The cluster ramp is blocked because redis-proxy (HAProxy) reports `redis_ha has no server available`,
-while the redis data plane is healthy. The likely cause is stale backend endpoints after the redis pods
-were recreated. This ticket confirms the root cause read-only and produces an operator-approved restart;
-it does NOT execute the cluster mutation.
+Independently confirm DS-1-IMPL actually did what it claims — do not trust `ds-1-impl_run.md`'s own
+output. Re-derive the count from the database, re-check idempotency, and confirm nothing outside scope
+was touched.
 
 **Acceptance Criteria**
-- [ ] redis-proxy backend endpoints are diffed against live `redis-0/1/2` pod IPs; stale-endpoint
-  hypothesis confirmed or refuted in the task notes.
-- [ ] A review script `/tmp/kube-cmd-redis-proxy-restart.sh` exists with `kubectl rollout restart
-  deploy/redis-proxy -n ads` + pre/post diagnostics; the agent has NOT executed it.
-- [ ] A post-fix verification plan is attached (re-run diagnose → no `no server available`).
+- [ ] Independently re-running the verification query from `ds-1-inv_plan.md` returns `N`.
+- [ ] Re-running `seed_mcc_fixtures.sh` a third time still inserts `0` rows.
+- [ ] `mcc_accounts` rows with `fixture = false` are unchanged in count from before DS-1-IMPL started.
+
+**Out of Scope / Prohibitions**
+- Do not modify `scripts/seed_mcc_fixtures.sh` or insert/delete any rows — this ticket only observes
+  and queries.
+- Do not re-scope the check beyond DS-1-IMPL's declared change — no re-litigating DS-1-INV's fixture
+  count or persona mix here.
 
 **Open Questions**
-- Is redis-proxy owned by us or the platform team? (If external, hand them the script instead of self-approving.)
+- None.
 
 **Design**
-- Read-only kubectl for diagnosis only (`get pods -o wide`, `get deploy redis-proxy -o yaml`, `logs`).
-- Honor the K8s safety rule: never run the mutating restart directly; write it to `/tmp/kube-cmd-*.sh`.
-- Do NOT touch the Redis data plane (no `REPLICAOF NO ONE`) — a master already exists.
+- Independent check: query the DB directly rather than reading `ds-1-impl_run.md`'s claimed numbers.
 
 **Implementation Plan**
-1. Run `diagnose_redis_uat.sh`; capture proxy/redis state.
-2. Extract HAProxy backend IPs; diff against live pod IPs; record the verdict.
-3. Write `/tmp/kube-cmd-redis-proxy-restart.sh` (pre-check, rollout restart, status, post-check). Do not execute.
-4. Present findings + script for approval (gated).
+1. Run the verification query from `ds-1-inv_plan.md` directly against UAT.
+2. Re-run the seed script once more; confirm `0 inserted`.
+3. Diff the non-fixture account count against the pre-DS-1-IMPL baseline.
+4. Record the verdict in `reports/phase3/ds-1-verify_result.md`.
 
 **Test Plan**
-- `diagnose_redis_uat.sh` → verdict prints the no-master alert BEFORE any fix.
-- `test -f /tmp/kube-cmd-redis-proxy-restart.sh` and it contains the rollout-restart line.
+- `psql -c "<verification query>"` → `N`.
+- `bash scripts/seed_mcc_fixtures.sh` → `0 inserted`.
+- Non-fixture account count unchanged vs. baseline.
 
 ---
 
-(The third ticket, P3-3 — the ramp runbook — is `auto`, **Blocked by: DS-1, P3-9**, omitted here for brevity.)
-
-**Summary + waves for this example:**
-```
-| ID   | Title                          | mode  | depends on |
-|------|--------------------------------|-------|------------|
-| DS-1 | Seed MCC fixture accounts      | auto  | —          |
-| P3-9 | Restart redis-proxy (review)   | gated | —          |
-| P3-3 | Unit-cost ramp runbook         | auto  | DS-1, P3-9 |
-
-Wave 1:  DS-1, P3-9
-Wave 2:  P3-3
-```
+`P3-9` (redis-proxy fix) and `P3-3` (the ramp run) follow the same INV → IMPL → VERIFY pattern — see
+the Step 7 table above for their full 9-ticket dependency graph. `P3-9-IMPL` is the only `gated` ticket
+in this job (it's the one that actually runs `kubectl rollout restart`); its `-INV` and `-VERIFY` are
+both read-only and stay `auto`.
 
 **Closing step (always):**
 ```
-3 ticket(s) staged in .orchestrate/inbox/ (P3-9 in gated/) — awaiting go.
+9 ticket(s) staged in .orchestrate/inbox/ (P3-9-IMPL in gated/) — awaiting go.
 Nothing has been executed. Reply "go" (or run /orch) to drain and start the run.
+```
+
+### Variant: when Step 1a triggers instead
+
+If, while writing `P3-3-INV`, the target request rate for the ramp turned out to be undocumented and
+undiscoverable in the repo (a product/SLA decision, not a research question), the skill would stop
+there instead of guessing:
+
+```
+Open question — needs your input before I can stage P3-3:
+
+  P3-3 (unit-cost ramp) needs a target request rate to size the ramp steps. The ramp spec doesn't
+  state one and it isn't derivable from existing config — this is a product/SLA decision, not
+  something I can research my way to.
+
+  Options: (a) match last quarter's observed peak (~4.2k rps), (b) use a new SLA target if one exists
+  elsewhere, (c) you give me a number.
+  Recommendation: (a) — grounded in real data, and the spec gives no other signal.
+
+DS-1 (3 tickets) and P3-9 (3 tickets) are staged and ready — see the table above.
+P3-3 is held until you answer; I'll stage its 3 tickets right after.
 ```
 
 ---
@@ -266,4 +488,14 @@ Nothing has been executed. Reply "go" (or run /orch) to drain and start the run.
 - Source of truth is `~/apps/ai-toolbox/skills/` — never edit `~/.claude/skills/` directly; run `sync.sh`.
 - No live cluster, network, or MCP dependency — decomposition + staging are fully offline.
 - Never start execution; always stop at the go-gate (Step 8).
-- When unsure whether to gate, gate it — over-gating is safe, under-gating risks an unattended mutation.
+- Gate on the **actual risky op**, not on authorship or caution. Over-gating is NOT free — it stalls
+  safe, auto-runnable work behind a needless human approval and pollutes the gated queue. Gate only when
+  a ticket's work genuinely hits a risky op (Step 5) or the user explicitly asks; a reversible code/
+  test/docs change (including `source: self`) stays `auto`. Reserve gating for real unattended-mutation risk.
+- **Every unit is three tickets, always.** Never stage a bare implementation ticket without its
+  Investigation/Plan and Verification siblings (Step 2) — even for units that look trivial.
+- **Research first, ask only when research can't resolve it.** A question answerable by reading code/
+  docs/config belongs in the unit's `-INV` ticket, not a prompt to the human. A question that needs
+  human judgment, access the agent lacks, or a hard-to-reverse design call STOPS the breakdown for that
+  unit and asks the human directly (Step 1a) — do not stage a ticket that guesses at it. Units not
+  blocked by the question still get staged and the go-gate summary still applies to them.
