@@ -1,6 +1,6 @@
 ---
 name: orchestrate-daily-wiki-ingest
-description: Ingest orchestration history from the past 24 hours into the Obsidian wiki, then archive MANIFEST entries older than 30 days.
+description: Ingest orchestration history newer than the last-successful-ingest watermark (catching up any missed runs; falls back to a 24h window on first run) into the Obsidian wiki, then archive MANIFEST entries older than 30 days.
 ---
 
 You are **orchestrate-daily-wiki-ingest**: distill recent completed orchestration runs into the Obsidian wiki and prune old history archives.
@@ -41,18 +41,41 @@ Link format: use `[[wikilinks]]` unless `OBSIDIAN_LINK_FORMAT=markdown` is set i
 
 ---
 
-## Step 2 — Select jobs from the past 24 hours
+## Step 2 — Select jobs newer than the last-ingested watermark
 
-Read `orchestrate-history/MANIFEST.md`. For each data line matching `YYYY-MM-DD | filename | summary | tags`:
+A fixed "past 24 hours" window silently loses work across any missed run: if the daily launchd job is dead or ghost-reset for a day, every job completed in that gap ages out of the window and is dropped forever. Select by a **persisted watermark** instead, so a missed run is caught up on the next successful one.
 
-- Parse the date column and the filename.
-- Include the entry if its date is within the last 24 hours (compare using epoch seconds; date-only entries use midnight local time).
+**Watermark store:** `.orchestrate/logs/wiki-ingest-state.json`, shape:
 
-Also include entries whose archive filename starts with today's or yesterday's `YYYYMMDD` prefix when the manifest date column is ambiguous.
+```json
+{ "last_ingested_stamp": "YYYYMMDD-HHMMSS" }
+```
 
-Build a list: `[{ date, filename, summary, tags }]`
+`last_ingested_stamp` is the archive-filename prefix (`YYYYMMDD-HHMMSS`) of the newest entry successfully ingested by a prior run. The prefix is lexicographically sortable, so string comparison is a valid time comparison.
 
-If empty: skip Step 3–4 content creation but still run Step 5 (archive prune) and Step 6 (log).
+**Selection algorithm:**
+
+1. Read the watermark:
+   ```bash
+   STATE=".orchestrate/logs/wiki-ingest-state.json"
+   WATERMARK=""
+   if [[ -f "$STATE" ]]; then
+     WATERMARK="$(grep -o '"last_ingested_stamp"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE" | sed 's/.*"\([^"]*\)"$/\1/')"
+   fi
+   ```
+2. Read `orchestrate-history/MANIFEST.md`. For each data line matching `YYYY-MM-DD | filename | summary | tags`, parse the date column and the filename. Derive the entry's stamp from the filename's leading `YYYYMMDD-HHMMSS` prefix (fall back to `<date-with-dashes-removed>-000000` when the filename has no time component).
+3. **Include** the entry when:
+   - a watermark exists AND the entry stamp is **lexicographically greater than** the watermark; **OR**
+   - no watermark exists (first run / fresh state) AND the entry date is within the last 24 hours (the original rolling-window fallback — epoch seconds; date-only entries use midnight local time).
+4. **Sort** the included list ascending by stamp (oldest first) — so a per-run cap ingests the oldest backlog first and the watermark advances monotonically.
+
+Build a list: `[{ stamp, date, filename, summary, tags }]`.
+
+**Dedup:** drop any entry whose `sources: [orchestrate-history/<filename>]` page already exists under `$VAULT/Orchestration/Daily/**` (a re-run must never double-write). Dedup by `task_id`/`sources`, not by date.
+
+**Per-run cap (overflow deferred, never dropped):** cap the run at `WIKI_INGEST_CAP` entries (default 100). If more than the cap qualify, ingest the **oldest** `CAP` of them this run and leave the remainder untouched — because the watermark advances only to the newest *ingested* stamp (Step 7), the deferred entries stay above the watermark and are picked up on the next run. Log the deferred count in Step 7.
+
+If the selected list is empty: skip Step 3–4 content creation but still run Step 5 (archive prune) and Step 6 (log). Do **not** advance the watermark when nothing was ingested.
 
 ---
 
@@ -133,12 +156,23 @@ If `WIKI_STAGED_WRITES=true` in environment or config, run `/wiki-stage-commit` 
 
 ---
 
-## Step 7 — Log and report
+## Step 7 — Advance watermark, log and report
+
+**Advance the watermark (only when ≥1 job was ingested this run):** write the newest *ingested* entry's stamp to `.orchestrate/logs/wiki-ingest-state.json`. Because the Step 2 list is sorted oldest-first and capped, the newest ingested stamp is the last element actually written this run — NOT the newest qualifying entry (any capped overflow must remain above the watermark so the next run catches it).
+
+```bash
+# NEWEST_INGESTED_STAMP = stamp of the last (newest) entry ingested this run
+if [[ -n "$NEWEST_INGESTED_STAMP" ]]; then
+  printf '{ "last_ingested_stamp": "%s" }\n' "$NEWEST_INGESTED_STAMP" > .orchestrate/logs/wiki-ingest-state.json
+fi
+```
+
+If zero jobs were ingested, leave the watermark unchanged.
 
 Append to `.orchestrate/logs/wiki-ingest-daily.log`:
 
 ```
-[<ISO>] wiki-ingest — jobs: N | archived: N | vault: <path>
+[<ISO>] wiki-ingest — jobs: N | deferred: N | archived: N | watermark: <stamp> | vault: <path>
 ```
 
 Stdout summary:
@@ -146,7 +180,9 @@ Stdout summary:
 ```
 orchestrate-daily-wiki-ingest complete
   Jobs ingested:  N
+  Deferred:       N (over per-run cap; caught next run)
   Archived:       N (>30 days)
+  Watermark:      <stamp>
   Vault:          <path>
   Log:            .orchestrate/logs/wiki-ingest-daily.log
 ```
