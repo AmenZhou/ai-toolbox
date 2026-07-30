@@ -37,6 +37,8 @@ Build the candidate list. Remove any filename already present in `state.analyzed
   `[<ISO timestamp>] inbox-analyzer — idle, no new logs`
 - Exit. Do not proceed to Step 3.
 
+**Per-cycle batch cap:** sort the candidate list oldest-first (by filename timestamp prefix) and process at most **150** logs this cycle. If the candidate list is larger, only the oldest 150 are analyzed in Steps 3–6; the rest remain unmarked in `state.analyzed` and are picked up automatically by the next cycle. This bounds each run's duration so a large backlog drains incrementally across cycles instead of one run trying to read the entire backlog inline and stalling past the tend stale-timeout (observed: unbounded scans of 400+ logs took 1.75–3+ hours and were repeatedly ghost-reset). Note the actual candidate count and the capped count in the Step 7 summary when capping applies.
+
 ---
 
 ## Step 3 — Analyze Each Log
