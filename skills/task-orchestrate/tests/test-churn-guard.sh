@@ -728,6 +728,99 @@ fi
   || fail "Case G broke invariant: $(malformed_rows) bad row(s)"
 
 echo ""
+echo "── Case H: SHELLPROBE-CHURN-1 — real work must not be silently discarded ───"
+# Regression (2026-07-31, 20260731-inbox-F75C): cg_reset on a target auto-triggered
+# cg__close_investigation_row, which flipped a DRAINED investigate-churn row to
+# complete and rm'd its live task file under the "target complete == mid-flight
+# false positive" assumption — but that investigation had actually found and fixed
+# a real bug. Both signals (files_changed and a completed PHASE OUTPUT block) must
+# suppress the silent auto-close; a genuinely empty ghost file must still auto-close.
+
+echo ""
+echo "30. cg_close_investigation does NOT silently discard a drained row whose task file shows real work (files_changed)"
+TGT=20260731-inbox-real
+INVID=20260731-inbox-work1
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $TGT | Fix rate limiter | auto | 1 | complete | 2026-01-01T00:00:00Z |
+| $INVID | Investigate churn — $TGT re-processed 3× | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+cat > "$W/.orchestrate/tasks/$INVID.md" <<EOF
+id: $INVID
+task: Investigate churn — $TGT re-processed 3×
+mode: auto
+total_phases: 1
+
+### Phase 1: Investigate and resolve [inline · execution]
+status: ✓ complete
+acceptance_criteria_met: [✓ root cause identified and fixed]
+
+## PHASE OUTPUT
+files_changed: [.orchestrate/bin/rate-limiter.ts]
+summary: Found and fixed a real bug causing the churn.
+confidence: high
+blockers: none
+test_evidence: test-rate-limiter.sh 5/0
+EOF
+: > "$W/.orchestrate/logs/heartbeat.log"
+bash "$CGW" cg_close_investigation "$W" "$TGT" >/dev/null 2>&1 || true
+[[ "$(status_of "$INVID")" == "needs_human" ]] \
+  && ok "row with real-work task file left untouched (still needs_human, not silently completed)" \
+  || fail "row wrongly flipped to $(status_of "$INVID") despite real-work task file"
+[[ -f "$W/.orchestrate/tasks/$INVID.md" ]] \
+  && ok "task file with real work NOT deleted" \
+  || fail "task file with real work was deleted — live-session data loss"
+if grep -qE "churn-guard — SKIPPED auto-close of investigate-churn row $INVID" \
+   "$W/.orchestrate/logs/heartbeat.log" 2>/dev/null; then
+  ok "heartbeat records the SKIPPED auto-close (real work detected)"
+else
+  fail "heartbeat missing SKIPPED auto-close line: $(grep churn-guard "$W/.orchestrate/logs/heartbeat.log" 2>/dev/null || echo none)"
+fi
+[[ "$(malformed_rows)" == "0" ]] && ok "Case H (real work) preserved NF==8 invariant" \
+  || fail "Case H (real work) broke invariant: $(malformed_rows) bad row(s)"
+
+echo ""
+echo "31. cg_close_investigation still auto-closes a genuinely-empty drained row (no files_changed, no completed PHASE OUTPUT)"
+TGT2=20260731-inbox-empty
+INVID2=20260731-inbox-work2
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $TGT2 | Some other task | auto | 1 | complete | 2026-01-01T00:00:00Z |
+| $INVID2 | Investigate churn — $TGT2 re-processed 3× | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+cat > "$W/.orchestrate/tasks/$INVID2.md" <<EOF
+id: $INVID2
+task: Investigate churn — $TGT2 re-processed 3×
+mode: auto
+total_phases: 1
+
+### Phase 1: Investigate and resolve [inline · execution]
+status: pending
+EOF
+: > "$W/.orchestrate/logs/heartbeat.log"
+bash "$CGW" cg_close_investigation "$W" "$TGT2" >/dev/null 2>&1 || true
+[[ "$(status_of "$INVID2")" == "complete" ]] \
+  && ok "genuinely-empty drained row still auto-closed to complete (unweakened false-positive path)" \
+  || fail "genuinely-empty drained row status=$(status_of "$INVID2") (expected complete)"
+[[ ! -f "$W/.orchestrate/tasks/$INVID2.md" ]] \
+  && ok "genuinely-empty ghost task file still removed" \
+  || fail "genuinely-empty ghost task file wrongly preserved"
+if grep -qE "churn-guard — auto-closed investigate-churn row $INVID2" \
+   "$W/.orchestrate/logs/heartbeat.log" 2>/dev/null; then
+  ok "heartbeat records the normal auto-close (no real work detected)"
+else
+  fail "heartbeat missing normal auto-close line: $(grep churn-guard "$W/.orchestrate/logs/heartbeat.log" 2>/dev/null || echo none)"
+fi
+[[ "$(malformed_rows)" == "0" ]] && ok "Case H (empty) preserved NF==8 invariant" \
+  || fail "Case H (empty) broke invariant: $(malformed_rows) bad row(s)"
+
+echo ""
 echo "── Results ───────────────────────────────────────"
 echo "  Passed: $PASS"
 echo "  Failed: $FAIL"

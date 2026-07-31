@@ -339,6 +339,48 @@ cg_close_investigation() {
   cg__close_investigation_row "$id"
 }
 
+# cg__taskfile_has_real_work <path> — true (0) when a drained investigate-churn
+# task file's OWN content shows genuine work was done, i.e. "target reached
+# complete" must NOT be assumed to mean "this investigation was a mid-flight-
+# reset false positive". Two independent signals, either is sufficient:
+#   (1) a top-level `files_changed:` line whose value is non-empty and not
+#       literally "none" (case-insensitive; leading `[`/trailing `]`/whitespace
+#       stripped; a "none (explanatory parenthetical)" value still counts as
+#       "none" — only the leading token is checked); or
+#   (2) a `## PHASE OUTPUT` block whose OWN phase section (the nearest
+#       preceding `### Phase N` header) carries `status: ✓ complete` — i.e. that
+#       phase actually finished, not just started/pending.
+# False (1, "safe to auto-close") when NEITHER signal is present — the genuine
+# "drained, never made progress" case (e.g. a bare ghost task file with no
+# phase content at all).
+# SHELLPROBE-CHURN-1 (2026-07-31): cg_reset on a target auto-triggered
+# cg__close_investigation_row, which silently flipped a DRAINED investigate-
+# churn row to complete and rm'd its live task file — but that investigation
+# had actually found and fixed a real bug (non-empty files_changed). The
+# detailed record was lost to a race against finalize-completed-tasks.sh's
+# generic archive-gap backfill, which reconstructed only a thin fallback.
+cg__taskfile_has_real_work() {
+  local tf="$1" fc fc_norm
+  [[ -f "$tf" ]] || return 1
+  fc="$(grep -m1 -E '^files_changed:' "$tf" 2>/dev/null | sed -E 's/^files_changed:[[:space:]]*//')"
+  fc_norm="$(printf '%s' "$fc" \
+    | sed -E 's/^\[//; s/\]$//' \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+    | tr '[:upper:]' '[:lower:]')"
+  if [[ -n "$fc_norm" ]]; then
+    case "$fc_norm" in
+      none|none\ *|none\(*) : ;;   # "none" / "none ..." / "none(..." → no signal from (1)
+      *) return 0 ;;               # anything else non-empty → real work
+    esac
+  fi
+  awk '
+    /^### Phase/ { had=0 }
+    /^status:[[:space:]]*✓ complete/ { had=1 }
+    /^## PHASE OUTPUT/ { if (had) found=1 }
+    END { exit (found ? 0 : 1) }
+  ' "$tf"
+}
+
 # cg__close_investigation_row <target> — close a DRAINED investigate-churn registry
 # row for <target> once <target> is complete. Finds a non-terminal row whose summary
 # reads `Investigate churn — <target> …`, flips it to complete (NF==8-safe), drops
@@ -351,8 +393,15 @@ cg_close_investigation() {
 # review/tests rows and rm'd their task files (live wrong-row corruption). Anchoring to
 # position 1 requires `Investigate churn — <target>` to be the summary PREFIX, excluding
 # the `Review of`/`Tests for` prefixes.
+# SHELLPROBE-CHURN-1 fix: "target complete" does NOT imply "this investigation was
+# a mid-flight-reset false positive" — the investigation itself may have completed
+# real work (see cg__taskfile_has_real_work above), and may still be a LIVE session
+# about to run its own Completion sequence (archive + registry flip). When real work
+# is found, skip the silent auto-close ENTIRELY — leave the row exactly as-is for the
+# live/next session's own Completion sequence, or finalize-completed-tasks.sh's
+# normal rule-(1)/rule-(2) reconciliation, to close it properly WITH an archive.
 cg__close_investigation_row() {
-  local target="$1" proj inv_id now tmp hb
+  local target="$1" proj inv_id now tmp hb tf
   proj="$(cg__root)/.orchestrate/project.md"
   [[ -f "$proj" ]] || return 0
   inv_id="$(awk -F'|' -v t="$target" '
@@ -364,7 +413,13 @@ cg__close_investigation_row() {
       }
     }' "$proj")"
   [[ -n "$inv_id" ]] || return 0
+  tf="$(cg__taskfile "$inv_id")"
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  hb="$(cg__heartbeat)"; mkdir -p "$(dirname "$hb")"
+  if cg__taskfile_has_real_work "$tf"; then
+    echo "[${now}] churn-guard — SKIPPED auto-close of investigate-churn row ${inv_id} (target ${target} complete, but its task file shows real work — not a mid-flight-reset false positive; leaving row for normal Completion/finalize archiving)" >> "$hb"
+    return 0
+  fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
   awk -F'|' -v OFS='|' -v id="$inv_id" -v now="$now" '
     /^\|[[:space:]]*[0-9A-Za-z]/ && NF>=8 {
@@ -373,8 +428,7 @@ cg__close_investigation_row() {
     }
     { print }
   ' "$proj" > "$tmp" && mv "$tmp" "$proj"
-  rm -f "$(cg__taskfile "$inv_id")" 2>/dev/null || true
-  hb="$(cg__heartbeat)"; mkdir -p "$(dirname "$hb")"
+  rm -f "$tf" 2>/dev/null || true
   echo "[${now}] churn-guard — auto-closed investigate-churn row ${inv_id} (target ${target} complete — mid-flight-reset false positive)" >> "$hb"
 }
 
