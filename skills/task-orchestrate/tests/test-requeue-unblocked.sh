@@ -318,6 +318,56 @@ else
   fail "task was NOT parked after 3 genuine ghost-reset episodes — real churn detection broken"
 fi
 
+# ── Case F: partial-progress task with session-death wording still counts ───
+# is_zero_progress_session_death_requeue's own gate requires BOTH zero
+# ✓-complete phases AND session-death phrasing. Case E only ever exercised a
+# task with zero complete phases; this case exercises the OTHER edge of that
+# same gate — a task that has already completed Phase 1 (real progress
+# happened) hits a session-death-worded reset on Phase 2. This must NOT be
+# treated as a free (skip_count=1) ghost-reset episode — a real dispatch
+# attempt occurred and produced progress, so the double-count concern
+# (SHELLPROBE-CHURN-2) does not apply here; suppressing this leg's own
+# increment would silently under-count a genuinely churning task merely
+# because its human_resolution happens to reuse session-death-shaped wording.
+# Verifies the "complete -eq 0" precondition in is_zero_progress_session_death_requeue
+# is load-bearing, not vestigial.
+echo ""
+echo "── Case F: partial-progress (≥1 complete phase) + session-death wording still counts ───"
+setup_work
+FID="20260731-partialprogress"
+cat > "$W/.orchestrate/tasks/${FID}.md" <<EOF
+id: $FID
+task: test partial-progress session-death wording
+mode: auto
+total_phases: 2
+
+## Phases
+### Phase 1
+status: ✓ complete
+
+### Phase 2
+status: pending
+EOF
+
+for i in 1 2 3; do
+  TS="2026-07-31T2$((3+i)):00:00Z"
+  set_row "$FID" "$TS" "needs_human"
+  printf 'human_resolution: Auto-reset: task stuck in running for 55%ss with no phase progress (tend session likely died)\n' "$i" \
+    >> "$W/.orchestrate/tasks/${FID}.md"
+  bash "$W/.orchestrate/bin/requeue-unblocked.sh" "$W" >/dev/null
+done
+
+cf="$(count_of "$FID")"
+[[ "$cf" == "3" ]] && ok "counter reaches 3 for partial-progress task despite session-death wording (skip gate correctly did not fire)" \
+  || fail "expected counter 3 for partial-progress + session-death wording — got $cf (skip gate over-firing on a completed-phase task)"
+
+if grep -qE '^bypassed_at:.*' "$W/.orchestrate/tasks/${FID}.md" 2>/dev/null && \
+   grep -qE '^bypass_reason: churn' "$W/.orchestrate/tasks/${FID}.md" 2>/dev/null; then
+  ok "partial-progress task IS parked at threshold (real churn detection unweakened by the complete-phase gate)"
+else
+  fail "partial-progress task was not parked — churn detection wrongly suppressed by session-death wording despite prior real progress"
+fi
+
 echo ""
 echo "── Results ───────────────────────────────────────"
 echo "  Passed: $PASS"
