@@ -227,5 +227,20 @@ r="$(run_requeue "| 20260716-tst | job with reused pid | auto | 1 | running | $F
 [[ "$(echo "$r" | cut -d'|' -f2)" -eq 0 ]] && ok "no spurious heartbeat for pid-reuse row" || fail "spurious requeue for pid-reuse row"
 
 echo ""
+echo "15. Row WITH dispatch line + matching primary=claude generic \"failed (exit classification: ...)\" line for the dispatching pid → requeued (widened death-line regex, 20260731-inbox-768D)"
+make_exit_classification_death_fixture() {
+  local tmp="$1"
+  printf '# Task\nid: 20260716-tst\n' > "$tmp/.orchestrate/tasks/20260716-tst.md"
+  {
+    echo "[$FRESH_TS] tend-auto — dispatching \"job with generic claude failure\" (20260716-tst) [batch 1] [session=orchestrate_shell_probe_1700000300_55556_2222]"
+    echo "[$FRESH_TS] run-job — claude failed (exit classification: transient); see /tmp/x-agent.log [pid=55556]"
+  } >> "$tmp/.orchestrate/logs/heartbeat.log"
+}
+r="$(run_requeue "| 20260716-tst | job with generic claude failure | auto | 1 | running | $FRESH_TS |" make_exit_classification_death_fixture)"
+[[ "${r%%|*}" == "pending" ]] && ok "dead-session row (claude failed exit classification) flipped to pending" || fail "status='${r%%|*}' (expected pending — widened regex must match 'failed (exit classification')"
+[[ "$(echo "$r" | cut -d'|' -f2)" -ge 1 ]] && ok "orphaned-row heartbeat written for exit-classification death" || fail "no orphaned-row heartbeat for exit-classification death"
+[[ "$(echo "$r" | cut -d'|' -f3)" -eq 8 ]] && ok "row stays NF==8" || fail "row NF != 8"
+
+echo ""
 echo "── requeue-orphaned-running: $PASS passed, $FAIL failed ───"
 [[ "$FAIL" -eq 0 ]]

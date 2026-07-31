@@ -182,7 +182,7 @@ dispatching_session_died() {
   [[ -z "$dispatch_lineno" ]] && return 1
 
   local death_match death_lineno death_text
-  death_match="$(grep -nE "run-job — .*\[pid=${dpid}\]" "$HEARTBEAT" 2>/dev/null | grep -E "killed|claude timed out|cursor failed" | tail -1)" || true
+  death_match="$(grep -nE "run-job — .*\[pid=${dpid}\]" "$HEARTBEAT" 2>/dev/null | grep -E "killed|timed out|cursor failed|failed \(exit classification" | tail -1)" || true
   [[ -z "$death_match" ]] && return 1
   death_lineno="${death_match%%:*}"
   death_text="${death_match#*:}"
