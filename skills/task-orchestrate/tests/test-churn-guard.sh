@@ -820,6 +820,74 @@ fi
 [[ "$(malformed_rows)" == "0" ]] && ok "Case H (empty) preserved NF==8 invariant" \
   || fail "Case H (empty) broke invariant: $(malformed_rows) bad row(s)"
 
+echo "── Case I: cg__taskfile_has_real_work 'none' punctuation normalization ─────"
+# Regression (2026-07-31, 20260731-inbox-769D, found by CE69's review of AFCE):
+# the "none" detection only special-cased a trailing space or open-paren after
+# "none", so "files_changed: none." or "files_changed: none," fell through to
+# "anything else non-empty → real work" — a false positive that (harmlessly,
+# fail-safe) left the row un-auto-closed. Both punctuation variants must still
+# be recognized as "no real work" so the genuinely-empty auto-close path fires.
+
+echo ""
+echo "32. cg_close_investigation auto-closes when files_changed is 'none.' (trailing period)"
+TGT3=20260731-inbox-none-dot
+INVID3=20260731-inbox-work3
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $TGT3 | Some other task | auto | 1 | complete | 2026-01-01T00:00:00Z |
+| $INVID3 | Investigate churn — $TGT3 re-processed 3× | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+cat > "$W/.orchestrate/tasks/$INVID3.md" <<EOF
+id: $INVID3
+task: Investigate churn — $TGT3 re-processed 3×
+mode: auto
+total_phases: 1
+files_changed: none.
+
+### Phase 1: Investigate and resolve [inline · execution]
+status: pending
+EOF
+: > "$W/.orchestrate/logs/heartbeat.log"
+bash "$CGW" cg_close_investigation "$W" "$TGT3" >/dev/null 2>&1 || true
+[[ "$(status_of "$INVID3")" == "complete" ]] \
+  && ok "'files_changed: none.' (trailing period) still auto-closed to complete" \
+  || fail "'files_changed: none.' status=$(status_of "$INVID3") (expected complete)"
+[[ "$(malformed_rows)" == "0" ]] && ok "Case I (none.) preserved NF==8 invariant" \
+  || fail "Case I (none.) broke invariant: $(malformed_rows) bad row(s)"
+
+echo ""
+echo "33. cg_close_investigation auto-closes when files_changed is 'none,' (trailing comma)"
+TGT4=20260731-inbox-none-comma
+INVID4=20260731-inbox-work4
+cat > "$W/.orchestrate/project.md" <<EOF
+# Orchestrate — churn-test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| $TGT4 | Some other task | auto | 1 | complete | 2026-01-01T00:00:00Z |
+| $INVID4 | Investigate churn — $TGT4 re-processed 3× | auto | 1 | needs_human | 2026-01-01T00:00:00Z |
+EOF
+cat > "$W/.orchestrate/tasks/$INVID4.md" <<EOF
+id: $INVID4
+task: Investigate churn — $TGT4 re-processed 3×
+mode: auto
+total_phases: 1
+files_changed: none,
+
+### Phase 1: Investigate and resolve [inline · execution]
+status: pending
+EOF
+: > "$W/.orchestrate/logs/heartbeat.log"
+bash "$CGW" cg_close_investigation "$W" "$TGT4" >/dev/null 2>&1 || true
+[[ "$(status_of "$INVID4")" == "complete" ]] \
+  && ok "'files_changed: none,' (trailing comma) still auto-closed to complete" \
+  || fail "'files_changed: none,' status=$(status_of "$INVID4") (expected complete)"
+[[ "$(malformed_rows)" == "0" ]] && ok "Case I (none,) preserved NF==8 invariant" \
+  || fail "Case I (none,) broke invariant: $(malformed_rows) bad row(s)"
+
 echo ""
 echo "── Results ───────────────────────────────────────"
 echo "  Passed: $PASS"

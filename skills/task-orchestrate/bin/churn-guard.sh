@@ -369,7 +369,7 @@ cg__taskfile_has_real_work() {
     | tr '[:upper:]' '[:lower:]')"
   if [[ -n "$fc_norm" ]]; then
     case "$fc_norm" in
-      none|none\ *|none\(*) : ;;   # "none" / "none ..." / "none(..." → no signal from (1)
+      none|none[^a-z0-9]*) : ;;   # "none" / "none " / "none(..." / "none." / "none," → no signal from (1)
       *) return 0 ;;               # anything else non-empty → real work
     esac
   fi
