@@ -24,6 +24,19 @@ CURSOR_AUTO_OPEN="${CURSOR_AUTO_OPEN:-false}"
 CURSOR_BIN="${CURSOR_AGENT_BIN:-$HOME/.local/bin/cursor-agent}"
 CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
 
+# launchd invokes this script with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin)
+# because it never sources ~/.zshrc — that file's PATH exports (incl.
+# $HOME/.local/bin, where node/npm/npx/tsc are symlinked in from the hermes
+# node install) only run for INTERACTIVE zsh shells, so even `zsh -lc` skips
+# them. Without this, every dispatched agent session's Bash tool inherits the
+# launchd-minimal PATH and node/npm/npx/tsc are unreachable, silently
+# degrading Test & Verify phases to `confidence: low` (see task 20260719-inbox-B6B3,
+# root-caused from 20260718-210655 phase2 log). Export the same dirs an
+# interactive login shell would have so unattended tend/inbox sessions can run
+# `npm test`/`tsc`/`jest`. Prepended (not replacing) so an operator's own PATH,
+# or an override sourced from agent.conf below, still wins.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+
 cursor_ide_running() {
   if [[ -n "${CURSOR_IDE_RUNNING:-}" ]]; then
     [[ "$CURSOR_IDE_RUNNING" == "1" || "$CURSOR_IDE_RUNNING" == "true" ]]
@@ -58,7 +71,14 @@ if [[ -f "$ROOT/.orchestrate/bin/churn-guard.sh" ]]; then
 fi
 
 log_heartbeat() {
-  local line="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1"
+  # Trailing [pid=$$] attributes every line to this wrapper's own process
+  # (20260725-inbox-6B7E): a low-noise suffix so a future duplicate-execution
+  # incident can confirm/rule out "two separate run-job.sh wrapper processes
+  # were both alive" from heartbeat.log alone. $$ is this script's own PID —
+  # stable for the whole wrapper lifetime (matches the .tend.lock owner pid).
+  # Purely additive: existing substring greps (`grep -q '<text>'`, no `$`
+  # anchor) against heartbeat lines are unaffected by trailing content.
+  local line="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1 [pid=$$]"
   mkdir -p "$(dirname "$HEARTBEAT_LOG")"
   echo "$line" >>"$HEARTBEAT_LOG"
   echo "$line" >&2
@@ -67,6 +87,61 @@ log_heartbeat() {
 # Launchd wrapper holds .tend.lock; tell the agent to skip SKILL.md T-0 so it does
 # not self-abort on the wrapper's own lock (root cause of the 2026-06 tend stall).
 LOCK_DIRECTIVE="Launchd-managed run: TEND_LOCK_MANAGED=1 is set and .orchestrate/.tend.lock is already held by your run-job.sh wrapper (released on exit). Per SKILL.md T-0, SKIP the lock block entirely — do NOT check lock age and do NOT exit with 'tend already running'. Proceed directly to T-1."
+
+# Shell-capability probe (20260724-inbox-7A301; false-negative fix 20260731): run-job.sh
+# cannot introspect the dispatched agent session's own tool-permission grants
+# pre-dispatch — that decision happens inside the session, not in this script. The
+# original failure mode: a session whose Shell/Bash tool is rejected mid-session still
+# exits 0 with benign text, which a plain "non-empty log = ok" check misclassifies as
+# `ok` — burning a full tend cycle on a session that could do nothing.
+#
+# The FIRST-generation probe asked the session to echo a per-cycle token and restate a
+# `SHELL_PROBE_CONFIRMED: <token>` marker in its response, then grepped the log for it.
+# But `claude -p` captures ONLY the session's final assistant message, and a session
+# that dives into real tend work almost always drops the sentinel from its final
+# summary — so fully-capable sessions that completed the entire cycle (ran bash, ran
+# tests, archived tasks) were routinely misclassified `shell_incapable`, spamming
+# "no shell capability; fallback to cursor" and triggering a wasteful, always-deferring
+# secondary dispatch (see the 2026-07-31 investigation).
+#
+# The fix makes capability an OBSERVABLE SIDE-EFFECT rather than final-message text.
+# shell_probe_directive() now instructs the session to WRITE a marker FILE
+# ($SHELL_PROBE_DIR/$SHELL_PROBE_TOKEN) via its Shell/Bash tool as its first action;
+# shell_probe_failed() checks for that file directly — robust regardless of what the
+# session's summary says. Three independent capability signals, any one clears the flag:
+#   (1) the marker file exists (primary, robust);
+#   (2) the `SHELL_PROBE_CONFIRMED: <token>` marker is in the response (back-compat);
+#   (3) the log shows positive evidence the session RAN the tend cycle (completed /
+#       archived / executed) AND contains no shell-failure admission — a session that
+#       demonstrably did the work had shell even if it echoed neither signal.
+# SHELL_PROBE_TOKEN/_DIR are regenerated every tend invocation (see the `tend)` case
+# branch below) so a stale token can never satisfy this cycle's check, and are left
+# unset for inbox-log-analyzer (which does not call tend_prompt()/tend_prompt_claude()),
+# so shell_probe_failed() is a no-op there.
+shell_probe_directive() {
+  local dir="${SHELL_PROBE_DIR:-$ROOT/.orchestrate/logs/.shell-probe}"
+  printf 'Shell-capability preflight (run-job.sh): before doing anything else this session, run this exact command via your own Shell/Bash tool: mkdir -p %s && echo ok > %s/%s\nThat command is the capability signal — it writes a marker file this wrapper checks directly, so it counts even if you never mention it again. If the command actually runs, ALSO include this exact line somewhere in your response for redundancy: SHELL_PROBE_CONFIRMED: %s — then proceed with the task normally. If your Shell/Bash tool call is rejected, blocked, unavailable, or errors for any reason, do NOT create the file or include that line — just note the failure and stop.' "$dir" "$dir" "$SHELL_PROBE_TOKEN" "$SHELL_PROBE_TOKEN"
+}
+
+shell_probe_failed() {
+  local log_file="$1"
+  [[ -n "${SHELL_PROBE_TOKEN:-}" ]] || return 1   # probe not active for this dispatch
+  [[ -s "$log_file" ]] || return 1                # empty log -> handled by the existing silent-session-limit path
+  # (1) Primary, robust signal: the session created the probe side-effect file. Observable
+  #     to this wrapper regardless of whether the final -p message mentions the probe.
+  local probe_file="${SHELL_PROBE_DIR:-$ROOT/.orchestrate/logs/.shell-probe}/${SHELL_PROBE_TOKEN}"
+  [[ -f "$probe_file" ]] && return 1
+  # (2) Back-compat signal: explicit confirmation marker restated in the response text.
+  grep -qF "SHELL_PROBE_CONFIRMED: ${SHELL_PROBE_TOKEN}" "$log_file" 2>/dev/null && return 1
+  # (3) Defense-in-depth: a session that demonstrably RAN the tend cycle (positive
+  #     completion evidence) AND made no shell-failure admission had shell — do not flag
+  #     it just for dropping the sentinel from its final summary.
+  if grep -qiE 'tend cycle complete|tend cycle is done|tend cycle claimed|registry queue is now clear|executed [0-9]+ (pending|task)|nothing actionable|archived to orchestrate-history|self-unblocked|auto-resolved needs_human' "$log_file" 2>/dev/null \
+     && ! grep -qiE 'shell/bash tool( was)?( call[s]?)?.*(rejected|unavailable|blocked)|could not execute|nothing (was )?executed|shell probe failed|not proceeding' "$log_file" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
 
 tend_prompt() {
   local base
@@ -78,7 +153,7 @@ tend_prompt() {
       exit 1
       ;;
   esac
-  printf '%s\n\n%s' "$base" "$LOCK_DIRECTIVE"
+  printf '%s\n\n%s\n\n%s' "$base" "$LOCK_DIRECTIVE" "$(shell_probe_directive)"
 }
 
 tend_prompt_claude() {
@@ -91,7 +166,7 @@ tend_prompt_claude() {
       exit 1
       ;;
   esac
-  printf '%s\n\n%s' "$base" "$LOCK_DIRECTIVE"
+  printf '%s\n\n%s\n\n%s' "$base" "$LOCK_DIRECTIVE" "$(shell_probe_directive)"
 }
 
 # cursor-agent requires permissions.deny (array, may be empty) in project cli.json
@@ -113,11 +188,25 @@ ensure_cursor_cli() {
   return 1
 }
 
-# Classify agent output: ok | session_limit | connection_lost | error
+# Wall-clock cap on a single CLI invocation. A hung claude/cursor session
+# (network stall, stuck tool call, MCP connection issue) previously blocked
+# run-job.sh — and therefore the tend lock, held by this process's live PID —
+# indefinitely; see the 2026-07 ECAF stall investigation (20260711-inbox-0C7B).
+AGENT_TIMEOUT_SECS="${AGENT_TIMEOUT_SECS:-1200}"
+
+# Classify agent output: ok | session_limit | connection_lost | timeout | error
 classify_agent_result() {
   local code="$1"
   local log_file="$2"
+  if [[ "$code" -eq 124 ]]; then
+    echo timeout
+    return
+  fi
   if [[ "$code" -eq 0 ]]; then
+    if shell_probe_failed "$log_file"; then
+      echo shell_incapable
+      return
+    fi
     # Exit 0 with no output = silent session-limit pattern in newer agent versions
     [[ -s "$log_file" ]] && { echo ok; return; }
     echo session_limit
@@ -147,15 +236,60 @@ session_limit_reset_hint() {
 
 # Invoke one agent binary; routes ALL output to a per-session log so prose never
 # pollutes heartbeat.log (which receives only structured [ISO] lines via log_heartbeat).
+# Bounded by AGENT_TIMEOUT_SECS via a watcher subshell — macOS ships no
+# timeout(1)/gtimeout by default, so a hung CLI process is reaped manually
+# rather than blocking this script (and the tend lock) forever. Uses `wait "$pid"`
+# (blocks until real exit, immune to zombie-PID false positives) rather than a
+# `kill -0` poll loop — `kill -0` returns true for an already-exited-but-unreaped
+# zombie PID, which made an earlier version of this wrapper time out EVERY
+# invocation regardless of how fast the child actually finished (caught by the
+# Phase 3 dry-run in 20260711-inbox-0C7B, scenario 1).
 invoke_agent() {
   local bin="$1"
   shift
   local agent_log
   agent_log="$ROOT/.orchestrate/logs/$(date -u +%Y%m%d-%H%M%S)-agent.log"
   mkdir -p "$(dirname "$agent_log")"
+  local timeout_marker
+  timeout_marker="$(mktemp -u "${TMPDIR:-/tmp}/run-job-timeout.XXXXXX")"
+  rm -f "$timeout_marker"
+
   set +e
-  "$bin" "$@" > "$agent_log" 2>&1
+  "$bin" "$@" > "$agent_log" 2>&1 &
+  local pid=$!
+
+  # Redirect the watcher's fds away from whatever invoke_agent's caller has
+  # open (e.g. a `$(...)` command-substitution pipe). Without this, killing
+  # the watcher subshell on the happy path does NOT kill its still-sleeping
+  # `sleep "$AGENT_TIMEOUT_SECS"` grandchild — SIGTERM only reaches the
+  # subshell process, not the child it forked to run sleep — so the orphaned
+  # sleep keeps the inherited stdout pipe open for its full duration and a
+  # caller capturing invoke_agent's output via `$(...)` blocks until it
+  # exits, even though `wait "$pid"` already returned immediately (caught by
+  # the Phase 3 dry-run in 20260711-inbox-0C7B, scenario 2 — fast-exiting
+  # agent took the full timeout window instead of returning immediately).
+  ( sleep "$AGENT_TIMEOUT_SECS"
+    if kill -0 "$pid" 2>/dev/null; then
+      touch "$timeout_marker"
+      kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null
+    fi
+  ) < /dev/null > /dev/null 2>&1 &
+  local watcher=$!
+
+  wait "$pid" 2>/dev/null
   local code="$?"
+
+  # Job finished on its own — stop the watcher before it can fire late.
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+
+  if [[ -f "$timeout_marker" ]]; then
+    code=124
+    log_heartbeat "run-job — $bin timed out after ${AGENT_TIMEOUT_SECS}s (agent_log=$agent_log); killed"
+  fi
+  rm -f "$timeout_marker"
   set -e
   AGENT_RESULT="$(classify_agent_result "$code" "$agent_log")"
   AGENT_RESET_HINT="$(session_limit_reset_hint "$agent_log")"
@@ -198,13 +332,24 @@ run_with_fallback() {
 
   case "$AGENT_RESULT" in
     ok) return 0 ;;
+    shell_incapable)
+      if [[ "$CURSOR_FALLBACK" == "never" ]]; then
+        log_heartbeat "run-job — $primary session has no shell capability; deferred (CURSOR_FALLBACK=never)"
+        return 0
+      fi
+      log_heartbeat "run-job — $primary session has no shell capability; fallback to $secondary"
+      ;;
     session_limit)
       log_heartbeat "run-job — $primary hit session limit (resets ${AGENT_RESET_HINT}); trying $secondary"
       ;;
     connection_lost)
       log_heartbeat "run-job — $primary connection lost; trying $secondary"
       ;;
+    timeout)
+      log_heartbeat "run-job — $primary timed out; trying $secondary"
+      ;;
     *)
+      log_heartbeat "run-job — $primary failed (exit classification: $AGENT_RESULT); see $ROOT/.orchestrate/logs/*-agent.log"
       return 1
       ;;
   esac
@@ -222,6 +367,10 @@ run_with_fallback() {
 
   case "$AGENT_RESULT" in
     ok) return 0 ;;
+    shell_incapable)
+      log_heartbeat "run-job — $secondary session has no shell capability; deferred"
+      return 0
+      ;;
     session_limit)
       log_heartbeat "run-job — both runners session-limited (resets ${AGENT_RESET_HINT}); inbox queued until reset"
       return 0
@@ -230,7 +379,12 @@ run_with_fallback() {
       log_heartbeat "run-job — both runners connection-lost; will retry next cycle"
       return 0
       ;;
+    timeout)
+      log_heartbeat "run-job — $secondary also timed out; will retry next cycle"
+      return 0
+      ;;
     *)
+      log_heartbeat "run-job — $secondary failed (exit classification: $AGENT_RESULT); see $ROOT/.orchestrate/logs/*-agent.log"
       return 1
       ;;
   esac
@@ -249,14 +403,87 @@ dispatch() {
   esac
 }
 
+# CROSS-2 (20260727-inbox-7D4A): a materialized task file's `depends_on:` may
+# resolve to ANOTHER TASK's real registry ID — drain-inbox.sh's
+# resolve_depends_on() (CROSS-1) writes this when a ticket's `blocked_by_ticket:`
+# header or `**Blocked by:**` prose names a real sibling — rather than a
+# same-file phase number. mark_pending_tasks_as_running() is the actual
+# pre-dispatch gate (RS01): it runs in bash, before any agent session (and
+# before SKILL.md's own T-4 batch-collection logic) ever sees the registry, so
+# it is the one place that can reliably stop a dependent task from being
+# flipped pending→running (and thus dispatched) while its prerequisite is
+# still outstanding. This is the exact gap behind the 20260727-inbox-1F27
+# incident: VERIFY was dispatched in the same cycle as its gated, unapproved
+# IMPL prerequisite because nothing here (or in T-4) ever read depends_on as a
+# cross-task reference.
+#
+# A depends_on: value is treated as a cross-task ref only if it matches the
+# registry ID SHAPE gen_task_id() produces (YYYYMMDD-inbox-XXXX, 4 hex chars).
+# A bare integer ("1", "2") or "none" is a same-file phase number (or no
+# dependency) and is left alone — this function only ever adds a NEW skip
+# condition, it never touches same-file phase-level scheduling.
+#
+# Returns 0 (blocked) and prints "<dep_id>\t<dep_status>" to stdout when the
+# referenced task is not yet `complete`; returns 1 (not blocked — safe to
+# dispatch) otherwise, including when there is no task file yet, no
+# depends_on: line, or the dependency has already completed.
+cross_task_depends_on_blocked() {
+  local id="$1" proj="$2" tasks_dir="$3"
+  local tf="$tasks_dir/${id}.md"
+  [[ -f "$tf" ]] || return 1
+  local dep
+  dep="$(grep -m1 -E '^depends_on:[[:space:]]*\S' "$tf" 2>/dev/null \
+    | sed -E 's/^depends_on:[[:space:]]*//')"
+  [[ -z "$dep" || "$dep" == "none" ]] && return 1
+  [[ "$dep" =~ ^[0-9]{8}-inbox-[0-9A-Fa-f]{4}$ ]] || return 1
+  local dep_status
+  dep_status="$(awk -F'|' -v dep="$dep" '
+    $0 ~ ("\\| " dep " \\|") {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $6); print $6; exit
+    }
+  ' "$proj" 2>/dev/null)"
+  [[ "$dep_status" == "complete" ]] && return 1
+  printf '%s\t%s\n' "$dep" "${dep_status:-unknown}"
+  return 0
+}
+
 # RS01: Mark all `pending` registry rows as `running` before agent dispatch so the
 # dashboard reflects the correct state immediately (the agent marks them running
 # too, but this is faster and prevents the stale-pending flash).
 mark_pending_tasks_as_running() {
   local proj="$ROOT/.orchestrate/project.md"
   [[ -f "$proj" ]] || return 0
+  local tasks_dir="$ROOT/.orchestrate/tasks"
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # CROSS-2: collect pending IDs whose depends_on: resolves to an incomplete
+  # cross-task ref — these must be excluded from this pass (left `pending`,
+  # not flipped to `running`/dispatched). Comma-bracketed membership string
+  # (",ID1,ID2,") avoids partial-ID substring collisions in the awk pass below.
+  local blocked_ids=","
+  local pending_ids
+  pending_ids="$(awk -F'|' '
+    /^\|[[:space:]]*[0-9]/ && NF==8 {
+      st=$6; gsub(/^[[:space:]]+|[[:space:]]+$/,"",st)
+      if (st=="pending") { id=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",id); print id }
+    }
+  ' "$proj" 2>/dev/null)"
+  local pid block_info dep dep_status
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    block_info="$(cross_task_depends_on_blocked "$pid" "$proj" "$tasks_dir" || true)"
+    [[ -z "$block_info" ]] && continue
+    blocked_ids="${blocked_ids}${pid},"
+    dep="${block_info%%$'\t'*}"
+    dep_status="${block_info#*$'\t'}"
+    if [[ "$dep_status" == "awaiting_go" ]]; then
+      log_heartbeat "tend-auto — skip dispatch ${pid}: depends_on ${dep} is gated/awaiting_go (needs human go on ${dep} before ${pid} can run)"
+    else
+      log_heartbeat "tend-auto — skip dispatch ${pid}: depends_on ${dep} not complete (status: ${dep_status})"
+    fi
+  done <<< "$pending_ids"
+
   local tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
   # Registry row schema: | ID | summary | mode | phase | status | last_activity |
@@ -264,11 +491,13 @@ mark_pending_tasks_as_running() {
   # Only well-formed rows (NF==8) are touched: flip status $6 pending→running and
   # stamp last_activity in $7. (Historic bug: wrote $8, appending a phantom field
   # PAST the trailing pipe — the malformed '| running | ts | ts' corruption that
-  # then defeated reset_stale_running_tasks. See repair_registry_rows.)
-  awk -F'|' -v OFS='|' -v now="$now" '
+  # then defeated reset_stale_running_tasks. See repair_registry_rows.) A row
+  # whose ID is in blocked_ids (CROSS-2) is left pending regardless.
+  awk -F'|' -v OFS='|' -v now="$now" -v blocked="$blocked_ids" '
     /^\|[[:space:]]*[0-9]/ && NF==8 {
+      id=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",id)
       st=$6; gsub(/^[[:space:]]+|[[:space:]]+$/,"",st)
-      if (st=="pending") { $6=" running "; $7=" " now " " }
+      if (st=="pending" && index(blocked, "," id ",") == 0) { $6=" running "; $7=" " now " " }
     }
     { print }
   ' "$proj" > "$tmp" && mv "$tmp" "$proj"
@@ -286,6 +515,8 @@ repair_registry_rows() {
   [[ -f "$proj" ]] || return 0
   local tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
+  # STRUCTURAL self-heal: collapse phantom columns / restore the trailing pipe so
+  # every data row is NF==8 with an empty $8.
   awk -F'|' '
     /^\|[[:space:]]*[0-9]/ && NF>=8 {
       trailing=$8; gsub(/[[:space:]]/,"",trailing)
@@ -297,12 +528,41 @@ repair_registry_rows() {
     }
     { print }
   ' "$proj" > "$tmp" && mv "$tmp" "$proj"
+
+  # DOMAIN guard (field-shift detection): NF==8 is necessary but NOT sufficient.
+  # A field-shift corruption (e.g. an off-by-one awk update that overwrites the
+  # mode column with a phase number) is structurally clean — NF==8, empty $8 — so
+  # the rewrite above can't repair it (the value is genuinely wrong). Detect rows
+  # whose mode ($4) ∉ {auto,gated} or status ($6) ∉ the known status set and warn
+  # a human via the heartbeat (matches rescue.sh BAD_ROWS / monitor
+  # checkRegistryInvariant). Detection only — never rewrites a domain-bad value.
+  local bad_domain
+  bad_domain="$(awk -F'|' '
+    /^\|[[:space:]]*[0-9]/ && NF==8 {
+      t=$8; gsub(/[[:space:]]/,"",t); if (t!="") next   # structural breach: counted/handled above
+      m=$4; gsub(/^[[:space:]]+|[[:space:]]+$/,"",m)
+      s=$6; gsub(/^[[:space:]]+|[[:space:]]+$/,"",s)
+      mode_ok = (m=="auto" || m=="gated")
+      status_ok = (s=="pending" || s=="running" || s=="awaiting_go" || s=="awaiting_critic" || s=="complete" || s=="failed" || s=="needs_human")
+      if (!mode_ok || !status_ok) c++
+    }
+    END{print c+0}' "$proj" 2>/dev/null | head -1 | tr -dc '0-9')"
+  if [[ "${bad_domain:-0}" -gt 0 ]]; then
+    log_heartbeat "run-job — WARNING ${bad_domain} registry row(s) have mode/status out of domain (field-shift corruption; NF==8 but bad enum value — manual fix needed)"
+  fi
 }
 
 # D328 Bug 1: Detect ghost `running` tasks — tasks stuck in running with
 # last_activity older than STALE_RUNNING_SECS and no ✓ complete phase in their
 # task file — and reset them to needs_human with an auto-reset hint.
 STALE_RUNNING_SECS=600  # 10 minutes
+# A510: no-task-file grace. A `running` row that has NOT yet written its task
+# file gets a LONGER grace than STALE_RUNNING_SECS before it can be ghost-reset,
+# because a slow-to-start job (dispatched, agent alive, but still spinning up
+# before it creates .orchestrate/tasks/<ID>.md) has no fresh-mtime signal for the
+# 19D7 guard to protect it — so it would fall straight through to reset + churn
+# bump and, at 3×, park with a false investigate-churn ticket. See guard below.
+NO_FILE_GRACE_SECS=1800  # 30 minutes
 reset_stale_running_tasks() {
   local proj="$ROOT/.orchestrate/project.md"
   [[ -f "$proj" ]] || return 0
@@ -324,10 +584,64 @@ reset_stale_running_tasks() {
     local age=$(( now_epoch - la_epoch ))
     [[ $age -lt $STALE_RUNNING_SECS ]] && continue
 
-    # Check task file for any ✓ complete phase
     local task_file="$ROOT/.orchestrate/tasks/${task_id}.md"
-    if [[ -f "$task_file" ]] && grep -q '✓ complete' "$task_file" 2>/dev/null; then
-      continue  # Has progress — not a ghost
+
+    # 527A: count phase progress instead of a bare ✓-complete grep. The old check
+    # ("any ✓ complete phase anywhere in the file ⇒ permanently not a ghost") meant
+    # a task whose dispatching session died right after completing phase N-1 of N
+    # could never be ghost-reset — the grep matched forever regardless of how stale
+    # the file got. Now a FULLY complete file (complete_count >= total_phases) is
+    # still an unconditional skip (finalize-completed-tasks.sh's job to flip it to
+    # complete — this is only a defensive guard in case that hasn't run yet). A
+    # PARTIALLY complete file (some but not all phases done) is no longer
+    # auto-protected — it falls through to the same 19D7 mtime-freshness guard below
+    # that already governs zero-progress files, so a partial file whose last write
+    # is within STALE_RUNNING_SECS is still treated as alive, but one stalled far
+    # past that threshold is ghost-reset like any other dead row.
+    local complete_count=0 total_phases=0
+    if [[ -f "$task_file" ]]; then
+      # NOTE: `grep -c PATTERN FILE` prints "0" to stdout AND exits 1 when the file
+      # exists but has zero matches — a naive `|| echo 0` fallback then appends a
+      # SECOND "0", corrupting the variable into a two-line "0\n0" that breaks the
+      # numeric `-ge` test below. Suppress the fallback's own output and default
+      # via parameter expansion instead.
+      complete_count="$(grep -c '✓ complete' "$task_file" 2>/dev/null || true)"
+      complete_count="${complete_count:-0}"
+      total_phases="$(grep -oE '^total_phases:[[:space:]]*[0-9]+' "$task_file" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)"
+      total_phases="${total_phases:-0}"
+      if [[ "$total_phases" -gt 0 && "$complete_count" -ge "$total_phases" ]]; then
+        continue  # fully complete — finalize-completed-tasks.sh's job, not this one
+      fi
+    fi
+
+    # A510 no-file grace guard: a `running` row with NO task file yet is a job that
+    # was dispatched but has not created .orchestrate/tasks/<ID>.md — either a
+    # genuinely-dead ghost OR a slow-but-alive session still spinning up (the agent
+    # can hold `running` for many minutes before its first task-file write). Unlike
+    # the 19D7 case there is no fresh mtime to prove liveness, so ONLY the elapsed
+    # age can distinguish them. Require the longer NO_FILE_GRACE_SECS before resetting:
+    # under grace → treat as slow-but-alive, skip the reset AND the cg_increment churn
+    # bump (this is the root trigger of the AEE0/3666 churn cascade); past grace →
+    # fall through and reset as a genuinely-dead ghost (no regression). Rows WITH a
+    # task file are unaffected and keep the STALE_RUNNING_SECS + 19D7 mtime semantics.
+    if [[ ! -f "$task_file" && $age -lt $NO_FILE_GRACE_SECS ]]; then
+      continue  # no task file yet, still within grace — slow-but-alive, not a ghost
+    fi
+
+    # 19D7 liveness guard: a task file modified within the stale threshold means an
+    # agent is actively writing phase blocks (raw_output/human_resolution/etc.) — a
+    # live session, not a dead one. last_activity only updates at phase checkpoints,
+    # so a long single-phase agent can look stale by last_activity while its task
+    # file is fresh; resetting it here bumps the churn counter and (mid-flight)
+    # parks a task that is about to complete, cascading false-positive
+    # investigate-churn tickets. Skip the reset when the file is fresh = alive.
+    if [[ -f "$task_file" ]]; then
+      local tf_mtime tf_age
+      tf_mtime="$(date -r "$task_file" +%s 2>/dev/null || echo 0)"
+      tf_age=$(( now_epoch - tf_mtime ))
+      if [[ "$tf_mtime" -gt 0 && "$tf_age" -lt "$STALE_RUNNING_SECS" ]]; then
+        continue  # fresh task file — agent is alive
+      fi
     fi
 
     # Reset to needs_human and inject resolution hint into task file.
@@ -345,7 +659,12 @@ reset_stale_running_tasks() {
     # the same pass (collapse to the 6 real columns + restored trailing pipe), and log
     # the ghost-reset heartbeat ONLY when the flip actually happened (awk signals via
     # exit code; a detected-but-unflipped row logs a distinct SKIPPED line instead).
-    local hint="Auto-reset: task stuck in running for ${age}s with no phase progress (tend session likely died)"
+    local hint
+    if [[ "$complete_count" -gt 0 ]]; then
+      hint="Auto-reset: task stuck in running for ${age}s, stalled after phase ${complete_count}/${total_phases:-?} (tend session likely died)"
+    else
+      hint="Auto-reset: task stuck in running for ${age}s with no phase progress (tend session likely died)"
+    fi
     local now_iso
     now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     local rs_tmp rs_rc=0
@@ -366,9 +685,33 @@ reset_stale_running_tasks() {
     if [[ $rs_rc -eq 0 ]]; then
       mv "$rs_tmp" "$proj"
       if [[ -f "$task_file" ]]; then
-        # Prepend human_resolution hint to the first incomplete phase block
-        sed -i '' "/^### Phase/a\\
-human_resolution: ${hint}" "$task_file" 2>/dev/null || true
+        # DBBC fix: prepend the human_resolution hint under the first INCOMPLETE
+        # phase block only. The prior `sed -i '' "/^### Phase/a\\ ..."` matched
+        # EVERY "### Phase" header globally (sed's address restricts which lines
+        # run the command, but here the address itself — the header pattern —
+        # matches every phase, so `a` appended after all of them), so a
+        # multi-phase task file ended up with one duplicate hint line under
+        # every phase block instead of exactly one under the actually-stalled
+        # phase. Fix: locate the line number of the first phase header whose
+        # immediately-following `status:` line is not "✓ complete" (mirrors the
+        # complete_count logic above), then insert the hint after only that
+        # specific line via an atomic temp+mv rewrite (not an in-place sed).
+        local hint_target_line
+        hint_target_line="$(awk '
+          /^### Phase/ { hdr=NR; waiting=1; next }
+          waiting && /^status:/ {
+            waiting=0
+            if ($0 !~ /✓ complete/) { print hdr; exit }
+          }
+        ' "$task_file")"
+        if [[ -n "$hint_target_line" ]]; then
+          local tf_tmp
+          tf_tmp="$(mktemp "${TMPDIR:-/tmp}/task-md.XXXXXX")"
+          awk -v n="$hint_target_line" -v hint="$hint" '
+            { print }
+            NR==n { print "human_resolution: " hint }
+          ' "$task_file" > "$tf_tmp" && mv "$tf_tmp" "$task_file"
+        fi
       fi
       # Churn guard: this ghost-reset is a re-processing of ${task_id}. Bump the
       # shared counter; if it has now churned ${CG_THRESHOLD:-3}× without
@@ -376,13 +719,26 @@ human_resolution: ${hint}" "$task_file" 2>/dev/null || true
       # investigation job instead of letting it loop forever. cg_park_if_churned
       # returns 0 only when it actually parked.
       if type cg_increment >/dev/null 2>&1; then
-        cg_increment "$task_id" >/dev/null 2>&1 || true
+        # ED94: skip the churn bump when THIS reset was a transient infra death
+        # (agent log shows only a connection error, zero progress) — such a run
+        # hit no poison and made no progress, so it must not count toward the
+        # poison-park threshold. Falls back to a bare bump if the wrapper is
+        # absent (mirror lag).
+        if type cg_increment_unless_transient >/dev/null 2>&1; then
+          cg_increment_unless_transient "$task_id" "$la_epoch" >/dev/null 2>&1 || true
+        else
+          cg_increment "$task_id" >/dev/null 2>&1 || true
+        fi
         if cg_park_if_churned "$task_id" 2>/dev/null; then
           log_heartbeat "run-job — churn-guard parked ${task_id} after ${CG_THRESHOLD:-3} re-processings (ghost-reset path)"
           continue
         fi
       fi
-      log_heartbeat "run-job — ghost-reset ${task_id}: running→needs_human (${age}s stale, no ✓ phase)"
+      if [[ "$complete_count" -gt 0 ]]; then
+        log_heartbeat "run-job — ghost-reset ${task_id}: running→needs_human (stale after phase ${complete_count}/${total_phases:-?})"
+      else
+        log_heartbeat "run-job — ghost-reset ${task_id}: running→needs_human (${age}s stale, no ✓ phase)"
+      fi
     else
       rm -f "$rs_tmp"
       log_heartbeat "run-job — ghost-reset SKIPPED ${task_id}: stale running row did not flip (malformed/raced); awaiting repair_registry_rows"
@@ -411,6 +767,31 @@ cleanup_stale_inbox() {
   local script="$ROOT/.orchestrate/bin/cleanup-stale-inbox.sh"
   if [[ -x "$script" ]]; then
     bash "$script" "$ROOT" || log_heartbeat "run-job — cleanup-stale-inbox.sh failed (continuing tend)"
+  fi
+}
+
+# 3C1D: deterministic bash mirror of the SKILL T-4 "orphaned running row" check
+# (see requeue-orphaned-running.sh header for the full root-cause writeup). Runs
+# BEFORE reset_stale_running_tasks so a `running` row with no task file and no
+# dispatch heartbeat line is requeued to `pending` at the 300s threshold instead
+# of falling through to the 1800s no-file-grace path (which only reaches
+# `needs_human`, requiring yet another agent cycle to re-queue).
+requeue_orphaned_running() {
+  local script="$ROOT/.orchestrate/bin/requeue-orphaned-running.sh"
+  if [[ -f "$script" ]]; then
+    bash "$script" "$ROOT" || log_heartbeat "run-job — requeue-orphaned-running.sh failed (continuing tend)"
+  fi
+}
+
+# 4FA5: awaiting_go analog of the above — a dashboard "approved go auto" click
+# on a gated row can leave it `awaiting_go` forever if the task file never gets
+# materialized (see detect-orphaned-awaiting-go.sh header). Never auto-requeues
+# (would bypass an explicit human gate); it only surfaces the row via heartbeat
+# + a one-time desktop notification so a human notices.
+detect_orphaned_awaiting_go() {
+  local script="$ROOT/.orchestrate/bin/detect-orphaned-awaiting-go.sh"
+  if [[ -f "$script" ]]; then
+    bash "$script" "$ROOT" || log_heartbeat "run-job — detect-orphaned-awaiting-go.sh failed (continuing tend)"
   fi
 }
 
@@ -557,6 +938,8 @@ case "$JOB" in
     finalize_completed_tasks
     cleanup_stale_inbox
     drain_inbox
+    requeue_orphaned_running
+    detect_orphaned_awaiting_go
 
     # D328 Bug 1: Detect and reset ghost running tasks. Runs BEFORE the
     # need-action gate (cheap bash, no tokens) so a stale `running` ghost is
@@ -581,6 +964,17 @@ case "$JOB" in
     # rather than waiting 5 min for the next launchd cycle.
     MAX_TEND_LOOPS=5
     tend_loop=0
+    # Per-cycle random token for the shell-capability probe (see shell_probe_directive /
+    # shell_probe_failed above). Regenerated every tend invocation so a stale token from
+    # a previous cycle's log can never satisfy this cycle's check.
+    SHELL_PROBE_TOKEN="orchestrate_shell_probe_$(date +%s)_$$_${RANDOM}"
+    # Directory for the probe's side-effect marker file (primary capability signal).
+    # Created up-front for the reap; the dispatched session re-creates it via mkdir -p.
+    SHELL_PROBE_DIR="$ROOT/.orchestrate/logs/.shell-probe"
+    mkdir -p "$SHELL_PROBE_DIR"
+    # Reap marker files older than a day so the dir cannot grow unbounded (one tiny file
+    # per cycle). Unique per-cycle tokens already prevent stale-file false passes.
+    find "$SHELL_PROBE_DIR" -type f -mtime +1 -delete 2>/dev/null || true
     cursor_prompt="$(tend_prompt)" || exit 1
     claude_prompt="$(tend_prompt_claude)" || exit 1
 
