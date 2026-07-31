@@ -19,10 +19,11 @@ set -uo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CG="${CG:-$PROJECT_ROOT/.orchestrate/bin/churn-guard.sh}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -d "$PROJECT_ROOT/bin" ]] || { echo "FATAL: $PROJECT_ROOT/bin not found — PROJECT_ROOT path computation is broken (expected .../task-orchestrate/bin)" >&2; exit 1; }
+CG="${CG:-$PROJECT_ROOT/bin/churn-guard.sh}"
 CG_SRC="${CG_SRC:-/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/bin/churn-guard.sh}"
-REQUEUE="${REQUEUE:-$PROJECT_ROOT/.orchestrate/bin/requeue-unblocked.sh}"
+REQUEUE="${REQUEUE:-$PROJECT_ROOT/bin/requeue-unblocked.sh}"
 REQUEUE_SRC="${REQUEUE_SRC:-/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/bin/requeue-unblocked.sh}"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
