@@ -240,6 +240,84 @@ else
   ok "gap-case task NOT parked"
 fi
 
+# ── Case E: zero-progress ghost-reset episode is NOT double-counted ─────────
+# SHELLPROBE-CHURN-2 (20260731-inbox-5632/B560 root cause): a GENUINE
+# (non-transient) zero-progress ghost-reset — the row never completed a
+# single phase because its own dispatching session died mid-batch — was
+# still counted TWICE per episode: once by the ghost-reset leg itself
+# (rescue.sh / run-job.sh's reset_stale_running_tasks calling
+# cg_increment_unless_transient the moment it flips running→needs_human), and
+# AGAIN by this script's set_pending() the moment it saw the auto-injected
+# "Auto-reset: task stuck in running ... (tend session likely died)" /
+# "never actually executed" human_resolution and cleared the row back to
+# pending. Two real ghost-reset episodes (2 increments each = 4) blew past
+# CG_THRESHOLD=3 and parked the task after only 1.5 real dispatch attempts —
+# 20260731-inbox-5632 and its sibling 20260731-inbox-B560 both parked this
+# way despite Phase 1 having NEVER actually run.
+#
+# Fix: is_zero_progress_session_death_requeue() detects "zero ✓ complete
+# phases AND an auto-injected session-death human_resolution", and set_pending
+# skips ITS OWN increment in that case (skip_count=1) — the ghost-reset leg's
+# increment (simulated directly below via cg_increment_unless_transient, the
+# same call rescue.sh/run-job.sh make) is left as the ONLY count for that
+# episode. A genuinely churning task (Case B) is unaffected — unweakened.
+echo ""
+echo "── Case E: zero-progress ghost-reset episode is not double-counted ─────"
+setup_work
+EID="20260731-shellprobe-5632-like"
+cat > "$W/.orchestrate/tasks/${EID}.md" <<EOF
+id: $EID
+task: Tests for SHELLPROBE-1-IMPL
+mode: auto
+total_phases: 1
+
+## Phases
+### Phase 1
+status: pending
+EOF
+
+for i in 1 2; do
+  TS="2026-07-31T1$((3+i)):00:00Z"
+  since_epoch="$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$TS" '+%s' 2>/dev/null || echo 0)"
+  set_row "$EID" "$TS" "needs_human"
+  # Simulates the ghost-reset leg itself (rescue.sh / run-job.sh) bumping the
+  # counter the moment it flips running→needs_human — no transient/
+  # shell_incapable evidence exists in this fresh workdir, so this is a real,
+  # counted, genuine ghost-reset (episode #$i).
+  bash "$W/.orchestrate/bin/churn-guard.sh" cg_increment_unless_transient "$W" "$EID" "$since_epoch" >/dev/null
+  printf 'human_resolution: Auto-reset: task stuck in running for 99%ss with no phase progress (tend session likely died)\n' "$i" \
+    >> "$W/.orchestrate/tasks/${EID}.md"
+  bash "$W/.orchestrate/bin/requeue-unblocked.sh" "$W" >/dev/null
+done
+
+ce="$(count_of "$EID")"
+[[ "$ce" == "2" ]] && ok "counter is 2 (one per real episode) after 2 ghost-reset+requeue cycles — was: 4 (double-counted)" \
+  || fail "expected counter 2 after 2 zero-progress ghost-reset cycles — got $ce (double-counting regression)"
+
+if grep -qE '^bypassed_at:' "$W/.orchestrate/tasks/${EID}.md" 2>/dev/null; then
+  fail "task wrongly parked after only 2 real ghost-reset episodes (false churn park)"
+else
+  ok "task NOT parked after 2 real zero-progress ghost-reset episodes"
+fi
+
+# A 3rd genuine ghost-reset episode SHOULD still park — the fix must not
+# suppress real churn detection, only the double-count.
+TS3="2026-07-31T20:00:00Z"
+since_epoch3="$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$TS3" '+%s' 2>/dev/null || echo 0)"
+set_row "$EID" "$TS3" "needs_human"
+bash "$W/.orchestrate/bin/churn-guard.sh" cg_increment_unless_transient "$W" "$EID" "$since_epoch3" >/dev/null
+bash "$W/.orchestrate/bin/churn-guard.sh" cg_park_if_churned "$W" "$EID" >/dev/null 2>&1 || true
+
+ce3="$(count_of "$EID")"
+[[ "$ce3" == "3" ]] && ok "counter reaches 3 on the 3rd genuine ghost-reset episode" \
+  || fail "expected counter 3 after 3rd genuine ghost-reset — got $ce3"
+
+if grep -qE '^bypassed_at:' "$W/.orchestrate/tasks/${EID}.md" 2>/dev/null; then
+  ok "task correctly parked after 3 genuine ghost-reset episodes (real churn detection unweakened)"
+else
+  fail "task was NOT parked after 3 genuine ghost-reset episodes — real churn detection broken"
+fi
+
 echo ""
 echo "── Results ───────────────────────────────────────"
 echo "  Passed: $PASS"

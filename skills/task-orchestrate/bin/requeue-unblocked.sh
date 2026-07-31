@@ -31,7 +31,7 @@ registry_row() {
 }
 
 set_pending() {
-  local id="$1" reason="$2" since_epoch="${3:-0}" mode="${4:-}"
+  local id="$1" reason="$2" since_epoch="${3:-0}" mode="${4:-}" skip_count="${5:-0}"
   # Churn guard: a re-queue (needs_human → pending) is a re-processing. Bump the
   # shared counter; if ${id} has now churned ${CG_THRESHOLD:-3}× without
   # converging, park it (needs_human + bypass markers) + file an investigation job
@@ -48,10 +48,31 @@ set_pending() {
   # phase work (root cause of the 20260729-inbox-2408/C94E false churn park —
   # 3 consecutive shell_incapable cycles, each correctly "not counted" at
   # ghost-reset, still parked the task via this leg's blind increment).
-  if type cg_increment_unless_transient >/dev/null 2>&1; then
-    cg_increment_unless_transient "$id" "$since_epoch" >/dev/null 2>&1 || true
-  elif type cg_increment >/dev/null 2>&1; then
-    cg_increment "$id" >/dev/null 2>&1 || true
+  #
+  # skip_count (SHELLPROBE-CHURN-2, 20260731-inbox-5632/B560): a DIFFERENT
+  # double-count than the one above. That fix aligned classification between
+  # the ghost-reset leg and this requeue leg for transient/shell_incapable
+  # resets. But for a GENUINE (non-transient) zero-progress ghost-reset — the
+  # task was dispatched, its session died mid-batch before any subagent
+  # checkpoint, and the row never completed a single phase — BOTH legs still
+  # increment: once when the ghost-reset (running→needs_human) fires, and AGAIN
+  # here when first-pass-auto-resolve's C5 rule (or an equivalent zero-progress
+  # session-death marker) injects a human_resolution and this leg clears it back
+  # to pending. That is the SAME failed dispatch attempt counted twice, so a
+  # task hits CG_THRESHOLD after only ~1.5 real dispatch cycles instead of 3.
+  # The caller sets skip_count=1 when it has already determined (via
+  # is_zero_progress_session_death_requeue) that this pending-flip is merely
+  # clearing a zero-progress ghost episode the reset leg already counted — the
+  # row still advances to pending/awaiting_go below, only the SECOND increment
+  # is suppressed. A requeue driven by a genuine NEW human decision (mode:gated
+  # unblock, a person's own human_resolution) always has skip_count=0 and keeps
+  # counting exactly as before — unweakened.
+  if [[ "$skip_count" != "1" ]]; then
+    if type cg_increment_unless_transient >/dev/null 2>&1; then
+      cg_increment_unless_transient "$id" "$since_epoch" >/dev/null 2>&1 || true
+    elif type cg_increment >/dev/null 2>&1; then
+      cg_increment "$id" >/dev/null 2>&1 || true
+    fi
   fi
   if type cg_park_if_churned >/dev/null 2>&1 && cg_park_if_churned "$id" 2>/dev/null; then
     local pnow line
@@ -109,6 +130,39 @@ closure_in_file() {
   [[ -f "$f" ]] || return 1
   grep -qE '\*\*(Closed|Status):\*\*.*(✅|Closed|CONFIRMED)' "$f" 2>/dev/null || \
     grep -qE '^[|][[:space:]]*\*\*Date confirmed\*\*' "$f" 2>/dev/null
+}
+
+# is_zero_progress_session_death_requeue <task_file> — true (0) when the
+# pending human_resolution on <task_file> is an auto-injected marker saying
+# the row never executed a single phase because ITS OWN dispatching session
+# died (as opposed to a human/agent supplying genuinely new guidance to clear
+# a real blocker). Two conditions, BOTH required:
+#   (1) the task has declared phases (total_phases >= 1) but has completed
+#       NONE of them (zero `✓ complete` markers anywhere in the file) — i.e.
+#       this row has never once finished a dispatch attempt.
+#   (2) human_resolution matches a known zero-progress/session-death phrasing
+#       (first-pass-auto-resolve's C5 rule and run-job.sh/rescue.sh's own
+#       "Auto-reset: task stuck in running ..." marker both use this
+#       language) rather than a substantively new human decision.
+#
+# SHELLPROBE-CHURN-2 (20260731-inbox-5632/B560): when both hold, the ghost-
+# reset leg (rescue.sh / run-job.sh's reset_stale_running_tasks) already
+# cg_increment'd for this exact failed attempt the moment it flipped
+# running→needs_human. This requeue leg clearing the SAME episode back to
+# pending is not a distinct new re-processing — it is the back half of the
+# episode already counted — so the caller uses this to set set_pending's
+# skip_count and avoid a double bump. A requeue whose human_resolution
+# reflects a genuine new decision (mode:gated unblock, a person's own note)
+# does NOT match (2) and is unaffected — still counted exactly as before.
+is_zero_progress_session_death_requeue() {
+  local tf="$1" total complete
+  [[ -f "$tf" ]] || return 1
+  total="$(grep -oE '^total_phases:[[:space:]]*[0-9]+' "$tf" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)"
+  [[ -n "$total" && "$total" -ge 1 ]] || return 1
+  complete="$(grep -c '✓ complete' "$tf" 2>/dev/null || true)"
+  complete="${complete:-0}"
+  [[ "$complete" -eq 0 ]] || return 1
+  grep -qiE 'never actually executed|zero-progress session-death|session died mid-batch|tend session likely died|task stuck in running' "$tf" 2>/dev/null
 }
 
 # dispatch_since_epoch <task_id> <fallback_epoch> — epoch of the most recent
@@ -213,7 +267,15 @@ while IFS='|' read -r _ task_id _ mode _ status last_activity _; do
   # Human injected resolution that is NOT a BLOCKED marker → requeue
   if grep -qE '^human_resolution:' "$tf" && \
      ! grep -qE '^human_resolution:.*BLOCKED ON HUMAN' "$tf"; then
-    set_pending "$task_id" "human_resolution injected (non-blocked)" "$since_epoch" "$mode"
+    # SHELLPROBE-CHURN-2: a zero-progress ghost-reset episode (this row never
+    # completed a single phase, and its human_resolution is the auto-injected
+    # "session died"/"never actually executed" marker) was already counted by
+    # the ghost-reset leg that produced this human_resolution — skip_count=1
+    # here avoids re-counting the SAME episode. See
+    # is_zero_progress_session_death_requeue's header for the full root-cause.
+    skip_count=0
+    is_zero_progress_session_death_requeue "$tf" && skip_count=1
+    set_pending "$task_id" "human_resolution injected (non-blocked)" "$since_epoch" "$mode" "$skip_count"
     requeue_count=$(( requeue_count + 1 ))
   fi
 
