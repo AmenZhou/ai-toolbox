@@ -114,13 +114,34 @@
 #       `needs_human`, untouched, no dup archive, no MANIFEST line, task file
 #       preserved, neither enqueue script fires — the reactivation must
 #       survive the very next finalize pass.
+#   (r) 20260731-inbox-0986 — fail-safe on an unreadable archive/task file.
+#       Defensive hardening added after p3-9-step6/1B47's 3rd false-completion
+#       (root cause not pinned to a single reproducible trigger). Before this
+#       fix, file_records_genuine_block() returning non-zero for ANY reason
+#       (a confirmed "no marker" grep miss, OR a file that exists but can't be
+#       read right now) both fell through identically to "not blocked →
+#       finalize" (fail-open). needs_human row, no task file, archive exists
+#       with a `cancelled_at:` marker but is chmod 000 (unreadable). Must be
+#       left needs_human, untouched, and a CRITICAL line logged — proving the
+#       unreadable case is treated as a genuine block (fail-safe), not
+#       silently treated as "no marker found".
+#   (s) 20260731-inbox-0986 — fail-safe when file_records_genuine_block is
+#       undefined at call time. Guards against the exact stale-script-copy
+#       shape found during this investigation (a `.claude/worktrees/` copy of
+#       this file predating the function's addition, with rule (2)
+#       unconditionally setting should_finalize=1). Runs a deliberately
+#       mutilated copy of the real helper (function definition stripped) with
+#       otherwise-identical logic against a needs_human row + existing clean
+#       archive (which WOULD legitimately finalize via rule (2) if the check
+#       were simply absent, as the old pre-fix script did) — must instead be
+#       left needs_human, untouched, with a loud CRITICAL line logged.
 set -euo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-[[ -d "$PROJECT_ROOT/bin" ]] || { echo "FATAL: $PROJECT_ROOT/bin not found — PROJECT_ROOT path computation is broken (expected .../task-orchestrate/bin)" >&2; exit 1; }
-HELPER="${HELPER:-$PROJECT_ROOT/bin/finalize-completed-tasks.sh}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+[[ -d "$PROJECT_ROOT/.orchestrate/bin" ]] || { echo "FATAL: $PROJECT_ROOT/.orchestrate/bin not found — PROJECT_ROOT path computation is broken (expected .../ai-console/.orchestrate/bin)" >&2; exit 1; }
+HELPER="${HELPER:-$PROJECT_ROOT/.orchestrate/bin/finalize-completed-tasks.sh}"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
@@ -165,6 +186,7 @@ build_cp() {
     echo "| 20260628-mmm3 | scenario m cancelled row (MON-1) | auto | 1 | failed | $OLD_TS |"
     echo "| 20260628-nnn4 | scenario n plain failed no marker (MON-1 regression guard) | auto | 1 | failed | $OLD_TS |"
     echo "| 20260628-ooo5 | scenario o reactivated-after-cancellation false-completion | auto | 1 | needs_human | $OLD_TS |"
+    echo "| 20260628-rrr6 | scenario r unreadable archive fail-safe (0986) | auto | 1 | needs_human | $OLD_TS |"
   } > "$T/.orchestrate/project.md"
 
   # (a) all phases ✓ (2/2)
@@ -306,6 +328,18 @@ build_cp() {
     "# Task: Scenario O reactivated after cancellation" "id: 20260628-ooo5" \
     "cancelled_at: 2026-07-24T21:36:13Z" "cancel_reason: no window scheduled" \
     > "$T/orchestrate-history/20260628-000000-20260628-ooo5-prior-cancellation.md"
+
+  # (r) 20260731-inbox-0986 fail-safe — needs_human row, no task file, archive
+  # exists WITH a cancelled_at: marker but is chmod 000 (simulates a transient
+  # unreadable condition). Must be left needs_human (never finalized) via the
+  # fail-safe "can't read it → assume genuine block" branch in
+  # file_records_genuine_block(), not silently fall through to "no marker
+  # found → finalize" (fail-open).
+  printf '%s\n' \
+    "# Task: Scenario R unreadable archive" "id: 20260628-rrr6" \
+    "cancelled_at: 2026-07-20T00:00:00Z" "cancel_reason: no window scheduled" \
+    > "$T/orchestrate-history/20260628-000000-20260628-rrr6-unreadable.md"
+  chmod 000 "$T/orchestrate-history/20260628-000000-20260628-rrr6-unreadable.md"
 
   {
     echo "# Orchestration History Manifest"
@@ -478,6 +512,19 @@ grep -qE '^cancelled_at:' "$CP/.orchestrate/tasks/20260628-mmm3.md" 2>/dev/null 
 [[ "$(grep -c '20260628-ooo5' "$CP/orchestrate-history/MANIFEST.md")" -eq 0 ]] \
   && ok "(o) reactivated-after-cancellation no MANIFEST line written" || fail "(o) reactivated-after-cancellation spurious MANIFEST line (BAD)"
 
+# (r) 20260731-inbox-0986 — unreadable archive fail-safe: needs_human row must
+# be left untouched (never finalized), no dup archive, no MANIFEST line, and a
+# CRITICAL line must be logged so a real recurrence leaves a trail.
+[[ "$(status_of "$CP/.orchestrate/project.md" 20260628-rrr6)" == "needs_human" ]] \
+  && ok "(r) unreadable-archive row left needs_human" || fail "(r) unreadable-archive row was falsely finalized (BAD)"
+[[ "$(count_archives "$CP/orchestrate-history" 20260628-rrr6)" -eq 1 ]] \
+  && ok "(r) unreadable-archive no dup archive (still 1)" || fail "(r) unreadable-archive duplicate archive created (BAD)"
+[[ "$(grep -c '20260628-rrr6' "$CP/orchestrate-history/MANIFEST.md")" -eq 0 ]] \
+  && ok "(r) unreadable-archive no MANIFEST line written" || fail "(r) unreadable-archive spurious MANIFEST line (BAD)"
+grep -qF 'CRITICAL file_records_genuine_block' "$CP/.orchestrate/logs/heartbeat.log" 2>/dev/null \
+  && ok "(r) CRITICAL line logged for unreadable archive" || fail "(r) no CRITICAL line logged for unreadable archive (BAD)"
+chmod 644 "$CP/orchestrate-history"/20260628-000000-20260628-rrr6-unreadable.md 2>/dev/null || true
+
 # (c) → complete, NO dup archive (still exactly 1), NO dup MANIFEST line (it
 # already had one — the fully-reconciled case)
 [[ "$(status_of "$CP/.orchestrate/project.md" 20260628-ccc3)" == "complete" ]] \
@@ -552,7 +599,7 @@ ls "$CP/orchestrate-history"/*-20260628-eee5-*.md 2>/dev/null | grep -q 'scenari
 # running/needs_human→complete path in THIS run — (b)/(d) never finalize, and
 # (e)/(e2) take the separate archive-gap backfill path, which does not call
 # either enqueue script.
-for id in 20260628-bbb2 20260628-ddd4 20260628-eee5 20260628-fff6 20260628-iii9 20260628-jjj0 20260628-lll2 20260628-mmm3 20260628-nnn4 20260628-ooo5; do
+for id in 20260628-bbb2 20260628-ddd4 20260628-eee5 20260628-fff6 20260628-iii9 20260628-jjj0 20260628-lll2 20260628-mmm3 20260628-nnn4 20260628-ooo5 20260628-rrr6; do
   grep -qx "$id" "$REVIEW_LOG" 2>/dev/null \
     && fail "enqueue-review-and-tests.sh spuriously fired for $id (BAD)" \
     || ok "enqueue-review-and-tests.sh correctly did not fire for $id"
@@ -658,6 +705,58 @@ bash "$HELPER" "$GP" >/dev/null 2>&1
   || fail "(q) old completed row was wrongly deferred (BAD — grace check not age-gated)"
 
 rm -rf "$GP"
+
+# ── Scenario S: 20260731-inbox-0986 — fail-safe when file_records_genuine_block
+# is undefined at call time (guards against the exact stale-script-copy shape
+# found during this investigation: a `.claude/worktrees/` copy of this file
+# predating the function's addition). Build a deliberately mutilated copy of
+# the REAL helper with the function definition (lines 174-214, delimited by
+# its `^file_records_genuine_block() {` / matching `^}` before the next
+# comment block) stripped out — everything else, including the call-site
+# guard that checks `type file_records_genuine_block`, is identical to
+# production. Against a needs_human row + an existing CLEAN archive (no
+# cancelled_at:/blocked_on:/PARTIAL marker — this WOULD legitimately finalize
+# via rule (2) if the check were simply absent, as the old pre-fix script
+# did), the mutilated copy must instead log a CRITICAL line and leave the row
+# untouched.
+echo ""
+echo "── fail-safe when file_records_genuine_block is undefined (0986 scenario s) ──"
+SS="$(mktemp -d)"
+mkdir -p "$SS/.orchestrate/tasks" "$SS/.orchestrate/logs" "$SS/orchestrate-history"
+{
+  echo "# Project"
+  echo "## Task Registry"
+  echo "| ID | Summary | Mode | Phase | Status | Last Activity |"
+  echo "|----|---------|------|-------|--------|---------------|"
+  echo "| 20260628-sss7 | scenario s undefined-function fail-safe (0986) | auto | 1 | needs_human | $OLD_TS |"
+} > "$SS/.orchestrate/project.md"
+: > "$SS/orchestrate-history/MANIFEST.md"
+printf '%s\n' \
+  "# Task: Scenario S undefined-function fail-safe" "id: 20260628-sss7" \
+  > "$SS/orchestrate-history/20260628-000000-20260628-sss7-clean.md"
+
+MUTILATED_HELPER="$SS/finalize-mutilated.sh"
+sed '/^file_records_genuine_block() {$/,/^}$/d' "$HELPER" > "$MUTILATED_HELPER"
+chmod +x "$MUTILATED_HELPER"
+# Sanity-check the mutilation actually removed the function (not a no-op sed
+# that would silently pass this scenario for the wrong reason).
+if grep -q '^file_records_genuine_block() {$' "$MUTILATED_HELPER"; then
+  fail "(s) test setup: mutilated helper still defines file_records_genuine_block (sed pattern didn't match — fix the test)"
+else
+  ok "(s) test setup: mutilated helper copy has file_records_genuine_block stripped"
+fi
+
+bash "$MUTILATED_HELPER" "$SS" >/dev/null 2>&1
+[[ "$(status_of "$SS/.orchestrate/project.md" 20260628-sss7)" == "needs_human" ]] \
+  && ok "(s) undefined-function row left needs_human (fail-safe, not finalized)" \
+  || fail "(s) undefined-function row was finalized despite missing check (BAD)"
+[[ "$(count_archives "$SS/orchestrate-history" 20260628-sss7)" -eq 1 ]] \
+  && ok "(s) undefined-function no dup archive (still 1)" || fail "(s) undefined-function duplicate archive created (BAD)"
+grep -qF 'CRITICAL finalize-completed-tasks.sh: file_records_genuine_block is not defined' "$SS/.orchestrate/logs/heartbeat.log" 2>/dev/null \
+  && ok "(s) CRITICAL line logged for undefined file_records_genuine_block" \
+  || fail "(s) no CRITICAL line logged for undefined file_records_genuine_block (BAD)"
+
+rm -rf "$SS"
 
 echo ""
 echo "  finalize-completed-tasks: $PASS passed, $FAIL failed"

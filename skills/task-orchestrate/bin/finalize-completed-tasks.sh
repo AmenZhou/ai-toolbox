@@ -45,6 +45,34 @@
 #
 # Wired into run-job.sh tend preflight (primary; after repair_registry_rows,
 # before reset_stale_running_tasks) and rescue.sh (safety net).
+#
+# 20260731-inbox-0986 investigation note: 20260623-inbox-p3-9-step6 and
+# 20260628-inbox-1B47 were BOTH falsely re-completed by this reaper in the same
+# pass on 2026-07-31 (their 2nd/3rd occurrences of this exact bug class),
+# despite both tasks' only archive carrying a `cancelled_at:` marker that
+# file_records_genuine_block() is specifically designed to catch. Root cause
+# was NOT pinned to a reproducible single trigger after a thorough pass:
+# concurrency was ruled out (heartbeat.log shows a single pid processing rows
+# sequentially, no overlapping tend/rescue session in the window), the
+# on-disk archive/task-file content was verified byte-correct (grep -qE
+# '^cancelled_at:' matches cleanly, no CRLF/encoding anomaly), and calling
+# file_records_genuine_block() directly against the real archives post-
+# incident returns "genuine block" correctly both times. One confirmed,
+# independently significant finding from the same investigation: this exact
+# fix (file_records_genuine_block() and everything below it) has never been
+# committed to git — every commit since it was first added is missing it
+# (`git show HEAD:.../finalize-completed-tasks.sh` has zero occurrences of the
+# function) — so it has been living purely as an uncommitted working-tree
+# diff, and a STALE pre-fix copy of this exact file (missing the function
+# entirely, unconditional `should_finalize=1` on rule 2) was found sitting in
+# `.claude/worktrees/agent-a3709b2aea1fe1962/.orchestrate/bin/`, proving the
+# unprotected shape is only ever one `git checkout`/fresh-worktree/reset away
+# from being live again. Given no deterministic repro, hardened defensively
+# instead (fail-safe, not fail-open): an unreadable archive/task file is now
+# treated as a genuine block rather than silently falling through to
+# "not blocked", and a call site guard refuses to finalize (loud CRITICAL log)
+# if file_records_genuine_block itself is ever undefined at call time — see
+# both below. The fix in this file has also now been committed to git.
 set -euo pipefail
 
 ROOT="${1:-$(pwd)}"
@@ -146,6 +174,21 @@ task_file_all_phases_complete() {
 file_records_genuine_block() {
   local file="$1"
   [[ -f "$file" ]] || return 1
+  # FAIL-SAFE (2026-07-31, 3rd false-completion of 20260623-inbox-p3-9-step6 /
+  # 20260628-inbox-1B47): if the file exists but cannot be read right now
+  # (permission glitch, transient I/O error, resource exhaustion under a busy
+  # tend cycle, etc.), a grep-based check has NO WAY to distinguish "confirmed
+  # no cancelled_at/blocked_on/PARTIAL marker" from "couldn't even look" — both
+  # silently return non-zero and fall through to "not blocked → finalize"
+  # (fail-OPEN). That ambiguity is exactly the kind of transient condition a
+  # live investigation cannot reliably reproduce on demand. Treat "can't read
+  # it" as "assume the worst" (fail-SAFE): never finalize on an unreadable
+  # file. Logged loudly so a real recurrence leaves a trail instead of a
+  # silent mis-finalize.
+  if ! [[ -r "$file" ]]; then
+    log_fin "CRITICAL file_records_genuine_block: $file exists but is not readable — assuming genuine block (fail-safe, never finalize on an unreadable record)"
+    return 0
+  fi
   grep -qE '^blocked_on:[[:space:]]*EXTERNAL' "$file" 2>/dev/null && return 0
   grep -qE '^## Human-only block' "$file" 2>/dev/null && return 0
   # Only a PARTIAL-suffixed status line signals a genuine unresolved gap — other
@@ -403,7 +446,20 @@ finalize_completed_tasks() {
 
     local should_finalize=0
     if [[ -n "$archive" ]]; then
-      if file_records_genuine_block "$archive" || file_records_genuine_block "$task_file"; then
+      # FAIL-SAFE: rule (2) ("archive exists → finalize") is only safe to
+      # apply once file_records_genuine_block() has actually had a chance to
+      # veto it. If this script is somehow a stale/partial copy where that
+      # function never got defined (e.g. an older on-disk/worktree copy of
+      # this exact file predating the cancelled_at check — see the
+      # .claude/worktrees/ copy found during the 2026-07-31 investigation of
+      # this bug class), calling it would abort the script under `set -u`/
+      # `command not found`, NOT silently fall through — but guard explicitly
+      # anyway so a future refactor that makes the call conditional can never
+      # regress to fail-open silently.
+      if ! type file_records_genuine_block >/dev/null 2>&1; then
+        log_fin "CRITICAL finalize-completed-tasks.sh: file_records_genuine_block is not defined at call time for $row_id — refusing to finalize (fail-safe; this script copy may be stale/incomplete)"
+        should_finalize=0
+      elif file_records_genuine_block "$archive" || file_records_genuine_block "$task_file"; then
         should_finalize=0                        # archive/task file records an unresolved block — never auto-finalize
       else
         should_finalize=1                        # rule (2): already archived, and it records a clean finish
