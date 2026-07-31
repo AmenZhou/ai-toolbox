@@ -139,9 +139,9 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-[[ -d "$PROJECT_ROOT/.orchestrate/bin" ]] || { echo "FATAL: $PROJECT_ROOT/.orchestrate/bin not found — PROJECT_ROOT path computation is broken (expected .../ai-console/.orchestrate/bin)" >&2; exit 1; }
-HELPER="${HELPER:-$PROJECT_ROOT/.orchestrate/bin/finalize-completed-tasks.sh}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -d "$PROJECT_ROOT/bin" ]] || { echo "FATAL: $PROJECT_ROOT/bin not found — PROJECT_ROOT path computation is broken (expected .../task-orchestrate/bin)" >&2; exit 1; }
+HELPER="${HELPER:-$PROJECT_ROOT/bin/finalize-completed-tasks.sh}"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
