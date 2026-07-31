@@ -19,17 +19,10 @@ set -uo pipefail
 
 PASS=0
 FAIL=0
-# This copy lives at skills/task-orchestrate/tests/ in the ai-toolbox tree,
-# where bin/ is a direct sibling of tests/ (skills/task-orchestrate/{bin,tests}),
-# unlike the ai-console tree where bin/ and tests/ are siblings under
-# .orchestrate/ (.orchestrate/{bin,tests}). Climb one level (tests/../ ==
-# skills/task-orchestrate) and look for bin/ directly underneath — do not
-# reuse ai-console's "climb two levels then re-add /.orchestrate/bin" logic,
-# which only happens to work for that tree's nesting.
-PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CG="${CG:-$PROJECT_ROOT/bin/churn-guard.sh}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+CG="${CG:-$PROJECT_ROOT/.orchestrate/bin/churn-guard.sh}"
 CG_SRC="${CG_SRC:-/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/bin/churn-guard.sh}"
-REQUEUE="${REQUEUE:-$PROJECT_ROOT/bin/requeue-unblocked.sh}"
+REQUEUE="${REQUEUE:-$PROJECT_ROOT/.orchestrate/bin/requeue-unblocked.sh}"
 REQUEUE_SRC="${REQUEUE_SRC:-/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/bin/requeue-unblocked.sh}"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
@@ -198,6 +191,54 @@ fi
 gc3="$(count_of "$GATEID")"
 [[ "$gc3" == "0" ]] && ok "gated row's churn counter stayed 0 through the requeue" \
   || fail "gated row's churn counter moved: $gc3 (expected 0)"
+
+# ── Case D: shell_incapable evidence PRECEDES last_activity (real-world gap) ──
+# SHELLPROBE-CHURN-1 (20260731-inbox-273D root cause): Case A's "no shell
+# capability; deferred" line shares the SAME timestamp as last_activity, which
+# only accidentally passes the `ts >= since` scan. In production, run-job.sh's
+# reset_stale_running_tasks stamps last_activity to the RESET time — strictly
+# AFTER the deferred line that occurred during the dispatch cycle that went
+# stale. A since_epoch anchored to last_activity (post-reset) therefore misses
+# the deferred evidence and silently falls through to a real cg_increment,
+# parking a task purely on dispatch-starvation. Reproduce that gap explicitly:
+# dispatch line at T+0, deferred line at T+5, last_activity/reset at T+20.
+echo ""
+echo "── Case D: shell_incapable evidence precedes last_activity (real-world gap) ──"
+setup_work
+GAPID="20260731-gapcase"
+cat > "$W/.orchestrate/tasks/${GAPID}.md" <<EOF
+id: $GAPID
+task: test shell_incapable gap requeue
+mode: auto
+total_phases: 1
+
+## Phases
+### Phase 1
+status: pending
+EOF
+
+for i in 1 2 3; do
+  base_h=$((3+i))
+  DISPATCH_TS="2026-07-31T0${base_h}:00:00Z"
+  DEFERRED_TS="2026-07-31T0${base_h}:05:00Z"
+  RESET_TS="2026-07-31T0${base_h}:20:00Z"
+  echo "[$DISPATCH_TS] tend-auto — dispatching \"gap case\" (${GAPID}) [batch 1]" >> "$W/.orchestrate/logs/heartbeat.log"
+  echo "[$DEFERRED_TS] no shell capability; deferred" >> "$W/.orchestrate/logs/heartbeat.log"
+  set_row "$GAPID" "$RESET_TS" "needs_human"
+  printf 'human_resolution: Auto-reset: task stuck in running for 120%sd with no phase progress (tend session likely died)\n' "$i" \
+    >> "$W/.orchestrate/tasks/${GAPID}.md"
+  bash "$W/.orchestrate/bin/requeue-unblocked.sh" "$W" >/dev/null
+done
+
+cd_="$(count_of "$GAPID")"
+[[ "$cd_" == "0" ]] && ok "counter stays 0 across 3 gap cycles (dispatch precedes deferred precedes reset)" \
+  || fail "expected counter 0 across 3 gap cycles — got $cd_ (since_epoch anchored too late)"
+
+if grep -qE '^bypassed_at:' "$W/.orchestrate/tasks/${GAPID}.md" 2>/dev/null; then
+  fail "gap-case task wrongly parked (bypassed_at present)"
+else
+  ok "gap-case task NOT parked"
+fi
 
 echo ""
 echo "── Results ───────────────────────────────────────"

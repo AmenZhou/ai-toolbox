@@ -111,6 +111,46 @@ closure_in_file() {
     grep -qE '^[|][[:space:]]*\*\*Date confirmed\*\*' "$f" 2>/dev/null
 }
 
+# dispatch_since_epoch <task_id> <fallback_epoch> — epoch of the most recent
+# "tend-auto — dispatching ... (<task_id>)" heartbeat line at/before
+# fallback_epoch, or fallback_epoch itself if none is found.
+#
+# Root cause (SHELLPROBE-CHURN-1, found investigating 20260731-inbox-273D's
+# false churn-park): the row's `last_activity` at the moment this loop reads
+# it is the timestamp run-job.sh's reset_stale_running_tasks JUST WROTE when
+# it flipped running→needs_human — i.e. the END of the stale window, not the
+# START. run-job.sh's own cg_increment_unless_transient call correctly uses
+# the row's PRE-reset last_activity (captured before the mutation) as
+# since_epoch, so its shell-incapable heartbeat scan (`ts >= since`) still
+# covers the "no shell capability; deferred" line that occurred DURING the
+# dispatch cycle, before the reset. This loop instead re-read last_activity
+# AFTER that same mutation, so since_epoch ended up later than the deferred
+# line's own timestamp — the `ts >= since` scan in
+# cg__heartbeat_shell_incapable_since silently failed to find it, the reset
+# was misclassified as a real (non-shell_incapable) churn, and
+# cg_increment_unless_transient fell through to a genuine, silent cg_increment.
+# Three such misclassified cycles (each individually logged "not counted" by
+# run-job.sh's own check, but silently counted a second time here) parked a
+# perfectly healthy task. Fix: anchor since_epoch to the dispatch line itself,
+# which — like run-job.sh's la_epoch — necessarily precedes any
+# shell-incapable evidence from that same dispatch cycle.
+dispatch_since_epoch() {
+  local id="$1" fallback="$2" hb line ts epoch best=0
+  hb="$HEARTBEAT"
+  [[ -f "$hb" ]] || { echo "$fallback"; return; }
+  while IFS= read -r line; do
+    ts="$(printf '%s' "$line" | grep -oE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\]' | tr -d '[]')"
+    [[ -n "$ts" ]] || continue
+    epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null || echo 0)"
+    [[ "$epoch" -gt 0 && "$epoch" -le "$fallback" && "$epoch" -gt "$best" ]] && best="$epoch"
+  done < <(grep -F "(${id})" "$hb" 2>/dev/null | grep -E 'tend-auto — dispatching ')
+  if [[ "$best" -gt 0 ]]; then
+    echo "$best"
+  else
+    echo "$fallback"
+  fi
+}
+
 requeue_count=0
 
 while IFS='|' read -r _ task_id _ mode _ status last_activity _; do
@@ -125,12 +165,18 @@ while IFS='|' read -r _ task_id _ mode _ status last_activity _; do
   [[ -f "$tf" ]] || continue
 
   # since_epoch for cg_increment_unless_transient's shell_incapable/transient
-  # window check — the row's last_activity (when it went needs_human), so the
-  # classifier looks at the ghost-reset that actually produced this state, not
-  # whatever agent log happens to be newest on disk.
+  # window check. Anchored to the dispatch line (dispatch_since_epoch), not
+  # the row's raw last_activity — last_activity by this point already holds
+  # the POST-reset timestamp (the moment run-job.sh flipped running→
+  # needs_human), which is later than any shell-incapable evidence from the
+  # dispatch cycle that caused the reset. See dispatch_since_epoch's comment
+  # for the full root-cause (SHELLPROBE-CHURN-1).
   since_epoch=0
   if [[ -n "$last_activity" ]]; then
     since_epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$last_activity" +%s 2>/dev/null || echo 0)"
+    if [[ "$since_epoch" -gt 0 ]]; then
+      since_epoch="$(dispatch_since_epoch "$task_id" "$since_epoch")"
+    fi
   fi
 
   # Skip EXTERNAL blockers unless an explicit requeue signal is satisfied
