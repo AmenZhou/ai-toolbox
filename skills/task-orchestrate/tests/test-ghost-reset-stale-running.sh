@@ -17,20 +17,28 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RUNJOB="${RUNJOB:-$PROJECT_ROOT/.orchestrate/bin/run-job.sh}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -d "$PROJECT_ROOT/bin" ]] || { echo "FATAL: $PROJECT_ROOT/bin not found — PROJECT_ROOT path computation is broken (expected .../task-orchestrate/bin)" >&2; exit 1; }
+RUNJOB="${RUNJOB:-$PROJECT_ROOT/bin/run-job.sh}"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 
 OLD_TS="$(date -u -v-30M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
 FRESH_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# A510 no-file grace boundaries: STALE_RUNNING_SECS=600 (10m), NO_FILE_GRACE_SECS=1800 (30m).
+# MID_TS: 20m ago → past STALE but within grace (slow-but-alive no-file job).
+# VERY_OLD_TS: 40m ago → past grace (genuinely-dead no-file ghost).
+MID_TS="$(date -u -v-20M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+VERY_OLD_TS="$(date -u -v-40M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
 
-# run_reset <registry-row> [task-file-contents]
+# run_reset <registry-row> [task-file-contents] [task-file-mtime-min-ago]
 # Builds a mock control plane, runs reset_stale_running_tasks against it, and echoes:
 #   <final-status-of-row>|<count-of-ghost-reset-heartbeat-lines>|<NF-of-row>
+# When task-file-mtime-min-ago is given, the task file's mtime is backdated that many
+# minutes (to exercise the 19D7 liveness guard: fresh file = alive, stale file = ghost).
 run_reset() {
-  local row="$1"; local task_file_body="${2:-}"
+  local row="$1"; local task_file_body="${2:-}"; local mtime_min="${3:-}"
   local TMP; TMP="$(mktemp -d)"
   mkdir -p "$TMP/.orchestrate/tasks" "$TMP/.orchestrate/logs"
   {
@@ -40,7 +48,14 @@ run_reset() {
     echo "|----|---------|------|---------------|--------|---------------|"
     echo "$row"
   } > "$TMP/.orchestrate/project.md"
-  [[ -n "$task_file_body" ]] && printf '%s\n' "$task_file_body" > "$TMP/.orchestrate/tasks/20260628-tst.md"
+  if [[ -n "$task_file_body" ]]; then
+    printf '%s\n' "$task_file_body" > "$TMP/.orchestrate/tasks/20260628-tst.md"
+    if [[ -n "$mtime_min" ]]; then
+      local bt
+      bt="$(date -v-"${mtime_min}"M +%Y%m%d%H%M 2>/dev/null || date -d "${mtime_min} minutes ago" +%Y%m%d%H%M)"
+      touch -t "$bt" "$TMP/.orchestrate/tasks/20260628-tst.md"
+    fi
+  fi
   (
     ROOT="$TMP"
     log_heartbeat() { echo "$*" >> "$ROOT/.orchestrate/logs/heartbeat.log"; }
@@ -50,7 +65,8 @@ run_reset() {
   local status nf hb
   status="$(grep '20260628-tst' "$TMP/.orchestrate/project.md" | awk -F'|' '{gsub(/ /,"",$6); print $6}')"
   nf="$(grep '20260628-tst' "$TMP/.orchestrate/project.md" | awk -F'|' '{print NF}')"
-  hb="$(grep -c 'ghost-reset 20260628-tst: running→needs_human' "$TMP/.orchestrate/logs/heartbeat.log" 2>/dev/null || echo 0)"
+  hb="$(grep -c 'ghost-reset 20260628-tst: running→needs_human' "$TMP/.orchestrate/logs/heartbeat.log" 2>/dev/null || true)"
+  hb="${hb:-0}"
   echo "${status}|${hb}|${nf}"
   rm -rf "$TMP"
 }
@@ -121,12 +137,52 @@ printf '%s %s\n' "$LIVE_PID" "$FRESH_TS" > "$LTMP/.orchestrate/.tend.lock"
 ( cd "$LTMP" && bash "$RUNJOB" tend ) >/dev/null 2>&1 || true
 kill "$LIVE_PID" 2>/dev/null || true
 lstatus="$(grep '20260628-lck' "$LTMP/.orchestrate/project.md" | awk -F'|' '{gsub(/ /,"",$6); print $6}')"
-lhb="$(grep -c 'ghost-reset 20260628-lck: running→needs_human' "$LTMP/.orchestrate/logs/heartbeat.log" 2>/dev/null || echo 0)"
-lskip="$(grep -c 'skipping cycle' "$LTMP/.orchestrate/logs/heartbeat.log" 2>/dev/null || echo 0)"
+lhb="$(grep -c 'ghost-reset 20260628-lck: running→needs_human' "$LTMP/.orchestrate/logs/heartbeat.log" 2>/dev/null || true)"
+lhb="${lhb:-0}"
+lskip="$(grep -c 'skipping cycle' "$LTMP/.orchestrate/logs/heartbeat.log" 2>/dev/null || true)"
+lskip="${lskip:-0}"
 [[ "$lstatus" == "needs_human" ]] && ok "ghost reaped despite live lock holder (AC12 fixed)" || fail "status='$lstatus' (expected needs_human — lock-gating regression)"
 [[ "$lhb" -ge 1 ]] && ok "ghost-reset heartbeat written under held lock" || fail "no ghost-reset heartbeat under held lock"
 [[ "$lskip" -ge 1 ]] && ok "cycle still skipped (live lock respected, not reclaimed)" || fail "expected a skipping-cycle log line"
 rm -rf "$LTMP"
+
+echo ""
+echo "7. 19D7 liveness guard: stale last_activity but FRESH task file → NOT reset"
+# A long single-phase agent updates last_activity only at phase checkpoints, so it
+# can look stale by last_activity while actively writing its task file. A fresh
+# task-file mtime (no ✓ phase yet) means the session is alive — must be left running.
+r="$(run_reset "| 20260628-tst | long live agent | auto | 1 | running | $OLD_TS |" "### Phase 1
+status: pending" 0)"
+[[ "${r%%|*}" == "running" ]] && ok "fresh task-file row left running (live agent, not a ghost)" || fail "status='${r%%|*}' (expected running — liveness guard missing)"
+[[ "$(echo "$r" | cut -d'|' -f2)" -eq 0 ]] && ok "no ghost-reset heartbeat for fresh-file row" || fail "spurious ghost-reset for fresh-file row"
+
+echo ""
+echo "8. 19D7 liveness guard: stale last_activity AND STALE task file → still reset (real ghost)"
+# Same registry row, but the task file has not been touched in 20 min (> 10m threshold)
+# and shows no ✓ phase — a genuinely dead session. The guard must NOT protect it.
+r="$(run_reset "| 20260628-tst | dead agent | auto | 1 | running | $OLD_TS |" "### Phase 1
+status: pending" 20)"
+[[ "${r%%|*}" == "needs_human" ]] && ok "stale-file ghost still reset to needs_human" || fail "status='${r%%|*}' (expected needs_human — guard too broad)"
+[[ "$(echo "$r" | cut -d'|' -f2)" -ge 1 ]] && ok "ghost-reset heartbeat written for stale-file ghost" || fail "no ghost-reset heartbeat for stale-file ghost"
+
+echo ""
+echo "9. A510 no-file grace: no task file, past STALE but within grace (20m) → NOT reset"
+# A job dispatched to `running` that has not yet written .orchestrate/tasks/<ID>.md,
+# with last_activity past STALE_RUNNING_SECS (10m) but within NO_FILE_GRACE_SECS (30m).
+# The 19D7 mtime guard cannot see it (no file), so only the grace window protects this
+# slow-but-alive session. Must be left running AND must NOT bump the churn counter.
+r="$(run_reset "| 20260628-tst | slow-to-start no-file job | auto | 1 | running | $MID_TS |")"
+[[ "${r%%|*}" == "running" ]] && ok "no-file row within grace left running (slow-but-alive, not a ghost)" || fail "status='${r%%|*}' (expected running — A510 grace missing)"
+[[ "$(echo "$r" | cut -d'|' -f2)" -eq 0 ]] && ok "no ghost-reset heartbeat (not churn-counted) for no-file row within grace" || fail "spurious ghost-reset for no-file row within grace"
+
+echo ""
+echo "10. A510 no-file grace: no task file, past grace (40m) → still reset (genuinely-dead ghost)"
+# Same no-file row but last_activity is past NO_FILE_GRACE_SECS (30m) — a job that was
+# dispatched and truly never came alive. The grace must NOT protect it (no regression on
+# genuinely-dead ghosts): it is reset to needs_human with a ghost-reset heartbeat.
+r="$(run_reset "| 20260628-tst | dead no-file job | auto | 1 | running | $VERY_OLD_TS |")"
+[[ "${r%%|*}" == "needs_human" ]] && ok "no-file row past grace reset to needs_human" || fail "status='${r%%|*}' (expected needs_human — grace too broad)"
+[[ "$(echo "$r" | cut -d'|' -f2)" -ge 1 ]] && ok "ghost-reset heartbeat written for no-file row past grace" || fail "no ghost-reset heartbeat for no-file row past grace"
 
 echo ""
 echo "── ghost-reset stale-running: $PASS passed, $FAIL failed ───"

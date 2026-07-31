@@ -122,7 +122,8 @@ if [[ -f "$CG_SRC" ]]; then
   printf '20260716-chr\t2\n' > "$CGTMP/.orchestrate/logs/requeue-counts.tsv"
   bash "$SCRIPT" "$CGTMP" >/dev/null 2>&1 || true
   cg_status="$(grep '20260716-chr' "$CGTMP/.orchestrate/project.md" | awk -F'|' '{gsub(/ /,"",$6); print $6}')"
-  cg_parked_hb="$(grep -c 'churn-guard parked 20260716-chr' "$CGTMP/.orchestrate/logs/heartbeat.log" 2>/dev/null || echo 0)"
+  cg_parked_hb="$(grep -c 'churn-guard parked 20260716-chr' "$CGTMP/.orchestrate/logs/heartbeat.log" 2>/dev/null || true)"
+  cg_parked_hb="${cg_parked_hb:-0}"
   [[ "$cg_status" == "needs_human" ]] && ok "3rd re-processing parked to needs_human (not looped back to pending)" || fail "status='$cg_status' (expected needs_human — churn guard not applied)"
   [[ "$cg_parked_hb" -ge 1 ]] && ok "churn-guard park heartbeat written" || fail "no churn-guard park heartbeat"
 else
