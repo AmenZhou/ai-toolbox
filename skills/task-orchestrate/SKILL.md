@@ -441,6 +441,8 @@ Default new human items to `mode: auto` unless user says "gated" (or write to `i
 
 **New task:** Generate ID `YYYYMMDD-HHMMSS`. Create `.orchestrate/tasks/{ID}.md`. Ensure `.orchestrate/project.md` exists (create with template if not). Register row in project.md registry.
 
+**Hand-minting a suffix ID mid-cycle** (e.g. a self-registered follow-up ticket not pre-assigned by `drain-inbox.sh`): use `openssl rand -hex 2` (or read `/dev/urandom` directly), never bare `$RANDOM` — collision-prone, especially when minting more than one ID in the same shell invocation. Immediately `grep` the live registry for the freshly minted ID before trusting it's unique.
+
 **Carrying forward `followup_for:`/`kind:` headers:** If the source inbox file being drained into this task carries `followup_for:`/`kind:` header lines, copy them verbatim as literal top-level lines at the very top of the constructed task file — not merely paraphrased into `## Context` prose. Downstream anti-recursion checks (`enqueue-review-and-tests.sh`, `enqueue-wiki-sync.sh`) grep the constructed task file, not the original inbox file, for these headers.
 
 **Resume:** Scan `.orchestrate/tasks/` for active task files.
