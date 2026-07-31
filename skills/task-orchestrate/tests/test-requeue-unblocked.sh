@@ -19,10 +19,17 @@ set -uo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CG="${CG:-$PROJECT_ROOT/.orchestrate/bin/churn-guard.sh}"
+# This copy lives at skills/task-orchestrate/tests/ in the ai-toolbox tree,
+# where bin/ is a direct sibling of tests/ (skills/task-orchestrate/{bin,tests}),
+# unlike the ai-console tree where bin/ and tests/ are siblings under
+# .orchestrate/ (.orchestrate/{bin,tests}). Climb one level (tests/../ ==
+# skills/task-orchestrate) and look for bin/ directly underneath — do not
+# reuse ai-console's "climb two levels then re-add /.orchestrate/bin" logic,
+# which only happens to work for that tree's nesting.
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CG="${CG:-$PROJECT_ROOT/bin/churn-guard.sh}"
 CG_SRC="${CG_SRC:-/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/bin/churn-guard.sh}"
-REQUEUE="${REQUEUE:-$PROJECT_ROOT/.orchestrate/bin/requeue-unblocked.sh}"
+REQUEUE="${REQUEUE:-$PROJECT_ROOT/bin/requeue-unblocked.sh}"
 REQUEUE_SRC="${REQUEUE_SRC:-/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/bin/requeue-unblocked.sh}"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
