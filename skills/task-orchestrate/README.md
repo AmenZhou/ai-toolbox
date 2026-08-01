@@ -65,7 +65,7 @@ On phase failure:
 
 ## Background watchdog setup (macOS)
 
-Install a launchd job to run `tend` every 5 minutes:
+Install a launchd job to run `tend` every 30 minutes:
 
 ```bash
 PROJECT_DIR="$HOME/apps/my-project"  # adjust to your project root

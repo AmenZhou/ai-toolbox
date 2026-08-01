@@ -23,7 +23,7 @@
     <string>__PROJECT_DIR__</string>
   </array>
 
-  <!-- Run every 10 minutes — safety net interval (tend runs every 5 min) -->
+  <!-- Run every 10 minutes — safety net interval (tend runs every 30 min) -->
   <key>StartInterval</key>
   <integer>600</integer>
 
