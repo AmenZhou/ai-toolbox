@@ -70,6 +70,34 @@ if [[ -f "$ROOT/.orchestrate/bin/churn-guard.sh" ]]; then
   source "$ROOT/.orchestrate/bin/churn-guard.sh"
 fi
 
+# Per-ID claim lock (20260801-inbox-379E): prevents this wrapper's dispatch
+# from claiming (pending -> running) an ID that a still-live sibling wrapper
+# (e.g. one whose primary runner timed out and is retrying via cursor
+# fallback) already holds. See claim-lock.sh header for the full incident
+# writeup (D198/668C). CLAIM_LOCK_ROOT pins the helper to this project root
+# regardless of caller cwd, mirroring CG_ROOT above.
+CLAIM_LOCK_ROOT="$ROOT"
+if [[ -f "$ROOT/.orchestrate/bin/claim-lock.sh" ]]; then
+  # shellcheck disable=SC1090
+  source "$ROOT/.orchestrate/bin/claim-lock.sh"
+fi
+
+# IDs this wrapper invocation has successfully claim-locked, released on exit
+# (see release_claimed_locks(), wired into acquire_tend_lock's EXIT trap) —
+# the claim must outlive a single invoke_agent call so it still protects the
+# row across a primary-timeout-then-cursor-fallback retry within the same
+# wrapper.
+CLAIMED_LOCK_IDS=()
+
+release_claimed_locks() {
+  local id
+  if type claim_lock_release >/dev/null 2>&1; then
+    for id in "${CLAIMED_LOCK_IDS[@]:-}"; do
+      [[ -n "$id" ]] && claim_lock_release "$id"
+    done
+  fi
+}
+
 log_heartbeat() {
   # Trailing [pid=$$] attributes every line to this wrapper's own process
   # (20260725-inbox-6B7E): a low-noise suffix so a future duplicate-execution
@@ -484,6 +512,34 @@ mark_pending_tasks_as_running() {
     fi
   done <<< "$pending_ids"
 
+  # Claim lock (20260801-inbox-379E): only flip a pending row to running if
+  # THIS wrapper can claim its lock. A row still claim-locked by a live
+  # sibling wrapper (e.g. one whose primary runner timed out and is retrying
+  # via cursor fallback) is left pending here — that sibling still owns it,
+  # so this wrapper must not also dispatch it. See claim-lock.sh header.
+  # Rows this wrapper DOES claim are tracked in CLAIMED_LOCK_IDS for release
+  # on exit (release_claimed_locks, wired into acquire_tend_lock's EXIT trap).
+  local claimed_ids=","
+  if type claim_lock_acquire >/dev/null 2>&1; then
+    while IFS= read -r pid; do
+      [[ -z "$pid" ]] && continue
+      [[ "$blocked_ids" == *",${pid},"* ]] && continue
+      if claim_lock_acquire "$pid"; then
+        claimed_ids="${claimed_ids}${pid},"
+        CLAIMED_LOCK_IDS+=("$pid")
+      else
+        log_heartbeat "tend-auto — skip dispatch ${pid}: claim lock held by a live sibling wrapper (still being redispatched elsewhere)"
+      fi
+    done <<< "$pending_ids"
+  else
+    # claim-lock.sh missing/failed to source — fail OPEN (claim everything, as
+    # before this fix) rather than silently never dispatching anything.
+    while IFS= read -r pid; do
+      [[ -z "$pid" ]] && continue
+      claimed_ids="${claimed_ids}${pid},"
+    done <<< "$pending_ids"
+  fi
+
   local tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/project-md.XXXXXX")"
   # Registry row schema: | ID | summary | mode | phase | status | last_activity |
@@ -492,12 +548,13 @@ mark_pending_tasks_as_running() {
   # stamp last_activity in $7. (Historic bug: wrote $8, appending a phantom field
   # PAST the trailing pipe — the malformed '| running | ts | ts' corruption that
   # then defeated reset_stale_running_tasks. See repair_registry_rows.) A row
-  # whose ID is in blocked_ids (CROSS-2) is left pending regardless.
-  awk -F'|' -v OFS='|' -v now="$now" -v blocked="$blocked_ids" '
+  # whose ID is in blocked_ids (CROSS-2) is left pending regardless. A row NOT
+  # in claimed_ids (claim lock held elsewhere) is also left pending.
+  awk -F'|' -v OFS='|' -v now="$now" -v blocked="$blocked_ids" -v claimed="$claimed_ids" '
     /^\|[[:space:]]*[0-9]/ && NF==8 {
       id=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",id)
       st=$6; gsub(/^[[:space:]]+|[[:space:]]+$/,"",st)
-      if (st=="pending" && index(blocked, "," id ",") == 0) { $6=" running "; $7=" " now " " }
+      if (st=="pending" && index(blocked, "," id ",") == 0 && index(claimed, "," id ",") != 0) { $6=" running "; $7=" " now " " }
     }
     { print }
   ' "$proj" > "$tmp" && mv "$tmp" "$proj"
@@ -783,6 +840,19 @@ requeue_orphaned_running() {
   fi
 }
 
+# ORCH-2 (20260731-inbox-7133): hard elapsed-runtime cap. Flips a `running` row to
+# needs_human once it has been dispatched more than MAX_RUNNING_SECS (10 min) ago,
+# regardless of activity — the one case none of ghost-reset (last_activity + 19D7
+# mtime guard), orphan-requeue (dead/no-file), or AGENT_TIMEOUT_SECS (process kill)
+# covers. Standalone script so it is independently testable; see
+# enforce-max-running-duration.sh header + reports/orchestrate/orch-2-inv_plan.md.
+enforce_max_running_duration() {
+  local script="$ROOT/.orchestrate/bin/enforce-max-running-duration.sh"
+  if [[ -f "$script" ]]; then
+    bash "$script" "$ROOT" || log_heartbeat "run-job — enforce-max-running-duration.sh failed (continuing tend)"
+  fi
+}
+
 # 4FA5: awaiting_go analog of the above — a dashboard "approved go auto" click
 # on a gated row can leave it `awaiting_go` forever if the task file never gets
 # materialized (see detect-orphaned-awaiting-go.sh header). Never auto-requeues
@@ -880,7 +950,7 @@ acquire_tend_lock() {
     # so only one racer can create it. Content = "<pid> <iso-acquired>".
     if ( set -o noclobber; printf '%s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lock" ) 2>/dev/null; then
       # shellcheck disable=SC2064
-      trap "rm -f '$lock'" EXIT
+      trap "rm -f '$lock'; release_claimed_locks" EXIT
       export TEND_LOCK_MANAGED=1
       return 0
     fi
@@ -940,6 +1010,12 @@ case "$JOB" in
     drain_inbox
     requeue_orphaned_running
     detect_orphaned_awaiting_go
+
+    # ORCH-2: hard elapsed-runtime cap. Runs AFTER requeue_orphaned_running (so a
+    # dead-session orphan is recovered to pending for retry, not parked on a human)
+    # and BEFORE reset_stale_running_tasks (so a capped row is already needs_human
+    # when the ghost-reset pass runs — the two never double-fire on one row).
+    enforce_max_running_duration
 
     # D328 Bug 1: Detect and reset ghost running tasks. Runs BEFORE the
     # need-action gate (cheap bash, no tokens) so a stale `running` ghost is
