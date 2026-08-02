@@ -245,11 +245,14 @@ filename because you're writing it too), also emit a `blocked_by_ticket: <that o
 filename, without .md>` header line on the blocked ticket (Step 6). This is what lets `drain-inbox.sh`
 carry the dependency into the materialized task file's `depends_on:` field structurally — instead of
 leaving `depends_on: none` with the ordering living only as prose inside `## Goal`/Description, which
-a downstream `tend` run cannot act on. Only emit the header when the referenced ticket is part of this
-same batch (so its filename is known); if the blocker is an already-registered ticket from a prior run
-(you only know its task ID, not an inbox filename), omit the header — `drain-inbox.sh` can only resolve
-refs it can match against tickets it is registering in the current drain, and inventing an ID is worse
-than leaving `depends_on: none` with the prose intact.
+a downstream `tend` run cannot act on. Emit the header in both cases: when the referenced ticket is part
+of this same batch (using its exact filename, without `.md`), and when the blocker is an
+already-registered ticket from a prior run (using its literal registry ID, e.g.
+`blocked_by_ticket: 20260801-inbox-09AB`) — `resolve_depends_on()` Stage 2 in `drain-inbox.sh` (an
+`ID_SHAPE_RE` pre-filter followed by an exact `registry_has_id()` match) now resolves this literal-ID
+form against real prior-run registry rows, not just same-batch basenames. Only fall back to
+`depends_on: none` with the ordering left in prose when you don't actually know the prior-run ticket's
+registry ID.
 
 **Live-overlap hard dependencies (from Step 1b).** When Step 1b found a heuristic-1 hard match against a
 *live* (pre-existing, not same-batch) item, wire it using the **same** `blocked_by_ticket:` mechanism as
