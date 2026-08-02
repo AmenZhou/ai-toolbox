@@ -240,12 +240,60 @@ materialize_task_file() {
 # already-registered sibling from a prior run (same registry, no batch-scoped
 # map needed for a title lookup). Still never invents an ID: no match (or
 # ref is literally "none") leaves depends_on "none".
+#
+# DEP-RESOLVE-IMPL (20260801-inbox-09AB, see reports/orchestrate/
+# dep-resolve-inv_plan.md): the header path historically stopped at
+# BLOCKED_BY_MAP (same-batch basenames only) — a `blocked_by_ticket:` value
+# that IS itself an already-registered task ID from a PRIOR drain-inbox.sh run
+# had no fallback and fell straight to "none", even though that ID is a real,
+# durable record in project.md. ID_SHAPE_RE is the pre-filter used to decide
+# whether a ref "looks like" a registry task ID (`gen_task_id()`'s
+# `YYYYMMDD-inbox-<slug>[<n>]` shape, slug matched loosely since neither the
+# Linux/cksum fallback length nor the collision-suffix length is fixed) — it
+# is only ever a pre-filter, never sufficient alone; the actual decision is
+# `registry_has_id()`, an exact existence check against project.md.
+ID_SHAPE_RE='^[0-9]{8}-inbox-[0-9A-Za-z]+$'
+
 resolve_depends_on() {
   local file="$1" ref id
   ref="$(grep -m1 -E '^blocked_by_ticket:[[:space:]]*\S' "$file" 2>/dev/null \
     | sed -E 's/^blocked_by_ticket:[[:space:]]*//')"
   if [[ -n "$ref" ]]; then
+    # Stage 1 (existing, unchanged, highest priority): same-batch basename,
+    # looked up in this run's ephemeral BLOCKED_BY_MAP.
     id="$(awk -F'\t' -v ref="$ref" '$1 == ref { print $2; exit }' "$BLOCKED_BY_MAP" 2>/dev/null)"
+    if [[ -n "$id" ]]; then
+      echo "$id"
+      return
+    fi
+
+    # Stage 2 (NEW): ref is itself already a real, durable registry task ID —
+    # from a prior drain-inbox.sh run, or a same-batch sibling whose registry
+    # row was already appended this run (Stage 1 only covers the basename
+    # form; this covers the ID-literal form). No transform: the ref already
+    # IS the value depends_on: should hold, taken verbatim from project.md's
+    # ID column via registry_has_id(). If ref merely LOOKS like an ID
+    # (matches the shape) but was never actually registered, stop here and
+    # return "none" rather than falling through to Stage 3's fuzzy title
+    # match — an ID-shaped-but-unregistered ref is a typo or a stale/rolled-
+    # back ID, never a title, and letting it fall through risks a false-
+    # positive substring/prefix match against an unrelated summary. Never
+    # invent an ID.
+    if [[ "$ref" =~ $ID_SHAPE_RE ]]; then
+      if registry_has_id "$ref"; then
+        echo "$ref"
+      else
+        echo "none"
+      fi
+      return
+    fi
+
+    # Stage 3 (NEW, optional per plan §3 — included here for symmetry with
+    # the no-header prose path below): breakdown-to-inbox itself never emits
+    # a title in this header (only a basename or, going forward, an ID), but
+    # a hand-authored blocked_by_ticket: header might. Reuses the same
+    # durable registry lookup the prose path already relies on.
+    id="$(resolve_title_ref "$ref")"
     if [[ -n "$id" ]]; then
       echo "$id"
     else

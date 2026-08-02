@@ -868,6 +868,207 @@ else
 fi
 
 echo ""
+echo "20. DEP-RESOLVE-IMPL (20260801-inbox-09AB, Stage 2): blocked_by_ticket:"
+echo "    header containing a PRIOR-RUN registry task ID resolves depends_on:"
+echo "    directly to that ID — the exact gap"
+echo "    reports/orchestrate/dep-resolve-inv_plan.md exists to close."
+cat > "$TMP/.orchestrate/inbox/dep-resolve-prior-blocker-f.md" << 'EOF'
+mode: auto
+source: self
+triggered_by: test-session
+
+# DEP-RESOLVE-PRIOR-BLOCKER-F — Registered alone, in an earlier drain run
+
+## Goal
+Registered alone, in its own drain-inbox.sh invocation, before any dependent
+references its real registered ID.
+
+## Acceptance Criteria
+- exists
+EOF
+bash "$TMP/.orchestrate/bin/drain-inbox.sh" "$TMP" >/dev/null
+DRFID="$(awk -F'|' '/DEP-RESOLVE-PRIOR-BLOCKER-F/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$TMP/.orchestrate/project.md")"
+if [[ -z "$DRFID" ]]; then
+  fail "test precondition broken: DEP-RESOLVE-PRIOR-BLOCKER-F did not register (cannot continue test 20)"
+else
+  cat > "$TMP/.orchestrate/inbox/dep-resolve-later-dependent-g.md" << EOF
+mode: auto
+source: self
+triggered_by: test-session
+blocked_by_ticket: ${DRFID}
+
+# DEP-RESOLVE-LATER-DEPENDENT-G — Depends on F via its real registry ID
+
+## Goal
+References DEP-RESOLVE-PRIOR-BLOCKER-F's real registered task ID directly (not
+a basename) in a SEPARATE, later drain-inbox.sh invocation — there is no
+same-batch BLOCKED_BY_MAP entry for it; resolution must fall back to the new
+Stage 2 registry-ID lookup (registry_has_id() against project.md), not the
+(basename-only) Stage 1.
+
+## Acceptance Criteria
+- chained
+EOF
+  bash "$TMP/.orchestrate/bin/drain-inbox.sh" "$TMP" >/dev/null
+  DRGID="$(awk -F'|' '/DEP-RESOLVE-LATER-DEPENDENT-G/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$TMP/.orchestrate/project.md")"
+  DRGTF="$TMP/.orchestrate/tasks/${DRGID}.md"
+  if [[ -n "$DRGID" ]] && grep -qE "^depends_on: ${DRFID}\$" "$DRGTF" 2>/dev/null; then
+    ok "blocked_by_ticket: header set to a prior-run real registry ID resolved directly to that ID ($DRFID)"
+  else
+    fail "blocked_by_ticket: header with a prior-run real registry ID did NOT resolve (got: $(grep '^depends_on:' "$DRGTF" 2>/dev/null))"
+  fi
+fi
+
+echo ""
+echo "21. DEP-RESOLVE: blocked_by_ticket: header with an ID-shaped-but-NEVER-"
+echo "    registered ref stays depends_on: none (never invents an ID) — the"
+echo "    highest-value regression test for the anti-invention guarantee in the"
+echo "    new Stage 2 code path specifically."
+cat > "$TMP/.orchestrate/inbox/dep-resolve-fake-id-h.md" << 'EOF'
+mode: auto
+source: self
+triggered_by: test-session
+blocked_by_ticket: 20260101-inbox-DEAD
+
+# DEP-RESOLVE-FAKE-ID-H — References a plausible-looking but never-drained ID
+
+## Goal
+blocked_by_ticket: matches ID_SHAPE_RE (8-digit date + "-inbox-" + slug) but
+20260101-inbox-DEAD was never actually registered by any drain-inbox.sh run —
+the never-invent invariant must hold even for an input that "looks like" what
+the new Stage 2 code is designed to accept.
+
+## Acceptance Criteria
+- registered
+EOF
+bash "$TMP/.orchestrate/bin/drain-inbox.sh" "$TMP" >/dev/null
+DRHID="$(awk -F'|' '/DEP-RESOLVE-FAKE-ID-H/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$TMP/.orchestrate/project.md")"
+DRHTF="$TMP/.orchestrate/tasks/${DRHID}.md"
+if [[ -n "$DRHID" ]] && grep -qE '^depends_on: none$' "$DRHTF" 2>/dev/null; then
+  ok "ID-shaped-but-never-registered blocked_by_ticket: ref leaves depends_on: none (never invents an ID)"
+else
+  fail "ID-shaped-but-never-registered ref wrongly resolved: $(grep '^depends_on:' "$DRHTF" 2>/dev/null)"
+fi
+
+echo ""
+echo "22. DEP-RESOLVE: same-batch basename resolution (CROSS-1, Stage 1) is"
+echo "    unaffected by the new Stage 2/3 registry-ID lookup — locks in ORDERING"
+echo "    (Stage 1 still fires first and still wins), not just outcome."
+cat > "$TMP/.orchestrate/inbox/dep-resolve-samebatch-blocker-i.md" << 'EOF'
+mode: auto
+source: self
+triggered_by: test-session
+
+# DEP-RESOLVE-SAMEBATCH-BLOCKER-I — Same-batch blocker, referenced by basename
+
+## Goal
+Drained in the SAME batch as its dependent below — Stage 1's BLOCKED_BY_MAP
+basename lookup must resolve this, not the new Stage 2/3 registry lookups.
+
+## Acceptance Criteria
+- exists
+EOF
+cat > "$TMP/.orchestrate/inbox/dep-resolve-samebatch-dependent-j.md" << 'EOF'
+mode: auto
+source: self
+triggered_by: test-session
+blocked_by_ticket: dep-resolve-samebatch-blocker-i
+
+# DEP-RESOLVE-SAMEBATCH-DEPENDENT-J — Depends on I via same-batch basename
+
+## Goal
+References I's inbox basename (not its registry ID) — must resolve via Stage 1
+(BLOCKED_BY_MAP), exactly as before this ticket's Stage 2/3 additions.
+
+## Acceptance Criteria
+- chained
+EOF
+bash "$TMP/.orchestrate/bin/drain-inbox.sh" "$TMP" >/dev/null
+DRIID="$(awk -F'|' '/DEP-RESOLVE-SAMEBATCH-BLOCKER-I/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$TMP/.orchestrate/project.md")"
+DRJID="$(awk -F'|' '/DEP-RESOLVE-SAMEBATCH-DEPENDENT-J/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$TMP/.orchestrate/project.md")"
+DRJTF="$TMP/.orchestrate/tasks/${DRJID}.md"
+if [[ -n "$DRIID" && -n "$DRJID" ]] && grep -qE "^depends_on: ${DRIID}\$" "$DRJTF" 2>/dev/null; then
+  ok "same-batch basename resolution (Stage 1 / CROSS-1) still fires and still wins ($DRIID)"
+else
+  fail "same-batch basename resolution regressed (got: $(grep '^depends_on:' "$DRJTF" 2>/dev/null))"
+fi
+
+echo ""
+echo "23. DEP-RESOLVE: blocked_by_ticket: header naming something that is neither"
+echo "    a same-batch basename, ID-shaped, nor a known title stays depends_on:"
+echo "    none — full Stage 1 -> 2 -> 3 -> none fall-through terminates safely."
+cat > "$TMP/.orchestrate/inbox/dep-resolve-unknown-ref-k.md" << 'EOF'
+mode: auto
+source: self
+triggered_by: test-session
+blocked_by_ticket: totally-unrelated-basename-never-drained
+
+# DEP-RESOLVE-UNKNOWN-REF-K — References something that resolves nowhere
+
+## Goal
+blocked_by_ticket: names a basename that was never drained this batch, is not
+ID-shaped, and does not match any registry summary/title — must fall all the
+way through Stage 1 -> 2 -> 3 to "none". Distinct from test 21, which is
+specifically the ID-shaped-but-unregistered edge case.
+
+## Acceptance Criteria
+- registered
+EOF
+bash "$TMP/.orchestrate/bin/drain-inbox.sh" "$TMP" >/dev/null
+DRKID="$(awk -F'|' '/DEP-RESOLVE-UNKNOWN-REF-K/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$TMP/.orchestrate/project.md")"
+DRKTF="$TMP/.orchestrate/tasks/${DRKID}.md"
+if [[ -n "$DRKID" ]] && grep -qE '^depends_on: none$' "$DRKTF" 2>/dev/null; then
+  ok "fully unresolvable blocked_by_ticket: header ref leaves depends_on: none (never invents an ID)"
+else
+  fail "fully unresolvable ref wrongly resolved: $(grep '^depends_on:' "$DRKTF" 2>/dev/null)"
+fi
+
+echo ""
+echo "24. DEP-RESOLVE (Stage 3, optional per plan §3 — included for symmetry):"
+echo "    blocked_by_ticket: header value that is a ticket TITLE (not a basename,"
+echo "    not an ID) resolves via the same resolve_title_ref() path the"
+echo "    **Blocked by:** prose branch already uses."
+cat > "$TMP/.orchestrate/inbox/dep-resolve-title-blocker-l.md" << 'EOF'
+mode: auto
+source: self
+triggered_by: test-session
+
+# DEP-RESOLVE-TITLE-BLOCKER-L — Referenced below by its title, not basename
+
+## Goal
+Registered so its registry summary/title can be matched by a later ticket's
+blocked_by_ticket: header (a hand-authored header — breakdown-to-inbox itself
+never emits a title in this position, only a basename or a registry ID).
+
+## Acceptance Criteria
+- exists
+EOF
+cat > "$TMP/.orchestrate/inbox/dep-resolve-title-dependent-m.md" << 'EOF'
+mode: auto
+source: self
+triggered_by: test-session
+blocked_by_ticket: DEP-RESOLVE-TITLE-BLOCKER-L — Referenced below by its title, not basename
+
+# DEP-RESOLVE-TITLE-DEPENDENT-M — Depends on L via its title, in the header
+
+## Goal
+blocked_by_ticket: header carries L's exact title (not its inbox basename, not
+its registry ID) — must resolve via Stage 3's resolve_title_ref() fallback.
+
+## Acceptance Criteria
+- chained
+EOF
+bash "$TMP/.orchestrate/bin/drain-inbox.sh" "$TMP" >/dev/null
+DRLID="$(awk -F'|' '/DEP-RESOLVE-TITLE-BLOCKER-L/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$TMP/.orchestrate/project.md")"
+DRMID="$(awk -F'|' '/DEP-RESOLVE-TITLE-DEPENDENT-M/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$TMP/.orchestrate/project.md")"
+DRMTF="$TMP/.orchestrate/tasks/${DRMID}.md"
+if [[ -n "$DRLID" && -n "$DRMID" ]] && grep -qE "^depends_on: ${DRLID}\$" "$DRMTF" 2>/dev/null; then
+  ok "blocked_by_ticket: header carrying a TITLE (not basename/ID) resolved via Stage 3 title fallback ($DRLID)"
+else
+  fail "blocked_by_ticket: header title fallback did NOT resolve (got: $(grep '^depends_on:' "$DRMTF" 2>/dev/null))"
+fi
+
+echo ""
 echo "── Results ───────────────────────────────────────"
 echo "  Passed: $PASS"
 echo "  Failed: $FAIL"
