@@ -1355,6 +1355,45 @@ fi
 
 rm -rf "$CTTMP"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 20260801-inbox-6D93 (investigate-churn D9CA): the CLI's own background-task
+# wait ceiling (~600s) was silently killing tend's batched sub-agent dispatch
+# with no error surfaced. Fix: export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
+# near invoke_agent() so the CLI waits indefinitely and AGENT_TIMEOUT_SECS
+# (enforced by invoke_agent's own watcher subshell, which DOES log/classify a
+# hang) is the single, visible backstop instead. Guard against a future edit
+# silently dropping this export from either live copy of run-job.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "19. CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 export present (task 20260801-inbox-6D93)"
+
+if grep -qE '^export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0$' "$RUN_JOB_SRC" 2>/dev/null; then
+  ok "ai-toolbox source run-job.sh exports CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0"
+else
+  fail "ai-toolbox source run-job.sh missing 'export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0' — CLI's internal wait ceiling would silently kill tend dispatch again (6D93 regression)"
+fi
+
+if grep -qE '^export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0$' "$RUN_JOB" 2>/dev/null; then
+  ok "installed run-job.sh exports CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0"
+else
+  fail "installed run-job.sh missing 'export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0' — CLI's internal wait ceiling would silently kill tend dispatch again (6D93 regression)"
+fi
+
+# Functional check: sourcing run-job.sh's preamble (up to the export line) must
+# actually set the variable to 0 in the environment — not merely appear as a
+# comment or be shadowed/unset later before invoke_agent() runs.
+CEILING_FUNC_OUT="$(bash -c "
+  set -e
+  # Source everything up to and including the export line, then check the var.
+  eval \"\$(sed -n '1,/^export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=/p' '$RUN_JOB' | grep -E '^export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=')\"
+  echo \"VALUE=\${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-UNSET}\"
+")"
+if [[ "$CEILING_FUNC_OUT" == "VALUE=0" ]]; then
+  ok "sourcing the export line actually sets CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 in the environment"
+else
+  fail "export line did not yield CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 — got: $CEILING_FUNC_OUT"
+fi
+
 echo ""
 echo ""
 echo "── Results ───────────────────────────────────────"
