@@ -718,6 +718,25 @@ reset_stale_running_tasks() {
       fi
     fi
 
+    # ORCH-B358: claim-lock liveness guard. STALE_RUNNING_SECS (600s) is
+    # shorter than some legitimate single-phase durations (a full test suite,
+    # a multi-mirror sync) that neither touch last_activity (only updated at
+    # phase checkpoints) nor the task file's mtime (the 19D7 guard above) for
+    # long stretches — ghost-resetting purely on that wall-clock gate then
+    # bumps a false churn-guard strike against a job that is simply slow, not
+    # dead. claim-lock.sh's per-ID lock is independent, STRONGER evidence: it
+    # is only released when the dispatching wrapper exits (or goes stale past
+    # CLAIM_LOCK_TTL_SECS = 2700s), and claim_lock_is_live() confirms the
+    # recorded owner pid is still alive via `kill -0` — a direct liveness
+    # check, not a timestamp heuristic. Skip the reset while the lock is live;
+    # once the wrapper actually dies (crash/kill/normal exit) the lock is
+    # released or ages out, and this guard no longer protects the row. Fails
+    # OPEN (no protection, same as before this fix) if claim-lock.sh was not
+    # sourced by the caller.
+    if type claim_lock_is_live >/dev/null 2>&1 && claim_lock_is_live "$task_id"; then
+      continue  # dispatching wrapper confirmed alive (claim lock live) — slow, not a ghost
+    fi
+
     # Reset to needs_human and inject resolution hint into task file.
     # Atomic temp+mv write (was `sed -i ''` in place — non-atomic, unsafe under a
     # concurrent reader). Match the row by ID ($2) and flip status $6 running→
