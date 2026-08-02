@@ -96,6 +96,7 @@ release_claimed_locks() {
       [[ -n "$id" ]] && claim_lock_release "$id"
     done
   fi
+  return 0
 }
 
 log_heartbeat() {
