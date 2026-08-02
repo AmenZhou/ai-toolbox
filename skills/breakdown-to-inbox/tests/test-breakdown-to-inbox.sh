@@ -132,6 +132,61 @@ else
   ok "ticket-planning/SKILL.md not found locally — skipping cross-file check (not this task's scope)"
 fi
 
+# ── 8. Step 1b — live control plane scan (DEP-SCAN-IMPL, 20260801-inbox-70BD) ─
+echo ""
+echo "8. Step 1b live control plane scan"
+
+skill_has '## Step 1b — Scan the live control plane for overlapping work' \
+  "Step 1b header exists"
+skill_has 'non-terminal registry rows' "Step 1b names project.md non-terminal registry rows as a scan source"
+skill_has 'pending.*running.*awaiting_go.*needs_human' \
+  "Step 1b enumerates the 4 non-terminal statuses (pending/running/awaiting_go/needs_human)"
+skill_has 'Undrained root inbox — `\.orchestrate/inbox/\*\.md`' \
+  "Step 1b names undrained root inbox as a scan source"
+skill_has 'Undrained gated inbox — `\.orchestrate/inbox/gated/\*\.md`' \
+  "Step 1b names undrained gated inbox as a scan source"
+skill_has 'Exclude any file carrying a `deferred_at:` header' \
+  "Step 1b excludes deferred_at: files from the undrained-inbox scan"
+skill_has 'Explicit human-named ticket ID or title.*hard-dependency candidate' \
+  "Step 1b heuristic 1 (explicit ID/title) is classified hard"
+skill_has 'Target path overlap.*soft conflict only' \
+  "Step 1b heuristic 2 (target path) is classified soft"
+skill_has 'Shared resource keywords.*soft conflict only' \
+  "Step 1b heuristic 3 (shared keywords) is classified soft"
+
+# ── 9. Step 4 — live-overlap hard-dependency wiring ──────────────────────────
+echo ""
+echo "9. Step 4 live-overlap wiring"
+
+skill_has 'Live-overlap hard dependencies \(from Step 1b\)' \
+  "Step 4 documents wiring live-overlap hard-dependency candidates"
+skill_has 'This already resolves today' \
+  "Step 4 states the live-registry-ID reference form already resolves via drain-inbox.sh Stage 2"
+skill_has 'Known,\s*$|Known,.*unclosed race window' \
+  "Step 4 documents the undrained-inbox-basename race-window caveat explicitly"
+skill_has 'never.*wired into `blocked_by_ticket:`.*here' \
+  "Step 4 states soft conflicts from Step 1b are never wired as a hard dependency"
+
+# ── 10. Step 6 — header comment documents all 3 blocked_by_ticket: forms ─────
+echo ""
+echo "10. Step 6 blocked_by_ticket: header forms"
+
+skill_has 'a live prior-run registry task ID from Step 1b' \
+  "Step 6 header comment documents the live-registry-ID reference form"
+skill_has 'a pre-existing undrained inbox file.s basename from Step 1b' \
+  "Step 6 header comment documents the undrained-inbox-basename reference form"
+
+# ── 11. Step 7 — Live overlaps summary block ─────────────────────────────────
+echo ""
+echo "11. Step 7 Live overlaps block"
+
+skill_has '⚠ Live overlaps \(not blocked — for awareness only\)' \
+  "Step 7 defines the ⚠ Live overlaps summary block"
+skill_has 'omit this block entirely when there are none' \
+  "Step 7 states the Live overlaps block is only printed when soft conflicts exist"
+skill_has 'may now name a \*\*pre-existing\*\* live' \
+  "Step 7 notes the depends-on column may reference a pre-existing (not just same-batch) ticket"
+
 # ── 7. sync.sh mirrors are byte-identical ────────────────────────────────────
 echo ""
 echo "7. sync.sh mirrors"

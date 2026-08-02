@@ -49,6 +49,57 @@ The job is one of: a spec/plan doc (path or pasted), rough notes, or the current
 - Note: existing constraints, target repos/paths, data/counts, CLI interfaces, naming conventions,
   cluster/infra dependencies, and anything that affects gating (Step 5) or ordering (Step 4).
 
+## Step 1b — Scan the live control plane for overlapping work
+
+Before finalizing any unit's dependencies (Step 4) or deciding whether Step 1a needs to ask the human,
+scan for work that is already enqueued or in flight and might overlap this job. Scan **three sources**,
+all relative to the canonical control plane root `/Users/haimengzhou/apps/ai-console`:
+
+1. **`.orchestrate/project.md` non-terminal registry rows.** Parse the `## Task Registry` table; a row
+   is "live" (in scope for overlap) iff its `status` column is one of `pending`, `running`, `awaiting_go`, `needs_human`
+   — the same non-terminal set `check-depends-on.sh`'s gate and `churn-guard.sh`'s scope already use.
+   `complete`, `failed`, `cancelled` rows are excluded — terminal, not a race risk. For each
+   live row, also read `.orchestrate/tasks/<ID>.md` if it exists to pull its `**Target:**` line and
+   `## Goal` text for heuristics 2–3 below — the registry table itself only carries `summary`, not target
+   path or goal body.
+2. **Undrained root inbox — `.orchestrate/inbox/*.md`.** Files not yet processed by `drain-inbox.sh` (no
+   registry ID assigned yet). Exclude any file carrying a `deferred_at:` header — a deferred file was
+   explicitly shelved by a human and should not gate new work.
+3. **Undrained gated inbox — `.orchestrate/inbox/gated/*.md`.** Same file-shape and `deferred_at:`
+   exclusion as (2); scanned separately only because it's a distinct directory, not because gated status
+   changes the overlap logic.
+
+`.orchestrate/inbox/processed/` is never scanned — historical record, already reflected in `project.md`
+if it resulted in a live row, and irrelevant if terminal.
+
+For each unit/ticket being staged, check it against each live source-item found above, in this priority
+order:
+
+1. **Explicit human-named ticket ID or title (highest confidence — hard-dependency candidate).** The
+   source job text (the spec/notes/conversation being decomposed) literally names a registry task ID
+   (matches `ID_SHAPE_RE` from `drain-inbox.sh`, i.e. `^[0-9]{8}-inbox-[0-9A-Za-z]+$`) or a work-area
+   title/slug that exact- or prefix-matches a live row's `summary` column — reuse the same matching
+   `resolve_title_ref()` (`drain-inbox.sh`) already performs, don't reinvent it.
+2. **Target path overlap (medium confidence — soft conflict only, see Step 4).** The new ticket's
+   `**Target:**` value (repo path / branch) exact- or prefix-matches a live task file's `**Target:**`
+   value. Path overlap alone says nothing about whether the two touch the *same files* — too weak to
+   wire as a hard block, strong enough to warn on.
+3. **Shared resource keywords (lowest confidence — soft conflict only, see Step 4).** Quoted file/script
+   basenames (e.g. `drain-inbox.sh`), table/service names, or a work-area prefix shared with a live
+   row's summary (e.g. both start with `CH-`). A token match is a "these might be touching the same
+   area" signal, not evidence of a real ordering dependency — false positives are expected and
+   acceptable here, since this channel is print-only.
+
+Heuristic 1 is deterministic and cheap; heuristics 2–3 are best-effort greps, not semantic analysis —
+they exist to surface things for a human to notice, not to make autonomous blocking decisions. Carry the
+resulting per-unit list of `(live_ref, kind: hard|soft, source: registry-id|inbox-basename,
+matched_heuristic)` tuples forward to Step 4 and Step 7.
+
+A heuristic-1 hard match found here can itself inform whether Step 1a needs to ask the human (e.g. "this
+unit collides with an `awaiting_go` ticket someone else is mid-review on — do you want to wait, or
+proceed and I'll wire the dependency?" is a legitimate Step 1a-shaped question) — this step only
+surfaces the match, it does not itself decide whether to stop and ask.
+
 ## Step 1a — Stop and ask, but only when investigation genuinely can't resolve it
 
 Most open questions belong inside a unit's **Investigation/Plan** ticket (Step 2) — they get answered
@@ -200,6 +251,27 @@ same batch (so its filename is known); if the blocker is an already-registered t
 refs it can match against tickets it is registering in the current drain, and inventing an ID is worse
 than leaving `depends_on: none` with the prose intact.
 
+**Live-overlap hard dependencies (from Step 1b).** When Step 1b found a heuristic-1 hard match against a
+*live* (pre-existing, not same-batch) item, wire it using the **same** `blocked_by_ticket:` mechanism as
+above, with the reference value depending on what the live overlap actually is:
+- **Live overlap is a registry row (already has an ID).** Emit `blocked_by_ticket: <that row's real
+  registry ID>` (e.g. `blocked_by_ticket: 20260801-inbox-8B12`). **This already resolves today** —
+  `drain-inbox.sh`'s Stage 2 (`ID_SHAPE_RE` match + `registry_has_id()` exact check) was built for
+  exactly this shape of reference; no further `drain-inbox.sh` change is needed.
+- **Live overlap is an undrained inbox file (no ID yet).** Emit `blocked_by_ticket: <that file's
+  basename, without .md>` — the same convention used above for a same-batch sibling. **Known,
+  unclosed race window:** this only resolves via Stage 1 (`BLOCKED_BY_MAP`) if the pre-existing file and
+  this ticket are drained in the *same* `drain-inbox.sh` invocation. If the pre-existing file was
+  already drained in an earlier, separate run, its basename is gone from that later run's ephemeral
+  `BLOCKED_BY_MAP`, it does not match `ID_SHAPE_RE` (an inbox basename isn't `YYYYMMDD-inbox-*`-shaped),
+  and Stage 3's `resolve_title_ref()` matches against the registry's **title-derived `summary`**
+  column, not a raw filename — so resolution can silently fall to `none`. Do not imply this reference
+  form always resolves; state the caveat if surfacing it to a human.
+
+Heuristic-2/3 soft conflicts from Step 1b are **never** wired into `blocked_by_ticket:` here — nor into
+**Blocked by:** — a low-confidence match wired as a hard block risks stalling unrelated work behind a
+false positive with no human ever prompted to un-stick it. Soft conflicts are carried to Step 7 only.
+
 ## Step 5 — Classify each ticket auto vs gated (risk-based, NOT location-based)
 
 Default is **`mode: auto`** (write to inbox root). Gating is **risk-based** — it depends on what the
@@ -256,9 +328,13 @@ ticket **absolute** (point at the target repo). Create `gated/` if a gated ticke
 mode: auto            # or "gated"
 source: self          # who originated it (e.g. "self" for skill-staged, or a person/system)
 triggered_by: <job-id-or-session-tag>   # provenance, e.g. 20260627-redis-p3prep-session
-blocked_by_ticket: <other-ticket's-filename-without-.md>   # ONLY when this ticket's Blocked by:
-                                                            # line names another ticket being staged
-                                                            # in THIS SAME batch (see Step 4)
+blocked_by_ticket: <value — see Step 4 for the three forms>
+    # (a) a same-batch sibling's filename-without-.md — this ticket's Blocked by: line names another
+    #     ticket being staged in THIS SAME batch (original form), OR
+    # (b) a live prior-run registry task ID from Step 1b's heuristic-1 hard match — resolves today via
+    #     drain-inbox.sh's Stage 2, OR
+    # (c) a pre-existing undrained inbox file's basename from Step 1b's heuristic-1 hard match —
+    #     resolves only if that file is drained in the same run as this ticket (race window, see Step 4)
 ```
 Then a blank line, then `# <ID> — <Short title>`, then the dependency header line + the 7 sections.
 
@@ -296,6 +372,18 @@ Dependency waves (execution order):
   Wave 6:  P3-3-VERIFY                    (after P3-3-IMPL)
 ──────────────────────────────────────────────────────────────────────
 ```
+
+**Live overlaps (from Step 1b).** If Step 1b found any soft conflicts (heuristics 2–3), print a second
+block right after the table above — omit this block entirely when there are none:
+```
+⚠ Live overlaps (not blocked — for awareness only) ─────────────
+| Unit ticket | Overlaps      | Status      | Heuristic     |
+|-------------|---------------|-------------|---------------|
+| P3-3-INV    | 20260628-inbox-9D5A | running | target-path   |
+```
+Note: the "depends on" column in the **Staged tickets** table above may now name a **pre-existing** live
+registry ID or undrained-inbox basename (a Step 1b heuristic-1 hard match), not only a same-batch
+sibling — hard matches are wired directly into that column, not into this separate soft-conflict block.
 
 Then add a **Recommended next step** line (this is the "tell me what to do next" the human asked for) —
 derived from the waves. Example:

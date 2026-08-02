@@ -10,6 +10,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SKILL_SRC="/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/SKILL.md"
 ANALYZER_SKILL="/Users/haimengzhou/apps/ai-toolbox/skills/inbox-log-analyzer/SKILL.md"
 SKILL_INSTALLED="$HOME/.claude/skills/task-orchestrate/SKILL.md"
+ANALYZER_INSTALLED="$HOME/.claude/skills/inbox-log-analyzer/SKILL.md"
 MONITOR_DIR="/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/monitor"
 INBOX_ANALYZER_PLIST="$HOME/Library/LaunchAgents/com.orchestrate.inbox-analyzer.plist"
 CURSOR_AGENT="$HOME/.local/bin/cursor-agent"
@@ -80,7 +81,8 @@ echo ""
 echo "3. Tend watchdog mechanics"
 
 skill_has 'NEED_ACTION=0' "T-1 pre-flight defines NEED_ACTION"
-skill_has 'awaiting_critic\|awaiting_go' "T-1 checks stalled task statuses"
+skill_has 'awaiting_critic' "T-1 checks stalled task statuses (awaiting_critic)"
+skill_has 'awaiting_go \(gated\) is EXCLUDED' "T-1 excludes gated awaiting_go from NEED_ACTION (AT-2, no token wake)"
 skill_has '\.orchestrate/inbox/\*\.md' "T-1 checks inbox glob"
 skill_has '360' "T-0 lock uses 360s staleness threshold"
 skill_has '## Goal' "inbox file format requires Goal section"
@@ -88,10 +90,15 @@ skill_has 'inbox/gated' "T-2 documents inbox/gated/ path"
 skill_has '`inbox`' "invocation table includes inbox mode"
 skill_has '## Inbox Mode' "SKILL.md has Inbox Mode section"
 skill_has 'deferred_at:' "T-2 skips deferred inbox files"
-skill_has 'Gated tasks never auto-execute' "T-4 awaiting_go tasks are never auto-executed (gated fix 2026-06-21)"
+skill_has 'Gated tasks still never auto-execute' "T-4 awaiting_go tasks are never auto-executed (gated fix 2026-06-21)"
+skill_has 'awaiting_go.*mode: gated.*\*\*SKIP entirely' "T-4 awaiting_go block SKIPS gated rows — no read, no per-cycle notify (AT-2)"
 skill_has 'auto-resolved needs_human' "T-4 auto-resolves needs_human when all phases complete"
 skill_has 'self-unblocked' "T-4 second-pass auto-resolution logs self-unblocked to heartbeat"
 skill_has 'Second-Pass Auto-Resolution Check' "T-4 has second-pass check before surfacing needs_human to human"
+skill_has 're-queued ghost-reset auto job' "T-4 re-queues ghost-reset auto jobs with no task file (not silent skip)"
+skill_has 'claim, don.t wait' "T-4 documents claim-not-wait rule for running rows with no task file (RS01 fix)"
+skill_has 'Fold it directly into the pending-task batch collection' "T-4 folds unclaimed running rows into pending batch collection instead of waiting"
+skill_has 'Bash backstop \(3C1D\) — safety net only, not the primary path' "T-4 documents bash requeue backstop as safety-net-only, not the live-session path"
 skill_has 'physically move' "T-2 requires physical move to processed/ (not processed_as in place)"
 if grep -q 'finding_hashes' "$ANALYZER_SKILL" 2>/dev/null; then
   ok "inbox-log-analyzer uses finding hash ledger"
@@ -124,12 +131,55 @@ skill_has 'Project-local smoke scripts' "verify phase mandates running inbox-ref
 skill_has 'disqualifies PASS' "critic gate: any ✗ in AC → PARTIAL minimum"
 skill_has 'Premium: retry 1.*premium; retry 2.*halt' "premium retry cap documented (retry 2 → halt)"
 skill_has 'confidence-only gate' "critic applies confidence gate for simple/instructional phases"
+skill_has '6c\. Auto-enqueue wiki-sync' "Completion §6c documents wiki-sync auto-enqueue sub-step"
+skill_has 'enqueue-wiki-sync\.sh <ID>' "§6c documents the model-path mirror call to enqueue-wiki-sync.sh"
+skill_has 'supplements.*does not replace or modify.*orchestrate-daily-wiki-ingest' "§6c states it supplements (not replaces) orchestrate-daily-wiki-ingest"
+skill_has 'kind: wiki-sync' "§6c documents the kind: wiki-sync ticket contract"
 
 if grep -q 'Task:.*full task:' "$ANALYZER_SKILL" 2>/dev/null || \
    grep -q 'read the full log in Phase 1' "$ANALYZER_SKILL" 2>/dev/null; then
   ok "inbox-log-analyzer Step 5 Context includes full task line + log pointer"
 else
   fail "inbox-log-analyzer Step 5 Context missing full task line or log pointer"
+fi
+
+# Keyword-overlap check for substance-duplicates against differently-titled tickets
+# (20260728-inbox-7B05): title-prefix comparison alone misses a candidate finding
+# that describes the same root cause as an already-filed ticket worded differently.
+if grep -q 'Keyword-overlap check for likely substance-duplicates' "$ANALYZER_SKILL" 2>/dev/null; then
+  ok "inbox-log-analyzer Step 4 documents keyword-overlap substance-duplicate check"
+else
+  fail "inbox-log-analyzer missing keyword-overlap substance-duplicate check"
+fi
+if grep -q 'Extract distinctive keywords' "$ANALYZER_SKILL" 2>/dev/null && \
+   grep -qE '2 or more.*distinctive keywords|1 keyword.*full file basename' "$ANALYZER_SKILL" 2>/dev/null; then
+  ok "inbox-log-analyzer keyword-overlap check defines extraction + match threshold"
+else
+  fail "inbox-log-analyzer keyword-overlap check missing extraction or match threshold rules"
+fi
+if grep -q 'orchestrate-history/MANIFEST.md' "$ANALYZER_SKILL" 2>/dev/null && \
+   grep -q '\.orchestrate/project\.md' "$ANALYZER_SKILL" 2>/dev/null; then
+  ok "inbox-log-analyzer keyword-overlap search corpus includes project.md + MANIFEST.md"
+else
+  fail "inbox-log-analyzer keyword-overlap search corpus missing project.md or MANIFEST.md"
+fi
+# Regression case (AC): the 5639/8CA8 pair — a recurring-blocker finding whose
+# auto-generated title shares no 60-char prefix with the already-filed 8CA8 ticket's
+# human-authored title, but whose excerpt keywords (test-task-orchestrate.sh,
+# .orchestrate/, PROJECT_ROOT) overlap 8CA8's filed ticket body — must be documented
+# as caught by the new check, not just theoretically covered.
+if grep -q '20260726-inbox-8CA8' "$ANALYZER_SKILL" 2>/dev/null && \
+   grep -q '20260727-inbox-5639' "$ANALYZER_SKILL" 2>/dev/null && \
+   grep -q 'test-task-orchestrate\.sh' "$ANALYZER_SKILL" 2>/dev/null; then
+  ok "inbox-log-analyzer documents 5639/8CA8 regression case for keyword-overlap check"
+else
+  fail "inbox-log-analyzer missing 5639/8CA8 regression worked example"
+fi
+if grep -q 'flag, don.t silently skip' "$ANALYZER_SKILL" 2>/dev/null && \
+   grep -q 'Possible duplicate of' "$ANALYZER_SKILL" 2>/dev/null; then
+  ok "inbox-log-analyzer keyword-overlap match flags (not suppresses) the finding"
+else
+  fail "inbox-log-analyzer keyword-overlap match should flag, not suppress"
 fi
 
 # ── 5. Installed skill sync ───────────────────────────────────────────────────
@@ -145,6 +195,17 @@ if [ -f "$SKILL_INSTALLED" ]; then
   fi
 else
   fail "installed SKILL.md not found at $SKILL_INSTALLED"
+fi
+
+if [ -f "$ANALYZER_INSTALLED" ]; then
+  ok "installed inbox-log-analyzer SKILL.md exists (~/.claude/skills/)"
+  if cmp -s "$ANALYZER_SKILL" "$ANALYZER_INSTALLED" 2>/dev/null; then
+    ok "installed inbox-log-analyzer SKILL.md matches ai-toolbox source"
+  else
+    fail "installed inbox-log-analyzer SKILL.md is stale — run: cd /Users/haimengzhou/apps/ai-toolbox && ./sync.sh"
+  fi
+else
+  fail "installed inbox-log-analyzer SKILL.md not found at $ANALYZER_INSTALLED"
 fi
 
 # ── 6. T-0 lock simulation ────────────────────────────────────────────────────
@@ -241,6 +302,11 @@ fi
 
 if [ -f "$PROJECT_ROOT/.cursor/skills/inbox-log-analyzer/SKILL.md" ]; then
   ok "inbox-log-analyzer skill installed in .cursor/skills/"
+  if cmp -s "$ANALYZER_SKILL" "$PROJECT_ROOT/.cursor/skills/inbox-log-analyzer/SKILL.md" 2>/dev/null; then
+    ok ".cursor/skills/inbox-log-analyzer/SKILL.md matches ai-toolbox source"
+  else
+    fail ".cursor/skills/inbox-log-analyzer/SKILL.md is stale vs ai-toolbox source — run: cd /Users/haimengzhou/apps/ai-toolbox && ./sync.sh"
+  fi
 else
   fail "inbox-log-analyzer missing from .cursor/skills/ (required for headless cursor-agent)"
 fi
@@ -376,7 +442,7 @@ skill_has 'parallel batches of up to 3' "T-4 tend go auto dispatches parallel ba
 skill_has 'TASK RESULT' "parallel batch subagent returns TASK RESULT block"
 skill_has 'tend go auto <ID>' "invocation modes includes targeted single-task mode"
 skill_has 'Do \*\*not\*\* append to `skill-improvement-backlog.md`' "completion routes suggestions to inbox not backlog"
-skill_has 'inbox/gated/improvement-' "self-improvement writes to inbox/gated/"
+skill_has 'inbox/improvement-' "self-improvement writes to inbox/ (not gated/)"
 
 if [[ -f "$RUN_JOB_SRC" ]] && grep -q 'TEND_MODE="\${TEND_MODE:-go auto}"' "$RUN_JOB_SRC" 2>/dev/null; then
   ok "run-job.sh defaults TEND_MODE to go auto"
@@ -480,6 +546,9 @@ else
 fi
 
 skill_has 'Self-check before marking complete' "Completion requires MANIFEST self-check"
+
+skill_has 'Top-level files_changed \(mandatory when non-empty\)' "Inline phase execution requires writing a top-level files_changed: line"
+skill_has 'Pre-archive files_changed self-check' "Completion has a pre-archive check that a top-level files_changed: line exists when any phase changed files"
 
 if [[ -f "$MANIFEST" ]]; then
   BAD_LINES=$(grep -vE '^#|^$|^---$|^[0-9]{4}-[0-9]{2}-[0-9]{2} \|' "$MANIFEST" | grep -E '^[[:space:]]*(\||-|[0-9]{8}-)' || true)
@@ -753,7 +822,22 @@ else
   fail "scripts/backfill-registry-last-activity.js missing"
 fi
 
-if command -v node >/dev/null 2>&1 && node --test "$PROJECT_ROOT/scripts/backfill-registry-last-activity.test.js" >/dev/null 2>&1; then
+# Resolve a node binary robustly: PATH first, then common install locations. The
+# tend/launchd environment runs with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin)
+# that omits ~/.local/bin, so `command -v node` failed there and this check reported
+# a bogus exit-127 "failure" even though the test itself is green. Node genuinely
+# absent = documented skip (counts as ok), never a hard fail.
+NODE_BIN=""
+if command -v node >/dev/null 2>&1; then
+  NODE_BIN="$(command -v node)"
+else
+  for _cand in "$HOME/.local/bin/node" /usr/local/bin/node /opt/homebrew/bin/node; do
+    [[ -x "$_cand" ]] && { NODE_BIN="$_cand"; break; }
+  done
+fi
+if [[ -z "$NODE_BIN" ]]; then
+  ok "backfill-registry-last-activity tests skipped — node unavailable in this environment (documented)"
+elif "$NODE_BIN" --test "$PROJECT_ROOT/scripts/backfill-registry-last-activity.test.js" >/dev/null 2>&1; then
   ok "backfill-registry-last-activity tests pass"
 else
   fail "backfill-registry-last-activity.test.js failed"
@@ -789,12 +873,134 @@ else
   fail "monitor server.test.js missing registry-complete inbox test"
 fi
 
+if [[ -f "$MONITOR_TEST" ]] && grep -q 'registry-complete task ID must not appear' "$MONITOR_TEST"; then
+  ok "monitor server.test.js covers registry-complete inbox filter"
+else
+  fail "monitor server.test.js missing registry-complete inbox test"
+fi
+
+# ── 12. BC0E blocked-task handling (first-pass + requeue) ─────────────────────
+echo ""
+echo "12. BC0E blocked-task handling"
+
+skill_has 'First-Pass Auto-Resolution Check' "SKILL.md documents first-pass auto-resolution before needs_human"
+skill_has 'requeue-unblocked' "SKILL.md documents requeue-unblocked.sh preflight"
+skill_has 'needs:' "SKILL.md documents structured needs/why/to_clear human ask"
+
+for script in first-pass-auto-resolve.sh requeue-unblocked.sh; do
+  if [[ -f "$PROJECT_ROOT/.orchestrate/bin/$script" ]]; then
+    ok ".orchestrate/bin/$script exists"
+    if bash -n "$PROJECT_ROOT/.orchestrate/bin/$script" 2>/dev/null; then
+      ok "bash -n $script clean"
+    else
+      fail "bash -n $script syntax error"
+    fi
+  else
+    fail ".orchestrate/bin/$script missing"
+  fi
+done
+
+if grep -q 'requeue-unblocked.sh' "$PROJECT_ROOT/.orchestrate/bin/run-job.sh" 2>/dev/null; then
+  ok "run-job.sh invokes requeue-unblocked.sh in tend preflight"
+else
+  fail "run-job.sh missing requeue-unblocked.sh preflight call"
+fi
+
+UNBLOCK_SKILL="/Users/haimengzhou/apps/ai-toolbox/skills/unblock-task/SKILL.md"
+if grep -q 'to_clear:' "$UNBLOCK_SKILL" 2>/dev/null; then
+  ok "unblock-task displays needs/why/to_clear fields"
+else
+  fail "unblock-task missing structured human-ask display"
+fi
+
+# Fixture: first-pass C2 on deferral language (non-EXTERNAL task)
+FP_FIXTURE="$(mktemp -d)"
+mkdir -p "$FP_FIXTURE/.orchestrate/tasks"
+cat > "$FP_FIXTURE/.orchestrate/tasks/fixture-defer.md" << 'EOF'
+id: fixture-defer
+mode: auto
+blockers: deferred to platform team — not a blocker for this task
+EOF
+if bash "$PROJECT_ROOT/.orchestrate/bin/first-pass-auto-resolve.sh" "$FP_FIXTURE" fixture-defer 2>/dev/null | grep -q 'C2'; then
+  ok "first-pass-auto-resolve C2 fixture resolves deferral language"
+else
+  fail "first-pass-auto-resolve C2 fixture did not resolve"
+fi
+rm -rf "$FP_FIXTURE"
+
+# ── Mandatory self-resolution before needs_human (0AD6) ─────────────────────────
+skill_has 'MANDATORY before writing' "SKILL.md mandates self-resolution before needs_human (first-pass)"
+skill_has 'MANDATORY — T-4' "SKILL.md mandates self-resolution on T-4 second-pass branch"
+skill_has 'Human-Only Block Classifier' "SKILL.md defines the Human-Only Block Classifier"
+skill_has 'NOT valid blockers' "SKILL.md enumerates NOT-valid (locally-executable) blockers"
+skill_has 'cross.?project file write' "SKILL.md names cross-project write as not-a-block"
+skill_has 'reversible settings/config write' "SKILL.md names reversible config write as not-a-block"
+
+# Regression fixtures: 59FA-like (cross-project write) and 1EC4-like (settings.json write)
+# must NOT be classified needs_human — first-pass C6 resolves them.
+SR_FIXTURE="$(mktemp -d)"
+mkdir -p "$SR_FIXTURE/.orchestrate/tasks"
+cat > "$SR_FIXTURE/.orchestrate/tasks/sr-59fa.md" << 'EOF'
+id: sr-59fa
+mode: auto
+### Phase 2
+status: x failed
+blockers: blocked — cross-project write to INDEX.md not allowed under go-auto
+EOF
+cat > "$SR_FIXTURE/.orchestrate/tasks/sr-1ec4.md" << 'EOF'
+id: sr-1ec4
+mode: auto
+### Phase 1
+status: x failed
+blockers: settings.json write hard-gated under go-auto
+EOF
+cat > "$SR_FIXTURE/.orchestrate/tasks/sr-kube.md" << 'EOF'
+id: sr-kube
+mode: auto
+blocked_on: EXTERNAL
+### Phase 4
+status: x failed
+blockers: requires live kubectl apply + load-ramp; no kubectl in env
+EOF
+cat > "$SR_FIXTURE/.orchestrate/tasks/sr-cred.md" << 'EOF'
+id: sr-cred
+mode: auto
+### Phase 1
+status: x failed
+blockers: needs missing credential / human approval to access prod secret
+EOF
+
+FPS="$PROJECT_ROOT/.orchestrate/bin/first-pass-auto-resolve.sh"
+if bash "$FPS" "$SR_FIXTURE" sr-59fa 2>/dev/null | grep -q 'C6'; then
+  ok "first-pass C6: 59FA-like cross-project write is self-resolvable (not needs_human)"
+else
+  fail "first-pass C6: 59FA-like cross-project write was NOT auto-resolved"
+fi
+if bash "$FPS" "$SR_FIXTURE" sr-1ec4 2>/dev/null | grep -q 'C6'; then
+  ok "first-pass C6: 1EC4-like settings.json write is self-resolvable (not needs_human)"
+else
+  fail "first-pass C6: 1EC4-like settings.json write was NOT auto-resolved"
+fi
+if bash "$FPS" "$SR_FIXTURE" sr-kube >/dev/null 2>&1; then
+  fail "first-pass C6: genuine EXTERNAL kubectl block was wrongly auto-resolved"
+else
+  ok "first-pass: genuine EXTERNAL kubectl block stays blocked (exit 1)"
+fi
+if bash "$FPS" "$SR_FIXTURE" sr-cred >/dev/null 2>&1; then
+  fail "first-pass C6: genuine credential/human block was wrongly auto-resolved"
+else
+  ok "first-pass: genuine credential/human block stays blocked (exit 1)"
+fi
+rm -rf "$SR_FIXTURE"
+
 # ── 15. Bypass — park blocked tasks until unblocked ─────────────────────────────
 echo ""
 echo "15. Bypass — park blocked tasks until unblocked"
 
 skill_has 'bypassed_at:' "SKILL.md documents the bypassed_at park marker"
 skill_has 'Bypass — park blocked tasks' "SKILL.md has the Bypass section"
+skill_has 'Cancelled vs failed' "SKILL.md documents cancelled-vs-failed distinction"
+skill_has 'cancelled_at:' "SKILL.md documents cancelled_at: cancel marker"
 
 BYP_BIN="$PROJECT_ROOT/.orchestrate/bin"
 if [[ -f "$BYP_BIN/tend-need-action.sh" && -f "$BYP_BIN/requeue-unblocked.sh" ]]; then
@@ -818,7 +1024,83 @@ PROJEOF
     fail "tend-need-action.sh bypass skip — expected NEEDS_HUMAN_ACTIONABLE=1, got '$NHA'"
   fi
 
-  # Unblock the parked task via requeue_when_exists closure → marker stripped + pending
+  # AC#1 'at most once': a needs_human task with NO bypassed_at / NO human_resolution
+  # is actionable for EXACTLY ONE pass; once the agent writes bypassed_at: it stops
+  # counting. Isolate NEW0 in its own registry so the count is unambiguous.
+  cat > "$BYP_TMP/.orchestrate/project.md" <<'PROJEOF'
+# Orchestrate — test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| 20990101-inbox-NEW0 | not yet evaluated | auto | 1 | needs_human | 2099-01-01T00:00:00Z |
+PROJEOF
+  NHA_BEFORE="$(bash "$BYP_BIN/tend-need-action.sh" "$BYP_TMP" 2>/dev/null | grep '^NEEDS_HUMAN_ACTIONABLE=' | cut -d= -f2 || true)"
+  printf 'id: 20990101-inbox-NEW0\nstatus: needs_human\nbypassed_at: 2099-01-01T00:05:00Z\nbypass_reason: external dep\n### Phase 1\nstatus: x failed\n' > "$BYP_TMP/.orchestrate/tasks/20990101-inbox-NEW0.md"
+  NHA_AFTER="$(bash "$BYP_BIN/tend-need-action.sh" "$BYP_TMP" 2>/dev/null | grep '^NEEDS_HUMAN_ACTIONABLE=' | cut -d= -f2 || true)"
+  if [[ "$NHA_BEFORE" == "1" && "$NHA_AFTER" == "0" ]]; then
+    ok "tend-need-action.sh evaluates a needs_human task at most once (actionable→parked)"
+  else
+    fail "at-most-once eval — expected before=1 after=0, got before='$NHA_BEFORE' after='$NHA_AFTER'"
+  fi
+
+  # AC#2: two consecutive runs on a bypassed-only registry both return NEED_ACTION=0.
+  cat > "$BYP_TMP/.orchestrate/project.md" <<'PROJEOF'
+# Orchestrate — test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| 20990101-inbox-PARK | parked external block | auto | 1 | needs_human | 2099-01-01T00:00:00Z |
+PROJEOF
+  printf 'id: 20990101-inbox-PARK\nstatus: needs_human\nbypassed_at: 2099-01-01T00:05:00Z\nbypass_reason: external dep\n### Phase 1\nstatus: x failed\n' > "$BYP_TMP/.orchestrate/tasks/20990101-inbox-PARK.md"
+  bash "$BYP_BIN/tend-need-action.sh" "$BYP_TMP" >/dev/null 2>&1; RUN1=$?
+  bash "$BYP_BIN/tend-need-action.sh" "$BYP_TMP" >/dev/null 2>&1; RUN2=$?
+  if [[ "$RUN1" -eq 0 && "$RUN2" -eq 0 ]]; then
+    ok "tend-need-action.sh stays NEED_ACTION=0 across two consecutive runs on a bypassed task"
+  else
+    fail "two-run idempotence — expected exit 0/0, got '$RUN1'/'$RUN2'"
+  fi
+
+  # AC#4: a `failed` task carrying bypassed_at stays non-actionable (no regression).
+  cat > "$BYP_TMP/.orchestrate/project.md" <<'PROJEOF'
+# Orchestrate — test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| 20990101-inbox-FAIL | hard failed | auto | 1 | failed | 2099-01-01T00:00:00Z |
+PROJEOF
+  printf 'id: 20990101-inbox-FAIL\nstatus: failed\nbypassed_at: 2099-01-01T00:05:00Z\nbypass_reason: hard fail\n### Phase 1\nstatus: x failed\n' > "$BYP_TMP/.orchestrate/tasks/20990101-inbox-FAIL.md"
+  bash "$BYP_BIN/tend-need-action.sh" "$BYP_TMP" >/dev/null 2>&1; RUNF=$?
+  if [[ "$RUNF" -eq 0 ]]; then
+    ok "tend-need-action.sh keeps a failed+bypassed task non-actionable (no regression)"
+  else
+    fail "failed-task bypass regression — expected exit 0, got '$RUNF'"
+  fi
+
+  # AC: dashboard-cancelled task (failed + cancelled_at:) is terminal/non-actionable.
+  cat > "$BYP_TMP/.orchestrate/project.md" <<'PROJEOF'
+# Orchestrate — test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| 20990101-inbox-CAN | deliberately cancelled | gated | 0 | failed | 2099-01-01T00:00:00Z |
+PROJEOF
+  printf 'cancelled_at: 2099-01-01T00:05:00Z\ncancel_reason: no longer needed\nid: 20990101-inbox-CAN\n' > "$BYP_TMP/.orchestrate/tasks/20990101-inbox-CAN.md"
+  bash "$BYP_BIN/tend-need-action.sh" "$BYP_TMP" >/dev/null 2>&1; RUNC=$?
+  if [[ "$RUNC" -eq 0 ]]; then
+    ok "tend-need-action.sh keeps a failed+cancelled_at task non-actionable (NEED_ACTION=0)"
+  else
+    fail "cancelled-task regression — expected exit 0, got '$RUNC'"
+  fi
+
+  # Restore the PARK fixture for the unblock assertion below.
+  cat > "$BYP_TMP/.orchestrate/project.md" <<'PROJEOF'
+# Orchestrate — test
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| 20990101-inbox-PARK | parked external block | auto | 1 | needs_human | 2099-01-01T00:00:00Z |
+PROJEOF
+
   printf '**Status:** ✅ CONFIRMED\n' > "$BYP_TMP/reports/decision.md"
   printf 'id: 20990101-inbox-PARK\nstatus: needs_human\nrequeue_when_exists: %s/reports/decision.md\nbypassed_at: 2099-01-01T00:05:00Z\nbypass_reason: external dep\n### Phase 1\nstatus: x failed\n' "$BYP_TMP" > "$BYP_TMP/.orchestrate/tasks/20990101-inbox-PARK.md"
   bash "$BYP_BIN/requeue-unblocked.sh" "$BYP_TMP" >/dev/null 2>&1 || true
@@ -832,6 +1114,25 @@ PROJEOF
 else
   fail "bypass bin scripts not found under $BYP_BIN"
 fi
+
+# ── 16. DEP-SCAN-IMPL — enqueue-time live-overlap scan (20260801-inbox-70BD) ──
+echo ""
+echo "16. Inbox Mode step 3a — live control plane scan"
+
+skill_has 'Scan the live control plane for overlapping work — same 3 sources and 3 heuristics as' \
+  "Plain-text structuring step 5/3a mirrors breakdown-to-inbox's scan (same sources/heuristics, no second heuristic set)"
+skill_has 'breakdown-to-inbox` Step 1b' \
+  "step 3a explicitly cites breakdown-to-inbox Step 1b rather than reinventing"
+skill_has 'Heuristic 1 \(explicit' \
+  "step 3a classifies heuristic 1 (explicit ID/title) as the hard-dependency candidate"
+skill_has 'heuristic 2 \(Target-path overlap\) and heuristic 3 \(shared resource keywords\) are soft conflicts only' \
+  "step 3a classifies heuristics 2/3 as soft conflicts only"
+skill_has 'A hard match adds a `blocked_by_ticket:` header to the structured preview' \
+  "step 3a wires a hard match into blocked_by_ticket: on the structured preview"
+skill_has '⚠ Live overlap <ID/file> \(<status>, <heuristic>\)' \
+  "step 3a appends a soft match as a ⚠ Live overlap note, never wired into blocked_by_ticket:"
+skill_has 'Optional overlap annotation \(nice-to-have, not required\)' \
+  "Scan and display documents the optional overlap annotation and its disposition (included, not required)"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
