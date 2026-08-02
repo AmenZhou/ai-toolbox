@@ -222,6 +222,23 @@ ensure_cursor_cli() {
 # indefinitely; see the 2026-07 ECAF stall investigation (20260711-inbox-0C7B).
 AGENT_TIMEOUT_SECS="${AGENT_TIMEOUT_SECS:-1200}"
 
+# Claude Code's own background-task wait ceiling defaults to ~600000ms (10min):
+# when a session's outer turn finishes while it still has outstanding
+# background Agent() sub-calls (e.g. a tend "[batch N]" dispatch running two
+# inbox tasks as background sub-agents), the CLI silently terminates those
+# sub-agents once the ceiling elapses and returns — with NO non-zero exit code
+# and NO "failed"/"timeout" classification, so run-job.sh never sees an error.
+# Any batched task whose real work exceeds ~600s (orchestrate-daily-wiki-ingest
+# regularly does — up to 100 pages/run per wiki-ingest-daily.log) gets its
+# progress silently discarded mid-flight, then ghost-reset picks it up as
+# "stale, no phase progress" and requeues it to repeat the same death forever
+# (root-caused for 20260801-inbox-D9CA's 3x churn, investigate-churn 6D93).
+# Disable the CLI's own ceiling (0 = wait indefinitely) and let
+# AGENT_TIMEOUT_SECS above be the single, visible backstop instead — a hang is
+# then reaped by invoke_agent's watcher subshell (which DOES log/classify it)
+# rather than by an invisible internal CLI timeout.
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
+
 # Classify agent output: ok | session_limit | connection_lost | timeout | error
 classify_agent_result() {
   local code="$1"
