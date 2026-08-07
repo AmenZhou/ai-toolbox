@@ -61,7 +61,7 @@ For each unprocessed log file, read its full content. Identify findings in two c
 
 **Exclusion rules (apply before filing enhancements):**
 - **Never** file "empty task (0 phases)" for `*-tend.log` files. Tend-driven execution records work in `## PHASE OUTPUT` blocks inside `{ID}-tend.log`, not `### Phase N` sections in `.orchestrate/tasks/{ID}.md`. A tend.log with `=== done ===` and PHASE OUTPUT blocks is valid even when phase-section count is zero.
-- For empty-task detection, count only `### Phase N` headers (ignore `Phase N (retry R)`); apply to `*-phase*.log` only.
+- For empty-task detection, check the log itself for the presence of at least one `## PHASE OUTPUT` block or an `=== Phase N ===` header (ignore `(retry N)` suffixes) — **not** a literal `### Phase N` markdown header, which is a task-file (`.orchestrate/tasks/{ID}.md`) convention and essentially never appears inside a log. Only flag empty when the log contains **neither** marker. Apply to `*-phase*.log` and `*-verify.log` only.
 
 **Exclusion rules (apply before filing a `[BUG]`):**
 - Skip any line matching `acceptance_criteria_met:` when scanning for bare `✗` — e.g. `✗ stale task file cleanup skipped` inside an AC checklist is not a failure.
@@ -73,7 +73,7 @@ For each unprocessed log file, read its full content. Identify findings in two c
 | Pattern | Description |
 |---------|-------------|
 | A phase section with no `Acceptance Criteria` block | Phase lacks measurable exit criteria — **skip** `*-tend.log` (tend logs use `## PHASE OUTPUT`, not `### Phase N` task-file sections) |
-| A task log showing completed with 0 `### Phase N` sections | Empty task — no actual work recorded — **only** apply to `*-phase*.log` and `*-verify.log`; **never** file for `*-tend.log` |
+| A log showing completed with no `## PHASE OUTPUT` block and no `=== Phase N ===` header found anywhere in the log | Empty task — no actual work recorded — **only** apply to `*-phase*.log` and `*-verify.log`; **never** file for `*-tend.log` |
 | `blockers:` field is non-empty and marked `pre-existing` | Recurring blocker — track for recurrence |
 | Verify log contains "no test runner detected" and the log or related context references source files | Suggest adding tests to the project |
 
@@ -276,3 +276,21 @@ inbox-log-analyzer complete
   Skipped:    <M-K> duplicate(s)
   State:      .orchestrate/logs/inbox-analyzer-state.json updated
 ```
+
+Finally, output the phase completion block with the exact format below. This is **critical** — the orchestrate framework reads this block to mark the phase as complete:
+
+```
+## PHASE OUTPUT
+files_changed: .orchestrate/logs/inbox-analyzer-state.json, .orchestrate/logs/heartbeat.log, newly-filed inbox task files
+summary: Scanned <N> log(s), found <M> issue(s), filed <K> inbox task(s) (deduped <M-K> duplicates). State persisted.
+confidence: high
+blockers: none
+acceptance_criteria_met:
+- ✓ All unprocessed log files scanned
+- ✓ Findings identified and deduplicated
+- ✓ Inbox tasks written for actionable issues
+- ✓ State file updated
+- ✓ Heartbeat log appended
+```
+
+**IMPORTANT:** The `## PHASE OUTPUT` block must be output exactly as shown above, with the `status: complete` implicit (the framework infers this from the block's presence). Without this output, the framework will not mark the phase complete and the task will timeout after 1215 seconds.

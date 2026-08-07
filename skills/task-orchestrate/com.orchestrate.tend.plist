@@ -4,7 +4,7 @@
 
 <!--
   task-orchestrate tend watchdog launchd agent
-  Runs /task-orchestrate tend go auto via Cursor Agent every 5 minutes.
+  Runs /task-orchestrate tend go auto via Cursor Agent every 30 minutes.
 
   BEFORE INSTALLING — set PROJECT_DIR and run install-launchd.sh:
 

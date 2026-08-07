@@ -123,12 +123,29 @@ CG_LIB="$ROOT/.orchestrate/bin/churn-guard.sh"
 
 # Find an existing archive file for an ID (returns first match path, or empty).
 # Archive naming is {STAMP}-{ID}-{slug}.md, so anchor on -{ID}- after the stamp.
+#
+# 20260802-inbox-F689 false-completion incident (see investigate-churn
+# 20260802-inbox-2A94): an investigate-churn agent session archived its OWN
+# completion record under the TARGET task's ID instead of its own assigned
+# ID (e.g. "...-20260802-inbox-F689-investigate-churn-root-cause.md" instead
+# of "...-20260802-inbox-2A94-...md"), violating the {STAMP}-{ID}-{slug}
+# convention. That filename still matches this glob for F689, so
+# auto-finalize treated F689 as "already archived" and flipped it straight to
+# `complete` — without F689's own work (a log scan + state-file update) ever
+# having run; inbox-analyzer-state.json's last "analyzed" entries stayed
+# dated the day before. Such meta/"about X" archives (churn/investigation
+# reports on a DIFFERENT task) carry an `investigated_task:` frontmatter
+# field naming that other task; a genuine completion archive for `id` never
+# does. Skip any match carrying it instead of returning it, so a naming
+# mistake in one task's Completion writeup can no longer falsely close out a
+# different task it merely reports on.
 find_archive_for_id() {
   local id="$1"
   [[ -d "$HISTORY_DIR" ]] || return 0
   local f
   for f in "$HISTORY_DIR"/*-"${id}"-*.md; do
     [[ -f "$f" ]] || continue
+    grep -qE '^investigated_task:' "$f" 2>/dev/null && continue
     printf '%s\n' "$f"
     return 0
   done

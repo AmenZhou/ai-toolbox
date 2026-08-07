@@ -12,10 +12,11 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RESCUE="${RESCUE:-$PROJECT_ROOT/.orchestrate/bin/rescue.sh}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -d "$PROJECT_ROOT/bin" ]] || { echo "FATAL: $PROJECT_ROOT/bin not found — PROJECT_ROOT path computation is broken (expected .../task-orchestrate/bin)" >&2; exit 1; }
+RESCUE="${RESCUE:-$PROJECT_ROOT/bin/rescue.sh}"
 RESCUE_SRC="${RESCUE_SRC:-/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/bin/rescue.sh}"
-NEED_ACTION="$PROJECT_ROOT/.orchestrate/bin/tend-need-action.sh"
+NEED_ACTION="$PROJECT_ROOT/bin/tend-need-action.sh"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
@@ -51,12 +52,34 @@ FRESH_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # This row is the 14C8 gap case — it must now be reset (it would NOT have been
 # under rescue's previous 3600s threshold).
 MID_TS="$(date -u -v-12M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '12 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+# C829: A510 no-file grace boundaries (mirrors run-job.sh's NO_FILE_GRACE_SECS=1800/30m).
+# NOFILE_GRACE_TS: 20m ago → past STALE_RUNNING_SECS (10m) but within grace (30m).
+# NOFILE_GHOST_TS: 40m ago → past grace — genuinely-dead no-file ghost.
+NOFILE_GRACE_TS="$(date -u -v-20M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+NOFILE_GHOST_TS="$(date -u -v-40M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
 # A stale auto row WITH real phase progress (✓ complete) — the ✓-phase guard must
 # leave it running even though it is well past the threshold.
 cat > "$WORK/.orchestrate/tasks/progressing.md" << 'TF'
 ### Phase 1
 status: ✓ complete
 TF
+# 19D7 liveness guard: a stale-by-last_activity auto row whose task file was just
+# written (fresh mtime, NO ✓ phase) is a LIVE agent mid-phase — must stay running.
+cat > "$WORK/.orchestrate/tasks/live-file.md" << 'TF'
+### Phase 1
+status: pending
+TF
+# mid-auto: give it a task file with an OLD mtime (past STALE_RUNNING_SECS) so the
+# 19D7 liveness guard does NOT protect it. This isolates the pre-existing 14C8
+# threshold-unification assertion (test 6) from the new C829 no-file-grace guard,
+# which would otherwise protect a genuinely no-file row at this same age (12m is
+# within the 30m grace) — a task file this age realistically already exists by 12m.
+cat > "$WORK/.orchestrate/tasks/mid-auto.md" << 'TF'
+### Phase 1
+status: pending
+TF
+MID_MTIME="$(date -v-12M +%Y%m%d%H%M 2>/dev/null || date -d '12 minutes ago' +%Y%m%d%H%M)"
+touch -t "$MID_MTIME" "$WORK/.orchestrate/tasks/mid-auto.md"
 cat > "$WORK/.orchestrate/project.md" << EOF
 # Orchestrate — rescue-test
 last_updated: 2026-01-01T00:00:00Z
@@ -70,7 +93,10 @@ last_updated: 2026-01-01T00:00:00Z
 | stale-gated | stalled gated job | gated | 1 | running | 2026-01-01T00:00:00Z |
 | mid-auto | gap-aged auto job | auto | 1 | running | $MID_TS |
 | progressing | progressing auto job | auto | 2 | running | 2026-01-01T00:00:00Z |
+| live-file | live agent mid-phase | auto | 1 | running | 2026-01-01T00:00:00Z |
 | fresh-auto | fresh auto job | auto | 1 | running | $FRESH_TS |
+| no-file-grace | slow-to-start no-file job | auto | 1 | running | $NOFILE_GRACE_TS |
+| no-file-ghost | dead no-file job | auto | 1 | running | $NOFILE_GHOST_TS |
 EOF
 
 HEARTBEAT="$WORK/.orchestrate/logs/heartbeat.log"
@@ -145,6 +171,41 @@ if ! grep -q 'progressing' "$HEARTBEAT" 2>/dev/null \
   ok "row with ✓ complete phase left running (guard mirrors run-job)"
 else
   fail "progressing row should not be reset (has ✓ phase): $(grep progressing "$HEARTBEAT" 2>/dev/null || echo none)"
+fi
+
+echo ""
+echo "8. 19D7 liveness guard: stale last_activity but FRESH task file → NOT reset"
+# The row's last_activity is old, but its task file was written just now (fresh
+# mtime, no ✓ phase) — an agent actively writing phase blocks, not a ghost.
+if ! grep -q 'live-file' "$HEARTBEAT" 2>/dev/null \
+   && grep -qE '\| live-file .*\| running \|' "$WORK/.orchestrate/project.md" 2>/dev/null; then
+  ok "fresh-task-file row left running (liveness guard mirrors run-job)"
+else
+  fail "live-file row should not be reset (fresh mtime): $(grep live-file "$HEARTBEAT" 2>/dev/null || echo none)"
+fi
+
+echo ""
+echo "9. C829 A510 no-file grace: no task file, past STALE but within grace (20m) → NOT reset"
+# No task file exists for no-file-grace, so the 19D7 mtime guard cannot see it — only
+# the NO_FILE_GRACE_SECS window protects this slow-but-alive session. Must stay
+# running with no ghost-reset heartbeat (not churn-counted).
+if ! grep -q 'no-file-grace' "$HEARTBEAT" 2>/dev/null \
+   && grep -qE '\| no-file-grace .*\| running \|' "$WORK/.orchestrate/project.md" 2>/dev/null; then
+  ok "no-file row within grace left running (slow-but-alive, not a ghost)"
+else
+  fail "no-file row within grace should not be reset (A510 grace missing in rescue.sh): $(grep no-file-grace "$HEARTBEAT" 2>/dev/null || echo none)"
+fi
+
+echo ""
+echo "10. C829 A510 no-file grace: no task file, past grace (40m) → still reset (genuine ghost)"
+# Same shape but last_activity is past NO_FILE_GRACE_SECS (30m) — a job that never
+# came alive. The grace must not protect it: reset to needs_human with the
+# recognized ghost-reset heartbeat token.
+if grep -q 'ghost-reset no-file-ghost: running→needs_human' "$HEARTBEAT" 2>/dev/null \
+   && grep -qE '\| no-file-ghost .*\| needs_human \|' "$WORK/.orchestrate/project.md" 2>/dev/null; then
+  ok "no-file row past grace reset to needs_human (genuine ghost)"
+else
+  fail "no-file row past grace not reset — grace too broad: $(grep no-file-ghost "$HEARTBEAT" 2>/dev/null || echo none)"
 fi
 
 echo ""

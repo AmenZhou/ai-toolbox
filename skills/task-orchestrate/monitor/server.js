@@ -52,43 +52,53 @@ function sendFile(res, filePath) {
  */
 function parseRegistry(projectMdContent) {
   const rows = [];
-  // Find the Task Registry section
-  const sectionMatch = projectMdContent.match(/## Task Registry\n([\s\S]*?)(?:\n## |\n# |$)/);
-  if (!sectionMatch) return rows;
+  // Find the Task Registry section and read it to END OF FILE — the registry is the
+  // last section and newer rows are appended at the bottom.
+  //
+  // We intentionally do NOT slice "up to the next `## `/`# ` heading" (the old
+  // `/## Task Registry\n([\s\S]*?)(?:\n## |\n# |$)/` regex): a stray heading inserted
+  // after — or splitting — the table truncated the capture and silently dropped every
+  // newer completion from the History tab (the "newest row is days old" bug). Instead
+  // we scan all lines after the header and skip any non-table line (headings/prose
+  // between fragments) instead of stopping at it. The registry is the file's last
+  // section, so reading to EOF matches the common case and additionally survives a
+  // heading that splits or trails the table.
+  const headerIdx = projectMdContent.indexOf('## Task Registry');
+  if (headerIdx === -1) return rows;
+  const lines = projectMdContent.slice(headerIdx).split('\n');
 
-  const lines = sectionMatch[1].split('\n');
   let headerParsed = false;
   let headers = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('<!--') || trimmed.endsWith('-->')) continue;
+    // Skip headings/prose between table fragments instead of stopping at them.
+    if (!trimmed.startsWith('|')) continue;
 
-    if (trimmed.startsWith('|')) {
-      const cells = trimmed.split('|').map(c => c.trim()).filter((_, i, arr) => i > 0 && i < arr.length - 1);
+    const cells = trimmed.split('|').map(c => c.trim()).filter((_, i, arr) => i > 0 && i < arr.length - 1);
 
-      if (!headerParsed) {
-        // First pipe row = header
-        headers = cells.map(h => h.toLowerCase().replace(/\s+/g, '_'));
-        headerParsed = true;
-        continue;
-      }
+    if (!headerParsed) {
+      // First pipe row = header
+      headers = cells.map(h => h.toLowerCase().replace(/\s+/g, '_'));
+      headerParsed = true;
+      continue;
+    }
 
-      // Separator row (---|---|...)
-      if (cells.every(c => /^[-:]+$/.test(c))) continue;
+    // Separator row (---|---|...)
+    if (cells.every(c => /^[-:]+$/.test(c))) continue;
 
-      if (headers.length > 0 && cells.length >= headers.length) {
-        const row = {};
-        headers.forEach((h, i) => { row[h] = cells[i] || ''; });
-        rows.push({
-          id: row['id'] || '',
-          summary: row['summary'] || '',
-          mode: row['mode'] || '',
-          current_phase: row['current_phase'] || '',
-          status: row['status'] || '',
-          last_activity: row['last_activity'] || '',
-        });
-      }
+    if (headers.length > 0 && cells.length >= headers.length) {
+      const row = {};
+      headers.forEach((h, i) => { row[h] = cells[i] || ''; });
+      rows.push({
+        id: row['id'] || '',
+        summary: row['summary'] || '',
+        mode: row['mode'] || '',
+        current_phase: row['current_phase'] || '',
+        status: row['status'] || '',
+        last_activity: row['last_activity'] || '',
+      });
     }
   }
   return rows;
@@ -134,16 +144,32 @@ function formatRegistryRow(cells) {
  * trailing field — a bare length check misses it, so we also assert the trailing
  * part is empty (equivalent to awk's `$8 != ""`). NF>8 (extra `|`) and truncated
  * rows are caught by the length check.
+ *
+ * NF==8 is NECESSARY but NOT SUFFICIENT: a field-shift corruption (e.g. an
+ * off-by-one awk update that overwrites the `mode` column with a phase number)
+ * preserves the 8-column count and the empty trailing `$8`, so the structural
+ * check passes while the row is semantically corrupt. We therefore ALSO assert a
+ * value DOMAIN on the two enum columns: mode (parts[3], awk `$4`) ∈ {auto,gated}
+ * and status (parts[5], awk `$6`) ∈ the known status set. A row that fails either
+ * domain check is flagged even when NF==8 with an empty `$8`.
  * @param {string} projectMdContent
  * @returns {{ healthy: boolean, badRows: string[] }}
  */
+const VALID_MODES = new Set(['auto', 'gated']);
+const VALID_STATUSES = new Set(['pending', 'running', 'awaiting_go', 'awaiting_critic', 'complete', 'failed', 'needs_human']);
 function checkRegistryInvariant(projectMdContent) {
   const badRows = [];
   if (typeof projectMdContent === 'string') {
     for (const line of projectMdContent.split('\n')) {
       if (!/^\|\s*[0-9]/.test(line)) continue;
       const parts = line.split('|');
-      if (parts.length !== 8 || parts[parts.length - 1].trim() !== '') badRows.push(line);
+      // Structural: NF==8 with empty trailing field.
+      if (parts.length !== 8 || parts[parts.length - 1].trim() !== '') { badRows.push(line); continue; }
+      // Domain: mode ($4 → parts[3]) and status ($6 → parts[5]) must be in range
+      // (catches field-shift corruption that preserves NF==8).
+      const mode = parts[3].trim();
+      const status = parts[5].trim();
+      if (!VALID_MODES.has(mode) || !VALID_STATUSES.has(status)) badRows.push(line);
     }
   }
   return { healthy: badRows.length === 0, badRows };
@@ -290,12 +316,29 @@ function isTendGoAuto(tendMode) {
 
 /**
  * Classify whether a registry row needs human approval / is blocked.
- * @param {{ status?: string }} row
+ *
+ * A deliberately-cancelled task is recorded as registry status `failed` (the
+ * enum has no `cancelled` value — see VALID_STATUSES) but carries a durable
+ * `cancelled_at:` marker in its task file. The caller sets `row.cancelled=true`
+ * for such rows so we can surface a distinct, terminal "Cancelled" label
+ * instead of the actionable "Failed — review required". A cancelled row is
+ * terminal + non-actionable (needsApproval=false), mirroring a bypassed row.
+ * @param {{ status?: string, cancelled?: boolean }} row
  * @param {string} [tendMode] from readTendMode()
- * @returns {{ needsApproval: boolean, approvalReason: string|null, approvalLabel: string|null }}
+ * @returns {{ needsApproval: boolean, approvalReason: string|null, approvalLabel: string|null, cancelled?: boolean }}
  */
 function taskApprovalInfo(row, tendMode) {
   const status = (row.status || '').toLowerCase().trim();
+  if (status === 'failed' && row.cancelled) {
+    // Deliberately cancelled (failed + cancelled_at: marker) — terminal, not a
+    // genuine error. Surface a distinct label and do NOT flag for review.
+    return {
+      needsApproval: false,
+      approvalReason: 'cancelled',
+      approvalLabel: 'Cancelled',
+      cancelled: true,
+    };
+  }
   if (status === 'awaiting_go') {
     // Gated tasks always need explicit human approval — tend go auto never auto-executes them.
     return {
@@ -421,6 +464,54 @@ function isFutureTimestamp(iso) {
   } catch (_) {
     return false;
   }
+}
+
+// Timezone the History "today" boundary is computed in. The dashboard runs in
+// Eastern (see the dashboard-history-eastern-timezone change), so both the row
+// day-bucket AND the "today" boundary MUST use this same zone — otherwise a
+// task completed just before local midnight (whose UTC date has already rolled
+// to "tomorrow") gets bucketed to a different day and filtered out of "today".
+const HISTORY_TZ = 'America/New_York';
+
+/**
+ * Normalize a server-side ISO string to a real Date, treating a timezone-less
+ * ISO datetime (e.g. "2026-06-30T03:30:00") as UTC — never as local time.
+ * Mirrors the client parseIsoUtc so both sides agree on the instant.
+ */
+function isoToDate(iso) {
+  if (!iso) return null;
+  let s = String(iso).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) s = `${s}T12:00:00Z`;
+  else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) && !/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) s = `${s}Z`;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Eastern (HISTORY_TZ) calendar day for an ISO instant, as YYYY-MM-DD.
+ * A task completed at 2026-06-30T03:30:00Z buckets to 2026-06-29 in Eastern.
+ */
+function historyEasternYmd(iso, tz = HISTORY_TZ) {
+  const d = isoToDate(iso);
+  if (!d) return '';
+  return d.toLocaleDateString('en-CA', { timeZone: tz });
+}
+
+/**
+ * Whether a row belongs in the default ("today") History view.
+ *
+ * Boundary-robust rule: a row is "in the default window" when its Eastern day
+ * equals today's Eastern day OR its instant is within the last 24h. The 24h
+ * grace means a task that just completed never disappears the instant local
+ * midnight rolls over — it stays visible until it is genuinely a day old.
+ */
+function isInDefaultHistoryWindow(iso, nowMs = Date.now(), tz = HISTORY_TZ) {
+  const d = isoToDate(iso);
+  if (!d) return false;
+  const todayYmd = new Date(nowMs).toLocaleDateString('en-CA', { timeZone: tz });
+  if (d.toLocaleDateString('en-CA', { timeZone: tz }) === todayYmd) return true;
+  const ageMs = nowMs - d.getTime();
+  return ageMs >= 0 && ageMs <= 24 * 60 * 60 * 1000;
 }
 
 /**
@@ -681,7 +772,7 @@ function buildHistoryRows(registry, manifest, entries, logsDir, completionHints)
   });
 
   for (const reg of sortedRegistry) {
-    if (reg.status !== 'complete') continue;
+    if (reg.status !== 'complete' && !reg.cancelled) continue;
     const matchEntry = findHistoryEntry(reg.id, manifest, entryFilenames);
     if (matchEntry) {
       if (seenFiles.has(matchEntry.filename)) {
@@ -711,7 +802,7 @@ function buildHistoryRows(registry, manifest, entries, logsDir, completionHints)
         summary: matchEntry.summary || reg.summary,
         tags: matchEntry.tags,
         taskId: reg.id,
-        status: reg.status,
+        status: reg.cancelled ? 'Cancelled' : reg.status,
         hasArchive: !!archiveContent.trim(),
         content: archiveContent,
       });
@@ -725,7 +816,7 @@ function buildHistoryRows(registry, manifest, entries, logsDir, completionHints)
         summary: reg.summary,
         tags: '',
         taskId: reg.id,
-        status: reg.status,
+        status: reg.cancelled ? 'Cancelled' : reg.status,
         hasArchive: false,
         content: stubContent,
       });
@@ -879,6 +970,39 @@ function getBlockingReason(taskContent) {
 }
 
 /**
+ * Detect the durable cancellation marker on a task file.
+ * A dashboard "Cancel" stamps `cancelled_at:` (+ `cancel_reason:`) into the task
+ * file while leaving the registry status at `failed` (the enum has no `cancelled`
+ * value). This lets the monitor classify a `failed`+`cancelled_at:` row as
+ * "Cancelled" — distinct from a genuine error.
+ * @param {string|null} taskContent
+ * @returns {boolean}
+ */
+function isCancelledTask(taskContent) {
+  if (!taskContent) return false;
+  return /^cancelled_at:/m.test(taskContent);
+}
+
+/**
+ * Map a raw parseRegistry() array to one carrying a `.cancelled` flag per row,
+ * the same way handleTasks() already does inline. Factored out so handleHistory()
+ * (MON-1) can reuse the identical `failed` + `cancelled_at:` detection without
+ * duplicating the read-and-check logic inline — and so it is unit-testable on
+ * its own, the same way isCancelledTask()/taskApprovalInfo() are.
+ * @param {Array<object>} registry raw rows from parseRegistry()
+ * @param {string} tasksDir absolute path to .orchestrate/tasks
+ * @returns {Array<object>} rows with an added `cancelled` boolean
+ */
+function computeRegistryCancelledFlags(registry, tasksDir) {
+  return (registry || []).map(row => {
+    const taskContent = row.status === 'failed'
+      ? readFileSafe(path.join(tasksDir, `${row.id}.md`))
+      : null;
+    return { ...row, cancelled: row.status === 'failed' && isCancelledTask(taskContent) };
+  });
+}
+
+/**
  * Try to find an inbox file matching by summary, with fuzzy fallback on prefix.
  * Extends findInboxSourceForTask with partial-match when title diverged after registration.
  * @param {string} logsDir
@@ -898,15 +1022,49 @@ function findInboxSource(logsDir, inboxDir, summary) {
 }
 
 /**
+ * Stamp a durable cancellation marker onto a task file so a dashboard cancel is
+ * recoverable (the registry only records `failed`). Mirrors the bypass-marker
+ * pattern in churn-guard.sh: prepend `cancelled_at:` + `cancel_reason:` to the
+ * file header, creating a minimal file if the task has none (e.g. a gated task
+ * cancelled before it ever ran). Idempotent — strips any prior markers first.
+ * @param {string} cwd
+ * @param {string} taskId
+ * @param {string} now ISO timestamp
+ * @param {string} reason one-line cancel reason
+ */
+function stampCancelMarker(cwd, taskId, now, reason) {
+  const taskPath = path.join(cwd, '.orchestrate', 'tasks', `${taskId}.md`);
+  const safeReason = (reason || 'cancelled from dashboard').replace(/[\r\n]+/g, ' ').trim();
+  let body = readFileSafe(taskPath);
+  const header = `cancelled_at: ${now}\ncancel_reason: ${safeReason}`;
+  let next;
+  if (body === null) {
+    // No task file yet — create a minimal one carrying the marker.
+    next = `id: ${taskId}\nstatus: failed\n${header}\n`;
+  } else {
+    // Strip any prior cancel markers, then prepend the fresh ones.
+    const cleaned = body.split('\n').filter(l => !/^(cancelled_at|cancel_reason):/.test(l)).join('\n');
+    next = `${header}\n${cleaned}`;
+  }
+  try {
+    fs.mkdirSync(path.dirname(taskPath), { recursive: true });
+    fs.writeFileSync(taskPath, next);
+  } catch (_) { /* best-effort; registry status is the source of truth */ }
+}
+
+/**
  * Approve or cancel a gated (awaiting_go) registry task.
  * - mode 'auto': status → pending, mode → auto (tend go auto will execute it)
- * - mode 'cancel': status → failed
+ * - mode 'cancel': status → failed AND stamp a durable `cancelled_at:` marker on
+ *   the task file so the cancel is distinguishable from a genuine failure and is
+ *   recoverable. The registry enum stays unchanged (no `cancelled` value).
  * @param {string} cwd
  * @param {string} taskId
  * @param {'auto'|'cancel'} goMode
+ * @param {string} [reason] one-line cancel reason (cancel mode only)
  * @returns {{ success: boolean, id: string, status: string } | { error: string }}
  */
-function approveRegistryTask(cwd, taskId, goMode) {
+function approveRegistryTask(cwd, taskId, goMode, reason) {
   const projectMdPath = path.join(cwd, '.orchestrate', 'project.md');
   let content = readFileSafe(projectMdPath);
   if (!content) return { error: 'project.md not found' };
@@ -932,6 +1090,12 @@ function approveRegistryTask(cwd, taskId, goMode) {
 
   fs.writeFileSync(projectMdPath, newLines.join('\n'));
 
+  // On cancel, stamp a durable marker so the intent is recoverable and the row
+  // classifies as "Cancelled" (distinct from a genuine "failed") in the monitor.
+  if (goMode === 'cancel') {
+    stampCancelMarker(cwd, taskId, now, reason);
+  }
+
   const verb = goMode === 'cancel' ? 'cancelled' : goMode === 'gated' ? 'approved go (gated)' : 'approved go auto';
   try {
     const hbPath = path.join(cwd, '.orchestrate', 'logs', 'heartbeat.log');
@@ -943,6 +1107,7 @@ function approveRegistryTask(cwd, taskId, goMode) {
     id: taskId,
     status: goMode === 'cancel' ? 'failed' : 'pending',
     mode: goMode === 'cancel' ? foundRow.originalMode : goMode,
+    ...(goMode === 'cancel' ? { cancelled: true } : {}),
   };
 }
 
@@ -1289,7 +1454,10 @@ function handleTasks(res) {
 
   const SHOW_GOAL_STATUSES = new Set(['awaiting_go', 'needs_human', 'pending', 'running']);
   const registry = parseRegistry(content).map(row => {
-    const base = { ...row, ...taskApprovalInfo(row, tendMode) };
+    // A `failed` row carrying a `cancelled_at:` marker is a deliberate cancel,
+    // not an error — flag it so taskApprovalInfo surfaces a distinct "Cancelled".
+    const cancelled = row.status === 'failed' && isCancelledTask(taskFileCache[row.id] || null);
+    const base = { ...row, cancelled, ...taskApprovalInfo({ ...row, cancelled }, tendMode) };
     if (SHOW_GOAL_STATUSES.has(row.status)) {
       const found = findInboxSource(logsDir, inboxDir, row.summary);
       base.goalExcerpt = getGoalExcerpt(found ? found.content : null);
@@ -1356,7 +1524,8 @@ function handleHistory(res) {
   const completionHints = buildCompletionHints(logsDir, heartbeatContent);
 
   const projectContent = readFileSafe(path.join(CWD, '.orchestrate', 'project.md'));
-  const registry = projectContent ? parseRegistry(projectContent) : [];
+  const rawRegistry = projectContent ? parseRegistry(projectContent) : [];
+  const registry = computeRegistryCancelledFlags(rawRegistry, path.join(CWD, '.orchestrate', 'tasks'));
   const rows = buildHistoryRows(registry, manifest, entries, logsDir, completionHints);
 
   send(res, 200, { manifest, rows, stats: historyStats(rows, registry) });
@@ -1673,12 +1842,13 @@ async function handleTaskApprove(req, res) {
   }
   const taskId = (payload.id || '').trim();
   const goMode = payload.mode === 'cancel' ? 'cancel' : payload.mode === 'gated' ? 'gated' : 'auto';
+  const reason = typeof payload.reason === 'string' ? payload.reason : undefined;
   if (!taskId) {
     send(res, 400, { error: 'id required' });
     return;
   }
   try {
-    const result = approveRegistryTask(CWD, taskId, goMode);
+    const result = approveRegistryTask(CWD, taskId, goMode, reason);
     send(res, result.error ? 404 : 200, result);
   } catch (e) {
     send(res, 500, { error: e.message || 'internal error' });
@@ -1927,14 +2097,25 @@ function parseTendHealth(cwd, heartbeatContent, heartbeatErrContent, launchctlTe
   return { ok: true, status: 'ok', message: 'Tend healthy', runner, lastEventAt };
 }
 
+// Read `launchctl list`, or a test-injected fixture. tendHealth (and the /api/tasks,
+// /api/tend-status, /api/launchd handlers that surface it) must not depend on the live
+// host launchd state, or a nonzero LastExitStatus on the real com.orchestrate.tend job
+// makes hermetic tmpDir-fixture tests fail non-deterministically. Setting
+// ORCH_TEST_LAUNCHCTL forces a controlled listing (empty string = no jobs known).
+function readLaunchctlList() {
+  if (process.env.ORCH_TEST_LAUNCHCTL != null) return process.env.ORCH_TEST_LAUNCHCTL;
+  try {
+    return execSync('launchctl list 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
+  } catch (_) {
+    return '';
+  }
+}
+
 function readTendHealthInputs(cwd) {
   const logsDir = path.join(cwd, '.orchestrate', 'logs');
   const heartbeatContent = readFileSafe(path.join(logsDir, 'heartbeat.log')) || '';
   const heartbeatErrContent = readFileSafe(path.join(logsDir, 'heartbeat-err.log')) || '';
-  let lctlOutput = '';
-  try {
-    lctlOutput = execSync('launchctl list 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
-  } catch (_) {}
+  const lctlOutput = readLaunchctlList();
   const lctlMap = {};
   for (const line of (lctlOutput || '').split('\n')) {
     const parts = line.trim().split(/\s+/);
@@ -2111,13 +2292,16 @@ function handleTendStatus(res) {
 }
 
 function handleLaunchd(res) {
-  const launchDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+  // ORCH_TEST_LAUNCHD_DIR lets tests inject a fixture LaunchAgents dir so the
+  // /api/launchd HTTP response is driven by seeded plists, not the live host's
+  // ~/Library/LaunchAgents (which a tmpDir fixture cannot isolate). Mirrors the
+  // ORCH_TEST_LAUNCHCTL escape hatch used for launchctl list output.
+  const launchDir = process.env.ORCH_TEST_LAUNCHD_DIR != null
+    ? process.env.ORCH_TEST_LAUNCHD_DIR
+    : path.join(os.homedir(), 'Library', 'LaunchAgents');
   const { heartbeatContent, tendHealth } = readTendHealthInputs(CWD);
   const { launchdWatch } = readAgentConf(CWD);
-  let lctlOutput = '';
-  try {
-    lctlOutput = execSync('launchctl list 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
-  } catch (_) {}
+  const lctlOutput = readLaunchctlList();
   send(res, 200, buildLaunchdAgents(launchDir, lctlOutput, heartbeatContent, tendHealth, launchdWatch));
 }
 
@@ -2243,12 +2427,19 @@ module.exports = {
   writeAgentConf,
   isTendGoAuto,
   taskApprovalInfo,
+  isCancelledTask,
+  computeRegistryCancelledFlags,
+  stampCancelMarker,
   parseInboxMeta,
   isCompletedInboxFile,
   extractInboxTaskIds,
   manifestMatchesRegistry,
   resolveRegistryIds,
   resolveHistoryDatetime,
+  HISTORY_TZ,
+  isoToDate,
+  historyEasternYmd,
+  isInDefaultHistoryWindow,
   isPlaceholderTimestamp,
   isFutureTimestamp,
   buildCompletionHints,

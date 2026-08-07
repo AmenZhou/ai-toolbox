@@ -2,6 +2,8 @@
 name: breakdown-to-inbox
 description: Turn a job (spec, plan doc, rough notes, or the current conversation) into a set of well-structured, right-sized engineering tickets and stage them in the task-orchestrate inbox as individual task files — with dependencies and execution order. Use when the user says "break this down into tickets and push to inbox", "ticketize and queue these tasks", "plan and push to orchestrate", "turn this spec into inbox tasks", "decompose this into orchestrate tickets", or "split this work into inbox jobs". This is the multi-ticket decomposer + inbox writer. For refining ONE ticket (add ACs / a test plan / flesh out a single ticket) defer to the ticket-planning skill instead. Every unit of work becomes three chained tickets — Investigation/Plan → Implementation → Verification. Open questions answerable by investigation are resolved there; questions that need human judgment or access the agent doesn't have STOP the breakdown and ask the human. Never starts execution — stages tasks and stops at the orchestrate go-gate.
 version: 2.0.0
+investigation_model_tier: sonnet
+decomposition_model_tier: sonnet
 ---
 
 # breakdown-to-inbox
@@ -39,6 +41,12 @@ answer, then continue decomposing. The go-gate (Step 8) is still always required
 it is no longer the *only* point at which the human may be asked something.
 
 ---
+
+⚙️ **Model Tier:** The full breakdown process (Steps 1–2) requires Sonnet model tier for accurate decomposition and dependency analysis.
+- **Claude Code:** Invoke this skill via `Agent(model: "sonnet")` to ensure high-quality unit decomposition.
+- **Cursor:** Before running this skill, switch to Sonnet in Settings (⌘ + Shift + J).
+
+Decomposing a job into right-sized, correctly-ordered units is architectural work where premium reasoning significantly improves the quality and reduces refactoring later.
 
 ## Step 1 — Read the source job fully
 
@@ -100,6 +108,8 @@ unit collides with an `awaiting_go` ticket someone else is mid-review on — do 
 proceed and I'll wire the dependency?" is a legitimate Step 1a-shaped question) — this step only
 surfaces the match, it does not itself decide whether to stop and ask.
 
+**Model Tier Note:** This scanning phase is sophisticated heuristic matching work. Sonnet model tier ensures reliable detection and classification of overlaps, reducing false positives and false negatives that could propagate into incorrect dependencies.
+
 ## Step 1a — Stop and ask, but only when investigation genuinely can't resolve it
 
 Most open questions belong inside a unit's **Investigation/Plan** ticket (Step 2) — they get answered
@@ -132,6 +142,14 @@ Split the job into discrete **units of work**. **Right-sizing heuristic:**
   subsystems/repos.
 - **Merge** trivially-coupled fragments (e.g. "add field" + "add the one test for that field").
 - Give each unit a meaningful, work-area ID (e.g. `DS-1`, `P3-3`, `INFRA-1`) plus a short title.
+
+**Model Tier Impact — Critical Phase:** This decomposition step is where correct unit boundaries and dependency relationships are determined. Sonnet model tier is essential for:
+- Breaking work into cohesive, right-sized units (not too fine-grained, not too monolithic)
+- Identifying true blocking relationships (data flow, prerequisites)
+- Predicting execution order and potential parallelism
+- Reducing the need for refactoring/re-splitting in later execution
+
+If using Claude Code, ensure the skill or this phase is invoked with `model: "sonnet"`. If using Cursor, ensure the session is at Sonnet tier. The quality of this phase directly impacts ticket quality and implementation efficiency downstream.
 
 **Every unit becomes exactly three tickets, chained in this order:**
 
@@ -234,6 +252,14 @@ Specific verification: exact commands / queries / API calls with expected values
   cross-unit dependencies at the specific stage that actually produces or needs the dependency —
   e.g. if unit B's plan depends on unit A's shipped change, `B-INV` is `Blocked by: A-IMPL` (not
   `A-VERIFY`, unless B genuinely needs A to be *verified* correct first, not just implemented).
+
+**Model Tier Note:** Deriving correct cross-unit dependencies is a graph-reasoning problem. Sonnet's reasoning improves accuracy in:
+- Identifying intermediate blocking points (does unit B's IMPL need A's VERIFY, or just A's IMPL?)
+- Detecting cyclic dependencies (which can indicate a decomposition error)
+- Optimizing wave grouping for parallelism
+
+Verify the final dependency graph in the Step 7 summary before the go-gate to catch any reasoning gaps.
+
 - Detect cycles — if any exist, break them by re-splitting or merging units.
 - Produce a **wave grouping**: Wave 1 = tickets with no unmet dependencies (typically the `-INV`
   tickets of independent units); later waves depend on earlier ones. This is the order a `tend` run

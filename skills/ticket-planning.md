@@ -58,6 +58,8 @@ Step-by-step verification that the ticket's work is correct. Include: SQL querie
 - Test Plan must be specific: prefer `SELECT count(*) = X` over "verify count is correct"
 - Note dependencies between tickets (e.g. "Blocked by DS-1")
 - If a ticket is a discovery/investigation (no code output), the Implementation Plan describes the investigation steps and the Test Plan describes how to confirm the finding is documented and signed off
+- **Count-based ACs must be derived, never guessed:** any AC that hard-asserts a count (`ls dir/*.html | wc -l == 11`, "should be N files", "exactly N rows") must be computed by *enumerating* the specific artifacts the ticket names — existing baseline + to-be-created — and asserting their sum. Cross-check `existing + new == asserted` before emitting the AC (this catches off-by-one totals). If the baseline count is unknown, don't guess it — make it an Open Question / discovery ticket and assert the sum once resolved.
+- **Executor note for literal/numeric ACs (reconcile-and-document):** when a count/literal AC conflicts with verified project reality at execution time, the executor should *reconcile and document* — state the correct value with evidence (e.g. the actual `wc -l` output) — rather than fail the phase or silently pass on the wrong number.
 
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: grounded-investigate
+investigation_model_tier: sonnet
 description: >
   Wiki-first, dual-method investigation skill. Always pulls Obsidian wiki context (index.md, hot.md)
   before doing anything else, then answers the question using two or more genuinely independent
@@ -29,6 +30,12 @@ prevent.
 This step runs **unconditionally**, even for a purely code-related question with no obvious wiki
 angle. Skipping it because the question "looks like a code question" is exactly the shortcut this
 skill forbids.
+
+⚙️ **Model Tier:** This skill's dual-method investigation (Steps 2–4) uses Sonnet model for premium reasoning.
+- **Claude Code:** When this skill is invoked, use `Agent(model: "sonnet")` for the full investigation loop to ensure cross-validation accuracy.
+- **Cursor:** Before running this skill, switch to Sonnet in Settings (⌘ + Shift + J). You may switch back to Haiku after completion.
+
+The dual-method design depends on independent reasoning in each method and sophisticated comparison in Step 4. Premium tier improves the reliability of agreement/disagreement assessment.
 
 1. **Resolve config** — follow the **Config Resolution Protocol** in `llm-wiki/SKILL.md`: walk up from
    CWD for a `.env` containing `OBSIDIAN_VAULT_PATH`, else fall back to `~/.obsidian-wiki/config`, else
@@ -62,6 +69,8 @@ A or B below, but it never substitutes for actually running the two independent 
 ## Step 2 — Method A
 
 Run the first of the two independent methods, per the question's classification.
+
+**Model Tier Note:** This step and Step 3 are high-cognition investigation phases. Sonnet model tier ensures robust method design and independent reasoning. Each method must be genuinely independent; premium reasoning improves that independence.
 
 **Knowledge/fact question:**
 - Method A = **wiki/vault lookup** — using the Retrieval Primitives from "Before You Start," search the
@@ -112,6 +121,9 @@ component), run both pairs — more corroboration is always acceptable, never re
 1. **Write out each method's finding side-by-side, explicitly, before concluding anything.** Never
    synthesize a single conclusion first and then backfill "supporting" evidence — that inverts the
    whole point of running two methods.
+
+**Model Tier Impact:** Cross-validation and disagreement resolution (especially the tie-breaking step below) are high-cognition reasoning tasks where Sonnet model tier significantly improves accuracy. If using Claude Code, ensure Agent dispatch specified `model: "sonnet"` at the start of this skill. If using Cursor, ensure the session is running at Sonnet tier.
+
 2. **Agreement path:** if the two findings agree (or one strictly subsumes/refines the other with no
    contradiction), report the combined finding, citing both methods as corroboration.
 3. **Disagreement path — the critical requirement of this skill:**
@@ -212,6 +224,8 @@ available, you MAY dispatch Method A and Method B as two independent Agent-tool 
 the same message, mirroring the `Agent` tool's own documented "independent second opinion" pattern, for
 speed — provided each subagent is genuinely blind to the other's findings until the comparison step in
 Step 4. Do not let one subagent see the other's output before both have reported back.
+
+**Model tier for parallel dispatch:** When dispatching Method A and Method B as parallel subagents, specify `model: "sonnet"` on both Agent calls. Independent reasoning benefits from consistent premium tier across both methods — a Haiku-dispatched Method A and Sonnet-dispatched Method B can produce asymmetric reasoning quality, undermining independence.
 
 Both dispatch paths funnel into the same Step 4 comparison-and-disagreement logic. The dispatch
 mechanism is an implementation optimization, not a change to the cross-validation contract.

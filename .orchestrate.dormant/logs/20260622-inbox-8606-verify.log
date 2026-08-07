@@ -1,0 +1,19 @@
+=== Verification run 2026-06-22T23:58:24Z ===
+✓ /Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/monitor/index.html
+
+── Bug 1 (adaptive polling) ──
+860:  countdown = nextCountdown();
+876:const POLL_ACTIVE = 5;   // seconds when tasks are running/awaiting_critic
+877:const POLL_IDLE   = 15;  // seconds when all tasks are at rest
+879:function nextCountdown() {
+884:  return hasActive ? POLL_ACTIVE : POLL_IDLE;
+892:      countdown = nextCountdown();
+
+── Bug 2 (Run Now reset) ──
+1147:      btn.textContent = 'Triggered';
+1149:      setTimeout(() => fetchLaunchd(), 2000);
+1150:      setTimeout(() => fetchLaunchd(), 4000);
+1151:      setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; btn.style.background = ''; }, 5000);
+
+no test runner detected — browser UI changes verified via code inspection
+=== done ===

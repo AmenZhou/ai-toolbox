@@ -105,3 +105,41 @@ if [[ -d "$TASKS" ]]; then
     fi
   done
 fi
+
+# Collect ALL registry IDs (any status — table rows only), for the orphaned
+# churn-guard-stub check below. A stub is only removable when its ID has NO
+# row at all, not merely a non-complete one.
+all_ids=()
+if [[ -f "$PROJ" ]]; then
+  while IFS= read -r line; do
+    [[ "$line" =~ ^\| ]] || continue
+    id="$(echo "$line" | awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}')"
+    [[ -n "$id" && "$id" != "ID" && "$id" != ----* ]] && all_ids+=("$id")
+  done <"$PROJ"
+fi
+
+has_registry_row() {
+  local needle="$1"
+  for id in "${all_ids[@]}"; do
+    [[ "$id" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+# Remove orphaned churn-guard park stubs: minimal task files written only to
+# record a churn-guard park (no phase work ever ran) whose registry row has
+# since disappeared entirely (not just gone complete — no row at all). A stub
+# still backed by a live registry row (any status) is left in place.
+if [[ -d "$TASKS" ]]; then
+  for tf in "$TASKS"/*.md; do
+    [[ -f "$tf" ]] || continue
+    tid="$(basename "$tf" .md)"
+    first_line="$(head -n 1 "$tf" 2>/dev/null)"
+    [[ "$first_line" == "# ${tid} — parked by churn guard" ]] || continue
+    grep -qE '^### Phase' "$tf" 2>/dev/null && continue
+    if ! has_registry_row "$tid"; then
+      rm -f "$tf"
+      log_cleanup "removed orphaned churn-guard stub $tid.md (no registry row)"
+    fi
+  done
+fi

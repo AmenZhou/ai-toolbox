@@ -2,6 +2,9 @@
 name: task-orchestrate
 description: Unified project orchestrator with built-in watchdog. Maintains a project-scoped control plane (.orchestrate/) with shared context across all tasks, a task registry, and an inbox drop-zone. Phases, critic, and quality gates are unchanged. Built-in "tend" mode replaces the separate task-supervisor skill. Use for any task: simple fire-and-forget or complex multi-phase work. The watchdog runs as an OS-level heartbeat — no separate /loop needed.
 inline: false
+investigation_model_tier: sonnet
+planning_model_tier: sonnet
+retry_model_escalation: true
 ---
 
 You are the **orchestrator**: you plan, approve, and execute — running phases inline with your own tools when that's efficient, spawning agents only when truly needed. You also maintain a project-scoped control plane and watch your own task registry for stalls.
@@ -509,16 +512,23 @@ Precedence: reasoning > execution > simple > instructional.
 
 ### Step 2 — Executor
 
-| Condition | Executor |
-|---|---|
-| simple or instructional phase | **inline** |
-| execution — narrow (≤2 files, clear spec, ≤5 tool calls) | **inline** |
-| skill phase where skill declares `inline: true` | **inline · /skill-name** |
-| research / investigation / challenging analysis | **agent/premium** |
-| execution — moderate or broad (3+ files, iterative) | **agent/Sonnet** |
-| reasoning phase | **agent/premium** |
-| any phase that must run in parallel | **agent/*** |
-| skill phase without `inline: true` | **agent/** at tier |
+| Condition | Executor | Model Tier |
+|---|---|---|
+| simple or instructional phase | **inline** | — |
+| execution — narrow (≤2 files, clear spec, ≤5 tool calls) | **inline** | — |
+| skill phase where skill declares `inline: true` | **inline · /skill-name** | — |
+| research / investigation / challenging analysis (keywords: `investigate`, `research`, `plan`, `design`, `analyze`, `discovery`, `derive`, `INV`, `PLAN`) | **agent/premium** | **Sonnet or higher** |
+| execution — moderate or broad (3+ files, iterative) | **agent/Sonnet** | **Sonnet** |
+| reasoning phase | **agent/premium** | **Sonnet or higher** |
+| any phase that must run in parallel | **agent/*** | *match primary phase tier* |
+| skill phase without `inline: true` | **agent/** at tier | *per condition above* |
+
+**Model Tier Specifics:**
+- **Sonnet:** Default for investigation, planning, reasoning phases; also for moderate/broad execution that iterates
+- **Haiku:** Use for simple, instructional, and narrow execution phases (cost optimization)
+- **Opus:** Consider for particularly complex multi-step reasoning; optional upgrade on retry
+- **Claude Code:** Specify `model: "sonnet"` (or `model: "opus"`) in Agent() calls; will degrade to Haiku if Sonnet unavailable
+- **Cursor:** Before running phases marked for premium tier, switch Cursor to Sonnet in Settings (⌘ + Shift + J)
 
 ### Step 3 — Derive per phase
 
@@ -643,6 +653,19 @@ Passing `${RETRIES:-0}` is still required, but the script also **auto-derives** 
 ### Agent phase execution
 
 Announce `▶ Phase N — <name>`.
+
+**Model tier selection:** Refer to the Phase Classification table above (Step 2 — Executor). If the phase keywords match "research / investigation / challenging analysis / reasoning", dispatch at **Sonnet** tier:
+
+```javascript
+Agent({
+  description: "Investigation phase — determine approach",
+  prompt: "Research the options and write a plan...",
+  model: "sonnet",  // Premium tier for investigation phases
+  run_in_background: false
+})
+```
+
+For narrow execution phases (≤2 files, clear spec), use standard tier (Haiku or unspecified). The model parameter takes precedence over any `@claude/*/SKILL.md` frontmatter, so always specify explicitly when a phase tier differs from the skill's default.
 
 **Agent prompt must include:**
 1. Prior phase summaries

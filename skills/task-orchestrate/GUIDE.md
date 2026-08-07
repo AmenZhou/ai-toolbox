@@ -10,7 +10,7 @@ Think of it as three things in one:
 
 1. **Planner** — breaks your task into phases, routes each to the right executor (inline or agent), sets acceptance criteria, runs a critic on each result
 2. **Project memory** — maintains `.orchestrate/project.md` per project with shared context that carries forward across every task you ever run there
-3. **Watchdog** — a `tend` mode that runs every 5 minutes via launchd, drains the inbox, advances stalled auto-mode tasks, and notifies you when gated tasks need your `go`
+3. **Watchdog** — a `tend` mode that runs every 30 minutes via launchd, drains the inbox, advances stalled auto-mode tasks, and notifies you when gated tasks need your `go`
 
 ---
 
@@ -43,16 +43,17 @@ The `.orchestrate/` directory is created automatically the first time you run a 
 
 The orchestrator:
 1. Reads `## Shared Context` from `project.md` (if it exists) — uses prior decisions to inform the plan
-2. Classifies complexity and breaks the task into 2–6 phases
-3. Presents the plan and asks clarifying questions
-4. Waits for your `go` or `go auto`
+2. Pulls a bounded `/wiki-context-pack` slice (~1500 tokens, cached in the task file's `## Wiki Context` section) unless the task is itself a wiki-maintenance job, degrading gracefully if the pack is unavailable
+3. Classifies complexity and breaks the task into 2–6 phases
+4. Presents the plan and asks clarifying questions
+5. Waits for your `go` or `go auto`
 
 **`go`** — gated mode: pauses after each phase for your review before continuing.
 **`go auto`** — auto mode: runs all phases end-to-end, only stops on a hard failure.
 
 ### What happens after you walk away (auto mode)
 
-The launchd heartbeat fires every 5 minutes. If the task stalled at `awaiting_critic` (e.g. the session closed mid-phase), `tend` picks it up, runs the critic inline, and continues. You get a push notification when it acts.
+The launchd heartbeat fires every 30 minutes. If the task stalled at `awaiting_critic` (e.g. the session closed mid-phase), `tend` picks it up, runs the critic inline, and continues. You get a push notification when it acts.
 
 ### Reviewing results
 
@@ -124,7 +125,7 @@ echo "generate a migration script to add indexes to DSP campaigns table" \
   > .orchestrate/inbox/campaign-indexes.md
 ```
 
-Next time tend fires (within 5 minutes): you get a push notification listing the queued tasks. Go to a session and type `go` or `go auto` to start each one.
+Next time tend fires (within 30 minutes): you get a push notification listing the queued tasks. Go to a session and type `go` or `go auto` to start each one.
 
 ---
 
@@ -179,6 +180,26 @@ Every new task's planning phase reads Shared Context first. The orchestrator inc
 | Tend watchdog | Notifies you phase is ready, never advances | Advances `awaiting_critic` stalls automatically |
 
 **Rule of thumb:** use `go auto` for tasks where you've done similar work before and trust the plan. Use `go` for new territory, risky changes, or anything touching production.
+
+---
+
+## Automatic Review + Tests Enforcement
+
+Every task that **changed code** is guaranteed an independent review pass and test pass — on top of the inline critic and Test & Verify gate that run inside the authoring session (this *supplements*, it does not replace them).
+
+When a code-changing task completes, the orchestrator auto-enqueues two follow-up inbox tickets into the canonical ai-console inbox:
+
+- a `kind: review` ticket — a fresh tend cycle runs an independent code-change review over the diff
+- a `kind: tests` ticket — a fresh tend cycle authors/runs tests for the changed files
+
+Both land `mode: auto` (no human `go` needed) and are drained like any other inbox task.
+
+| Detail | Behavior |
+|--------|----------|
+| Trigger | Fires only when `files_changed` contains real code/script/config (not pure docs/log/registry/archive changes) |
+| Anti-recursion | Every generated ticket carries a `followup_for: <source-ID>` header; a task that already has `followup_for:` enqueues **nothing**, so review/tests tickets never breed more |
+| Idempotent | Dedups on the `(followup_for, kind)` pair across inbox, registry, and history — a re-run never piles up duplicates |
+| Authoritative path | The deterministic `finalize-completed-tasks.sh` reaper calls `enqueue-review-and-tests.sh`, so unattended `tend` enforces it even if the authoring session dies mid-Completion |
 
 ---
 

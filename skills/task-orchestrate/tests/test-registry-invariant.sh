@@ -9,16 +9,20 @@
 #   - run-job.sh: repair_registry_rows normalizer (atomic temp+mv)
 #   - this live-invariant assertion, wired into run-tests.sh
 #
-# A VALID registry data row: NF==8 with an EMPTY trailing field $8.
-# A CORRUPT row: NF!=8 OR $8 non-empty.
+# A VALID registry data row: NF==8 with an EMPTY trailing field $8 AND mode ($4) ∈
+# {auto,gated} AND status ($6) ∈ the known status set.
+# A CORRUPT row: NF!=8 OR $8 non-empty (STRUCTURAL) OR a field-shift that keeps
+# NF==8 but writes a wrong value into the mode/status enum columns (DOMAIN). A1DD
+# adds the domain check — NF==8 is necessary but NOT sufficient.
 set -euo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PROJ="$PROJECT_ROOT/.orchestrate/project.md"
-RESCUE="${RESCUE:-$PROJECT_ROOT/.orchestrate/bin/rescue.sh}"
-RUNJOB="${RUNJOB:-$PROJECT_ROOT/.orchestrate/bin/run-job.sh}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -d "$PROJECT_ROOT/bin" ]] || { echo "FATAL: $PROJECT_ROOT/bin not found — PROJECT_ROOT path computation is broken (expected .../task-orchestrate/bin)" >&2; exit 1; }
+PROJ="$PROJECT_ROOT/project.md"
+RESCUE="${RESCUE:-$PROJECT_ROOT/bin/rescue.sh}"
+RUNJOB="${RUNJOB:-$PROJECT_ROOT/bin/run-job.sh}"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
@@ -27,9 +31,20 @@ TMP=""
 cleanup() { [[ -n "$TMP" && -d "$TMP" ]] && rm -rf "$TMP"; }
 trap cleanup EXIT
 
-# Count malformed data rows in a file (NF!=8 OR non-empty trailing $8).
+# Count malformed data rows in a file. STRUCTURAL: NF!=8 OR non-empty trailing $8.
+# DOMAIN (field-shift): mode ($4) ∉ {auto,gated} OR status ($6) ∉ known set, even
+# when NF==8 with empty $8. Mirrors rescue.sh BAD_ROWS / monitor checkRegistryInvariant.
 count_bad_rows() {
-  awk -F'|' '/^\|[[:space:]]*[0-9]/ { t=$8; gsub(/[[:space:]]/,"",t); if (NF!=8 || t!="") c++ } END{print c+0}' "$1" 2>/dev/null || echo 0
+  awk -F'|' '
+    /^\|[[:space:]]*[0-9]/ {
+      t=$8; gsub(/[[:space:]]/,"",t)
+      m=$4; gsub(/^[[:space:]]+|[[:space:]]+$/,"",m)
+      s=$6; gsub(/^[[:space:]]+|[[:space:]]+$/,"",s)
+      mode_ok = (m=="auto" || m=="gated")
+      status_ok = (s=="pending" || s=="running" || s=="awaiting_go" || s=="awaiting_critic" || s=="complete" || s=="failed" || s=="needs_human")
+      if (NF!=8 || t!="" || !mode_ok || !status_ok) c++
+    }
+    END{print c+0}' "$1" 2>/dev/null || echo 0
 }
 
 echo ""
@@ -42,7 +57,9 @@ if [[ -f "$PROJ" ]]; then
   [[ "${BAD:-0}" -eq 0 ]] && ok "live project.md has zero malformed rows" \
     || fail "live project.md has $BAD malformed row(s) — corruption present"
 else
-  fail "project.md not found at $PROJ"
+  # No live project.md when run standalone from the ai-toolbox skill source repo
+  # (project.md only exists in a deployed project, e.g. ai-console) — not a failure.
+  echo "  · skip: no live project.md at $PROJ (expected when run from ai-toolbox source)"
 fi
 
 echo ""
@@ -103,6 +120,39 @@ elif printf '%s' "$FN_BODY" | grep -q "mktemp" && printf '%s' "$FN_BODY" | grep 
 else
   fail "reset_stale_running_tasks: no recognizable atomic temp+mv registry write"
 fi
+
+echo ""
+echo "4. Field-shift DOMAIN check (NF==8 but mode/status out of range)"
+# A field-shift corruption keeps NF==8 with an empty trailing $8 — the structural
+# check passes — but writes a wrong value into an enum column. The domain check
+# (A1DD) must flag it. Build a clean file plus two field-shifted rows.
+SHIFT="$TMP/shift.md"
+cat > "$SHIFT" << 'EOF'
+## Task Registry
+| ID | summary | mode | current_phase | status | last_activity |
+|----|---------|------|---------------|--------|---------------|
+| 20260628-clean | clean row | auto | 1 | complete | 2026-06-28T00:00:00Z |
+| 20260628-mshift | mode shifted | 2 | 1 | complete | 2026-06-28T00:00:00Z |
+| 20260628-sshift | status shifted | auto | 1 | finished | 2026-06-28T00:00:00Z |
+EOF
+# Sanity: every row is structurally NF==8 with an empty trailing $8 (so a bare
+# NF!=8 || $8!="" check would call this file 100% clean).
+STRUCT_BAD="$(awk -F'|' '/^\|[[:space:]]*[0-9]/ { t=$8; gsub(/[[:space:]]/,"",t); if (NF!=8 || t!="") c++ } END{print c+0}' "$SHIFT")"
+[[ "${STRUCT_BAD:-1}" -eq 0 ]] && ok "field-shift rows are structurally clean (NF==8, empty \$8) — bare check would miss them" \
+  || fail "expected 0 structural breaches in field-shift fixture, got $STRUCT_BAD"
+
+DOMAIN_BAD="$(count_bad_rows "$SHIFT")"
+[[ "${DOMAIN_BAD:-0}" -eq 2 ]] && ok "domain check flags both field-shifted rows (mode=2, status=finished)" \
+  || fail "expected 2 domain-bad rows, got $DOMAIN_BAD"
+
+# No false positives: the clean row alone must count as 0.
+CLEAN_ONLY="$TMP/clean.md"
+cat > "$CLEAN_ONLY" << 'EOF'
+| 20260628-clean | clean row | auto | 1 | complete | 2026-06-28T00:00:00Z |
+| 20260628-gated | gated pending | gated | 2 | pending | 2026-06-28T00:01:00Z |
+EOF
+[[ "$(count_bad_rows "$CLEAN_ONLY")" -eq 0 ]] && ok "valid rows (auto/gated × all statuses) are NOT flagged (no false positives)" \
+  || fail "domain check produced a false positive on valid rows"
 
 echo ""
 echo "── registry invariant: $PASS passed, $FAIL failed ───"

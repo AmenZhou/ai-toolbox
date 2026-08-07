@@ -9,3 +9,9 @@
 - If asked to delete files, always double-check with user
 - If unsure about any destructive operation, ask for clarification
 - Prioritize data safety over convenience — when in doubt, preserve rather than delete
+
+## Canonical Orchestrate Inbox
+
+- The single **canonical orchestrate inbox** is `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/` (gated tickets: `.../inbox/gated/`). It is the ONLY live one — the launchd jobs (`tend`, `drain-inbox`, `monitor`, `rescue`) all run with `WorkingDirectory=/Users/haimengzhou/apps/ai-console`, so nothing drains or displays any other inbox.
+- ALL ticket staging — manual writes, `/orch`, `breakdown-to-inbox`, or any skill — writes to that absolute path **regardless of current working directory**. Never resolve the inbox by walking up from cwd, and never stage into a project-local `.orchestrate/` (every project under `/Users/haimengzhou/apps/` has dormant ancestor/local `.orchestrate/` dirs that act as traps).
+- For a ticket that operates on **another repo**, keep inbox = ai-console and use **absolute paths** inside the ticket body, with `cd <repo>` before running that repo's tests.

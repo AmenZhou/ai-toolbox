@@ -1,7 +1,7 @@
 ---
 name: smart-code-review
-description: Ticket-aware code review. Fetches associated ticket/requirements (Linear, GitHub issue, PR description) and validates implementation against them. Falls back to a structured branch summary when no ticket is found. Always finishes with an OWASP Top 10 security pass and a standard BUG/FIX/AUTO/CONSIDER code review pass.
-version: 1.2.0
+description: Ticket-aware code review. Fetches associated ticket/requirements (Linear, GitHub issue, PR description) and validates implementation against them. Falls back to a structured branch summary when no ticket is found. Runs an OWASP Top 10 security pass and a standard BUG/FIX/AUTO/CONSIDER code review pass, then posts the kept findings as inline review comments on the detected PR/MR (GitHub `gh` / GitLab `glab`) — or documents them in a local review doc when there is no PR/MR.
+version: 1.3.0
 inline: true
 ---
 
@@ -23,14 +23,36 @@ Match against:
 - `[A-Z]+-\d+` — Linear/Jira style (e.g. `INFRA-1`, `DSP-42`)
 - `[a-z]+-\d+-` prefix slug (e.g. `infra-1-research-uat-infra` → `INFRA-1`)
 
-**B. Check for open PR**
+**B. Check for an open PR/MR** (platform-aware, per R-1's origin-remote rule)
+
+First detect the forge from the origin remote host:
 ```bash
-gh pr view --json title,body,url 2>/dev/null
+origin_host=$(git remote get-url origin 2>/dev/null \
+  | sed -E 's#^(https?://|git@)([^/:]+).*#\2#')
+
+case "$origin_host" in
+  github.com|*.github.com)  platform=github ;;   # use gh
+  gitlab.com|gitlab.*)      platform=gitlab ;;   # use glab  (covers gitlab.cloudokyo.dev)
+  *)                        platform=local  ;;   # no PR/MR host -> local-doc fallback (Phase 4)
+esac
+echo "$platform"
 ```
-Scan PR body for:
+
+Then look up the open PR/MR for the current branch on that platform:
+```bash
+# GitHub:
+gh pr view --json title,body,url 2>/dev/null
+# GitLab (covers self-managed gitlab.cloudokyo.dev):
+glab mr view --output json 2>/dev/null | jq '{title, body: .description, url: .web_url}'
+```
+(`gh`/`glab` live at `/opt/homebrew/bin` — `export PATH="/opt/homebrew/bin:$PATH"` if it's not already on PATH.)
+
+Scan the PR/MR body for:
 - Linear URLs: `linear.app/*/issue/*` or `linear.app/*/issues/*`
 - GitHub issue refs: `#\d+` or `github.com/.*/issues/\d+`
 - Explicit requirement sections: `## Requirements`, `## Acceptance Criteria`, `## AC`
+
+Record `platform` and the PR/MR number/url — Phase 4 reuses them to publish findings.
 
 **C. Collect branch diff metadata** (always needed)
 ```bash
@@ -42,7 +64,7 @@ git diff main...HEAD --stat
 - Ticket/requirements found → **Phase 1a** (ticket validation)
 - Nothing found → **Phase 1b** (branch summary)
 
-If `gh` is unavailable or unauthenticated, skip B and go straight to Phase 1b.
+If `gh`/`glab` is unavailable or unauthenticated, skip B (no PR/MR context, `platform=local`) and go straight to Phase 1b.
 
 ---
 
@@ -250,11 +272,121 @@ I'll assume a) if you don't specify.
 
 ---
 
+## Phase 4 — Publish Review (always runs after selection)
+
+After the user answers "What to fix?", **publish the kept findings as inline comments** on the
+PR/MR detected in Phase 0 — one comment per finding, anchored at its `file:line`. This does
+**not** fix code; it only records the review on the forge (or in a local doc). It is gated on the
+fix-selection answer:
+
+- Include exactly the categories the user chose (`a` = SECURITY+BUG+FIX, `b` = SECURITY,
+  `c` = BUG+FIX, `d`/all = everything **including CONSIDER**, `e` = the custom subset).
+- **Do not post CONSIDER-only items unless option `d`/all was chosen.**
+
+Use the `platform` recorded in Phase 0 (R-1 origin-remote rule). All commands below are the exact
+inline-comment commands from R-1's reference doc — no invented flags. `gh`/`glab` are at
+`/opt/homebrew/bin` (export PATH if needed).
+
+### 4a — GitHub PR (`platform=github`)
+
+Get the PR number + head SHA, then POST one review comment per kept finding:
+```bash
+gh pr view --json number,headRefOid,baseRefName,headRefName,url
+#   .number      -> <n>
+#   .headRefOid  -> <HEAD_SHA> (commit_id; must be the latest commit SHA)
+```
+```bash
+gh api --method POST "repos/{owner}/{repo}/pulls/<n>/comments" \
+  -f body="<comment text>" \
+  -f commit_id="<HEAD_SHA>" \      # = headRefOid above
+  -f path="src/foo.ts" \
+  -F line=42 \                     # -F = typed field -> integer
+  -f side="RIGHT"                  # RIGHT = new version; LEFT = old
+# Multi-line range: add  -F start_line=38 -f start_side="RIGHT"
+```
+`gh pr review` **cannot** target a line — inline posting always goes through `gh api`.
+
+### 4b — GitLab MR (`platform=gitlab`)
+
+Get project id, iid, and the position SHAs, then POST one positioned discussion per finding:
+```bash
+glab mr view --output json | jq '{project_id, iid, web_url}'
+glab api "projects/:id/merge_requests/<iid>/versions" --hostname <host> \
+  | jq '.[0] | {base_sha: .base_commit_sha, head_sha: .head_commit_sha, start_sha: .start_commit_sha}'
+```
+```bash
+glab api --method POST "projects/:id/merge_requests/<iid>/discussions" --hostname <host> \
+  -f body="<comment text>" \
+  -f position[position_type]=text \
+  -f position[base_sha]=<BASE_SHA> \      # from /versions above
+  -f position[head_sha]=<HEAD_SHA> \
+  -f position[start_sha]=<START_SHA> \
+  -f position[new_path]="src/foo.ts" \
+  -f position[old_path]="src/foo.ts" \
+  -f position[new_line]=42                # line in the new version; use position[old_line] for a deleted line
+```
+`<host>` is the origin host (e.g. `gitlab.cloudokyo.dev`); `glab mr note` cannot target a line, so
+positioned comments always go through `glab api`. (GitLab commands are doc-sourced in R-1 — token
+was expired at authoring time — and are embedded as-is.)
+
+### 4c — Local-doc fallback (`platform=local`, or posting failed/unauthenticated)
+
+When no PR/MR was detected, **or** a posting call fails (a posting failure is **non-fatal**), write
+the kept findings to R-1's shared local-doc schema instead and report the path:
+```
+.code-review/inline-comments.md            # relative to the repo root being reviewed
+```
+Create the `.code-review/` dir, then write YAML front-matter for run metadata followed by one fenced
+`yaml` block per finding, keyed by a stable `id: f-NNNN`:
+````markdown
+---
+schema: code-review-inline/v1
+platform: local
+repo: <repo root path>
+commit: <git rev-parse HEAD>
+generated_at: <ISO-8601 UTC>
+---
+
+# Inline review findings
+
+```yaml
+id: f-0001                     # stable id: f-<4 digits>, never reused within a run
+file: src/foo.ts               # path relative to repo root
+line: 42                       # 1-based line in the working tree at `commit`
+severity: bug                  # bug | security | perf | style | nit
+body: |
+  Off-by-one: loop should stop at `len - 1`, this reads past the slice end.
+status: open                   # open | resolved | wontfix
+reply:                         # filled by /address-code-review / human; empty until then
+```
+````
+This file is consumable by `/address-code-review` (re-finds each finding by its stable `id`).
+
+### Reporting
+
+Report what was published:
+```
+## Publish Review
+Platform: github | Posted 3 inline comments to PR #42  (https://github.com/.../pull/42)
+  ✓ [SECURITY][A01] auth check missing — src/routes.ts:88
+  ✓ [BUG] off-by-one — src/foo.ts:42
+  ✓ [FIX] missing error handling — src/api.ts:17
+Skipped (CONSIDER, not selected): 1
+```
+or, on the local-doc path:
+```
+## Publish Review
+No PR/MR detected (platform=local) — wrote 3 findings to .code-review/inline-comments.md
+```
+
+---
+
 ## Error Handling
 
 | Situation | Response |
 |-----------|----------|
-| `gh` not installed / unauthenticated | Skip PR lookup, proceed to Phase 1b |
+| `gh`/`glab` not installed / unauthenticated | Skip PR/MR lookup (`platform=local`), proceed to Phase 1b; Phase 4 writes the local doc |
+| Inline post fails (Phase 4: 401/403/422, missing PR/MR) | Non-fatal — fall back to writing `.code-review/inline-comments.md` and report that path |
 | Linear URL requires login | Note "Linear requires auth — paste ticket text to validate" |
 | No commits ahead of main | "Branch is up to date with main — nothing to review" |
 | Binary or generated files | Skip, note in summary |
