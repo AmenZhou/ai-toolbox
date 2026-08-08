@@ -1019,6 +1019,23 @@ Every completed task should get its outcome captured into the Obsidian wiki via 
 - **Mechanism:** the deterministic shell path is authoritative — `.orchestrate/bin/finalize-completed-tasks.sh` calls `enqueue-wiki-sync.sh <ID>` from its reaper (structurally mirrors `enqueue-review-and-tests.sh`, independent of and additional to it — any code-changing task fires both a review+tests ticket and a wiki-sync ticket, since 6b's code-change gate and 6c's now-unconditional trigger are independent checks). The model path mirrors that: run `ENQ_ROOT=<root> ENQ_INBOX_ROOT=<root> bash .orchestrate/bin/enqueue-wiki-sync.sh <ID>`. The helper writes exactly one `kind: wiki-sync` ticket to the canonical ai-console inbox with headers `followup_for: <ID>` + `kind: wiki-sync` + `mode: auto` + `source: self`, **dedups** against inbox/registry/history by the `(followup_for, kind=wiki-sync)` pair, and writes NO `gate_reason:` / no risky-op literals so the ticket drains to `pending` and tend go auto runs it.
 - Append to heartbeat.log (the helper does this): `[<ISO>] enqueue — filed followup-wiki-sync-<ID>-<stamp> …` (or `skip <ID> …` for `followup_for:` / wiki-job / dedup — there is no code-change/no-keyword skip path anymore, since WIKI-1 removed that gate).
 
+**6d. Direct Wiki Ingestion (task state into topic page):**
+
+After enqueueing the wiki-sync follow-up ticket (step 6c), immediately ingest the completed task state into the Obsidian wiki page relevant to its topic. This captures the task outcome synchronously into topic-specific context files (not a daily operational log).
+
+- **Mechanism:**
+  1. Extract the task's **topic** from: task tags (if `tags:` line in `.orchestrate/tasks/{ID}.md`), task title keywords, or project context
+  2. Resolve the topic to a wiki page path (e.g. task tagged `rate-limiting` → `$VAULT/Rate Limiting.md` or `$VAULT/topics/Rate Limiting.md`)
+  3. Distill the archived task state: extract summary, phase outcomes, learnings from `orchestrate-history/{ARCHIVE_STAMP}-{ID}-*.md`
+  4. Append to the topic page under a timestamped section: `## Completed: <task summary> — <ISO>` with phase summaries and key learnings as bullets
+  5. If the topic page does not exist, create it with a header + sections for `## Overview` and `## Completed Tasks`
+
+- **Fallback (topic resolution unclear):** if no topic can be determined, append to a default `$VAULT/Orchestration/Completed Tasks.md` page indexed by date/ID
+
+- **Trigger:** fires for every `complete` task at the end of Completion, after wiki-sync enqueue (6c) but before Improvement Suggestions (7).
+
+- **Idempotency:** the ingestion is idempotent — re-running on an already-ingested task is a clean no-op (check for existing `## Completed: <task summary>` section by `task_id:` frontmatter). Append to heartbeat.log: `[<ISO>] wiki-ingest — ingested task {ID} → <topic-page>` (only if changes were made; skip line if deduped/no-op).
+
 **7. Improvement Suggestions:**
 
 Print the suggestions block to the user:
