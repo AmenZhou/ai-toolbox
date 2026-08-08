@@ -454,7 +454,7 @@ When user provides plain text (via `inbox "..."` or bare text after display):
 3. Infer `## Context` from `.orchestrate/project.md ## Shared Context` if relevant.
 4. Generate 2 `## Acceptance Criteria` bullets.
 5. Scan the live control plane for overlapping work — same 3 sources and 3 heuristics as
-   `breakdown-to-inbox` Step 1b (§2–§4 of `reports/orchestrate/dep-scan-inv_plan.md` / DEP-SCAN-IMPL's
+   `task-breakdown` Step 1b (§2–§4 of `reports/orchestrate/dep-scan-inv_plan.md` / DEP-SCAN-IMPL's
    landed change to that skill): (1) `.orchestrate/project.md` non-terminal registry rows
    (`pending`/`running`/`awaiting_go`/`needs_human`, each cross-read against its `.orchestrate/tasks/
    <ID>.md` for `**Target:**`/`## Goal`), (2) undrained `.orchestrate/inbox/*.md`, and (3) undrained
@@ -462,12 +462,12 @@ When user provides plain text (via `inbox "..."` or bare text after display):
    ID/title match, reusing `resolve_title_ref()`'s matching logic) is a hard-dependency candidate;
    heuristic 2 (Target-path overlap) and heuristic 3 (shared resource keywords) are soft conflicts only.
    A hard match adds a `blocked_by_ticket:` header to the structured preview, using the same reference
-   forms and race-window caveat as breakdown-to-inbox Step 4 (live registry ID — resolves today via
+   forms and race-window caveat as task-breakdown Step 4 (live registry ID — resolves today via
    drain-inbox.sh Stage 2; pre-existing undrained inbox basename — resolves only if drained in the same
    run). A soft match is appended to the preview as a `⚠ Live overlap <ID/file> (<status>, <heuristic>)`
-   note, never wired into `blocked_by_ticket:`. This mirrors breakdown-to-inbox's mechanism exactly
+   note, never wired into `blocked_by_ticket:`. This mirrors task-breakdown's mechanism exactly
    rather than reinventing a second heuristic set — Inbox Mode is the single-ticket analogue of
-   breakdown-to-inbox's batch flow, and DEP-RESOLVE-IMPL's resolution-side fix lives in `drain-inbox.sh`
+   task-breakdown's batch flow, and DEP-RESOLVE-IMPL's resolution-side fix lives in `drain-inbox.sh`
    and is shared by both regardless of which skill wrote the header.
 6. Show structured preview (including any `blocked_by_ticket:` header or `⚠ Live overlap` note from step
    5); on approve, write to the **canonical ai-console inbox** — `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/<slug>-<ISO>.md` (or `/Users/haimengzhou/apps/ai-console/.orchestrate/inbox/gated/<slug>-<ISO>.md` if gated), regardless of cwd. Never stage into a cwd-relative project-local `.orchestrate/`.

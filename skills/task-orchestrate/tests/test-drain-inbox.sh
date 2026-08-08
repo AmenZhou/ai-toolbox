@@ -1037,7 +1037,7 @@ triggered_by: test-session
 
 ## Goal
 Registered so its registry summary/title can be matched by a later ticket's
-blocked_by_ticket: header (a hand-authored header — breakdown-to-inbox itself
+blocked_by_ticket: header (a hand-authored header — task-breakdown itself
 never emits a title in this position, only a basename or a registry ID).
 
 ## Acceptance Criteria

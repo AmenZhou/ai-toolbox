@@ -20,7 +20,7 @@ Tickets tagged `source:investigation` or ending with `-INV` suffix always use pr
 The following skills systematically use premium models for investigation/planning phases:
 - **grounded-investigate** — Wiki-first dual-method investigation; Sonnet used in Steps 2–4 (both methods + cross-validation)
 - **task-orchestrate** — Phase 1 (Planning/Complexity Analysis) uses Sonnet; any phase explicitly marked `investigate` or `research` uses Sonnet
-- **breakdown-to-inbox** — Steps 1–2 (Understanding + Decomposition) use Sonnet for accurate dependency derivation
+- **task-breakdown** (formerly breakdown-to-inbox) — Steps 1–2 (Understanding + Decomposition) use Sonnet for accurate dependency derivation
 
 ### Implementation by Tool
 

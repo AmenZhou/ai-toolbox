@@ -1,28 +1,33 @@
 #!/usr/bin/env bash
-# test-breakdown-to-inbox.sh — SKILL.md doc-conformance for /breakdown-to-inbox
+# test-task-breakdown.sh — SKILL.md doc-conformance for /task-breakdown
 #
-# Covers the v3.0.0 redesign (task 20260808-211243): breakdown-to-inbox no longer stages
+# Covers the v3.0.0 redesign (task 20260808-211243) and the v3.1.0 rename + grill-me wiring
+# (task 20260808-225738). v3.0.0: task-breakdown (then named breakdown-to-inbox) no longer stages
 # tickets in .orchestrate/inbox/ for a background tend/drain-inbox.sh cycle to pick up — that
 # apparatus was archived in this project on 2026-08-06 (background launchd execution proved
 # infeasible for the Claude Code CLI). Instead the skill writes ONE task-orchestrate task file
 # (.orchestrate/tasks/{ID}.md) for the whole decomposed job, with every unit expressed as FOUR
-# chained phases (was three tickets) — Investigation/Plan, the new Challenge phase (adversarial
+# chained phases (was three tickets) — Investigation/Plan, the Challenge phase (adversarial
 # review of the INV plan before Implementation may depend on it), Implementation, Verification —
 # and registers the row in project.md via a direct file edit, since this project's
 # .orchestrate/bin/ has no update-registry-row.sh/drain-inbox.sh/check-depends-on.sh equivalents.
+# v3.1.0: skill renamed breakdown-to-inbox → task-breakdown, and Step 8 gained an optional
+# human-triggered "grill" path that runs the grill-me skill over the plan before "go" (distinct
+# from the unattended Challenge phase), with an explicit caveat that grill-me's own /grilling
+# dependency isn't installed in this environment yet.
 # This is a prose/template skill with no runtime/executable code, so these are grep-based doc
 # assertions (same pattern as task-orchestrate/tests/test-task-orchestrate.sh's skill_has
 # helper), plus a byte-identity check against the sync.sh mirrors.
 #
 # Run from anywhere:
-#   bash /Users/haimengzhou/apps/ai-toolbox/skills/breakdown-to-inbox/tests/test-breakdown-to-inbox.sh
+#   bash /Users/haimengzhou/apps/ai-toolbox/skills/task-breakdown/tests/test-task-breakdown.sh
 set -uo pipefail
 
 PASS=0
 FAIL=0
-SKILL_SRC="/Users/haimengzhou/apps/ai-toolbox/skills/breakdown-to-inbox/SKILL.md"
-CLAUDE_MIRROR="$HOME/.claude/skills/breakdown-to-inbox/SKILL.md"
-GEMINI_MIRROR="$HOME/.gemini/skills/breakdown-to-inbox/SKILL.md"
+SKILL_SRC="/Users/haimengzhou/apps/ai-toolbox/skills/task-breakdown/SKILL.md"
+CLAUDE_MIRROR="$HOME/.claude/skills/task-breakdown/SKILL.md"
+GEMINI_MIRROR="$HOME/.gemini/skills/task-breakdown/SKILL.md"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
@@ -48,7 +53,7 @@ skill_lacks() {
 }
 
 echo ""
-echo "── breakdown-to-inbox — test suite (v3.0.0) ─────"
+echo "── task-breakdown — test suite (v3.1.0) ─────"
 
 # ── 1. Source file exists, version bumped ────────────────────────────────────
 echo ""
@@ -60,7 +65,7 @@ else
   fail "SKILL.md source missing at $SKILL_SRC"
 fi
 
-skill_has '^version: 3\.0\.0' "version bumped to 3.0.0 (major redesign — task-file model)"
+skill_has '^version: 3\.1\.0' "version bumped to 3.1.0 (rename + grill-me wiring)"
 
 # ── 2. No inbox-staging model left as the live instruction ───────────────────
 echo ""
@@ -166,7 +171,7 @@ skill_has 'contains no `update-registry-row\.sh` or equivalent' \
 skill_has '^id: \{ID\}$' "Step 6 schema block includes id: {ID}"
 skill_has '^total_phases: <4 × unit count, \+ 1' \
   "Step 6 schema documents total_phases = 4 × units + 1 mandatory final phase"
-skill_has '^source: breakdown-to-inbox$' "Step 6 schema sets source: breakdown-to-inbox"
+skill_has '^source: task-breakdown$' "Step 6 schema sets source: task-breakdown"
 skill_has 'final .Test & Verify. phase is \*\*mandatory\*\*' \
   "Step 6 states the final aggregate Test & Verify phase is mandatory"
 
@@ -182,6 +187,23 @@ skill_lacks 'drain and start the run' \
   "no stale 'drain and start the run' phrasing remains"
 skill_has 'registered in project\.md — status:\s*$|status:\s*\nawaiting_go\. Nothing has been executed' \
   "Step 8 states the row is registered awaiting_go and nothing has executed"
+
+# ── 8b. grill-me wiring (v3.1.0) ──────────────────────────────────────────────
+echo ""
+echo "8b. grill-me wiring"
+
+skill_has 'typing \*\*"grill"\*\* invokes the `grill-me` skill' \
+  "Step 8 documents the optional human-triggered grill path"
+skill_has 'it is a HITL' \
+  "Step 8 states grill-me is HITL, distinct from the AFK Challenge phase"
+skill_has 'Never invoke `grill-me` automatically' \
+  "Step 8 forbids automatic/unattended invocation of grill-me"
+skill_has '/grilling.*is not installed in this environment' \
+  "Step 8 states plainly that grill-me's own /grilling dependency isn't installed"
+skill_lacks 'grill-me (works|is guaranteed to work|always works)' \
+  "Step 8 does not overclaim that grilling reliably works"
+skill_has 'Optional: type "grill" instead' \
+  "closing go-gate message surfaces the grill option"
 
 # ── 9. Worked example rewritten as one 13-phase task file ───────────────────
 echo ""
@@ -203,9 +225,9 @@ echo "10. ticket-planning left untouched"
 TICKET_PLANNING="/Users/haimengzhou/apps/ai-toolbox/skills/ticket-planning/SKILL.md"
 if [ -f "$TICKET_PLANNING" ]; then
   if grep -q "ticket-planning" "$SKILL_SRC" 2>/dev/null; then
-    ok "breakdown-to-inbox still references ticket-planning for its scope boundary"
+    ok "task-breakdown still references ticket-planning for its scope boundary"
   else
-    fail "breakdown-to-inbox no longer references ticket-planning"
+    fail "task-breakdown no longer references ticket-planning"
   fi
 else
   ok "ticket-planning/SKILL.md not found locally — skipping cross-file check (not this task's scope)"
@@ -217,22 +239,22 @@ echo "11. sync.sh mirrors"
 
 if [ -f "$CLAUDE_MIRROR" ]; then
   if diff -q "$SKILL_SRC" "$CLAUDE_MIRROR" >/dev/null 2>&1; then
-    ok "~/.claude/skills/breakdown-to-inbox/SKILL.md is byte-identical to source"
+    ok "~/.claude/skills/task-breakdown/SKILL.md is byte-identical to source"
   else
-    fail "~/.claude/skills/breakdown-to-inbox/SKILL.md differs from source — run sync.sh"
+    fail "~/.claude/skills/task-breakdown/SKILL.md differs from source — run sync.sh"
   fi
 else
-  fail "~/.claude/skills/breakdown-to-inbox/SKILL.md mirror not found"
+  fail "~/.claude/skills/task-breakdown/SKILL.md mirror not found"
 fi
 
 if [ -f "$GEMINI_MIRROR" ]; then
   if diff -q "$SKILL_SRC" "$GEMINI_MIRROR" >/dev/null 2>&1; then
-    ok "~/.gemini/skills/breakdown-to-inbox/SKILL.md is byte-identical to source"
+    ok "~/.gemini/skills/task-breakdown/SKILL.md is byte-identical to source"
   else
-    fail "~/.gemini/skills/breakdown-to-inbox/SKILL.md differs from source — run sync.sh"
+    fail "~/.gemini/skills/task-breakdown/SKILL.md differs from source — run sync.sh"
   fi
 else
-  fail "~/.gemini/skills/breakdown-to-inbox/SKILL.md mirror not found"
+  fail "~/.gemini/skills/task-breakdown/SKILL.md mirror not found"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

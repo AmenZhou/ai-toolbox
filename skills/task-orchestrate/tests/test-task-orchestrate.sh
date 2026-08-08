@@ -1120,9 +1120,9 @@ echo ""
 echo "16. Inbox Mode step 3a — live control plane scan"
 
 skill_has 'Scan the live control plane for overlapping work — same 3 sources and 3 heuristics as' \
-  "Plain-text structuring step 5/3a mirrors breakdown-to-inbox's scan (same sources/heuristics, no second heuristic set)"
-skill_has 'breakdown-to-inbox` Step 1b' \
-  "step 3a explicitly cites breakdown-to-inbox Step 1b rather than reinventing"
+  "Plain-text structuring step 5/3a mirrors task-breakdown's scan (same sources/heuristics, no second heuristic set)"
+skill_has 'task-breakdown` Step 1b' \
+  "step 3a explicitly cites task-breakdown Step 1b rather than reinventing"
 skill_has 'Heuristic 1 \(explicit' \
   "step 3a classifies heuristic 1 (explicit ID/title) as the hard-dependency candidate"
 skill_has 'heuristic 2 \(Target-path overlap\) and heuristic 3 \(shared resource keywords\) are soft conflicts only' \

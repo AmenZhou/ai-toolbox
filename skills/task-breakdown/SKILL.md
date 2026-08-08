@@ -1,12 +1,12 @@
 ---
-name: breakdown-to-inbox
+name: task-breakdown
 description: Turn a job (spec, plan doc, rough notes, or the current conversation) into a set of well-structured, right-sized units of work and write them as ONE task-orchestrate task plan — a single `.orchestrate/tasks/{ID}.md` file with every unit expressed as chained phases — so a subsequent task-orchestrate run executes the whole job by working through the plan. Use when the user says "break this down into a task plan", "turn this spec into a task-orchestrate plan", "decompose this job for orchestrate to execute", "plan and orchestrate this", or "split this work into phases for /orch". This is the multi-unit decomposer + task-plan writer. For refining ONE ticket/unit's own description (add ACs / a test plan / flesh it out) defer to the ticket-planning skill instead. Every unit of work becomes four chained phases — Investigation/Plan → Challenge → Implementation → Verification. Open questions answerable by investigation are resolved there; a genuine human-judgment gap surfaces through task-orchestrate's own needs_human machinery at execution time, not a bespoke ask flow. Never starts execution — writes the plan and stops at the orchestrate go-gate.
-version: 3.0.0
+version: 3.1.0
 investigation_model_tier: sonnet
 decomposition_model_tier: sonnet
 ---
 
-# breakdown-to-inbox
+# task-breakdown
 
 Decompose a job into right-sized units of work, and write the whole decomposition as **one
 task-orchestrate task file** — every unit expressed as four chained phases (Investigation/Plan,
@@ -376,7 +376,7 @@ id: {ID}
 task: <one-line job title>
 mode: auto | gated                # from Step 5
 total_phases: <4 × unit count, + 1 for the mandatory final phase>
-source: breakdown-to-inbox
+source: task-breakdown
 
 ## Goal
 <1–3 sentences: what must be true when the whole job is done.>
@@ -492,18 +492,42 @@ read-only investigations; nothing mutates until Wave 3. Phase 7 (P3-9-IMPL) is g
 
 ## Step 8 — STOP at the go-gate
 
+**Optional — grill the plan before "go".** Before printing the closing block, offer the human one
+more option beyond "go"/"go auto"/abort: typing **"grill"** invokes the `grill-me` skill on the
+plan just printed in Step 7, running a live interview with the human to pressure-test the job-level
+decomposition (unit boundaries, missed units, wrong dependency ordering) before committing to it.
+This is deliberately **not** the same check as the per-unit Challenge phase (Step 2) — Challenge is
+an unattended, automated, single-unit check that runs *during* execution with no human present;
+grilling here is a human-in-the-loop, whole-plan conversation that runs *before* execution even
+starts, entirely at the human's discretion. Never invoke `grill-me` automatically — it is a HITL
+skill (a live conversational interview), so calling it from an unattended context would just hang
+waiting for a human who isn't there.
+
+**Known dependency gap:** `grill-me` itself only says "Run a `/grilling` session" — as of this
+writing `/grilling` (its actual implementation) is not installed in this environment. Typing
+"grill" may currently fail or do nothing useful. State this plainly if the human asks for it rather
+than pretending the option reliably works: "grill-me is wired in, but its own /grilling dependency
+isn't installed yet — this may not do anything." Do not silently skip offering the option just
+because it might fail; the human may have installed `/grilling` since this was written.
+
+If the human grills the plan and it surfaces changes, revise the task file and reprint the Step 7
+summary before returning to this same go-gate — grilling can repeat as many times as the human
+wants before they say "go".
+
 Print exactly:
 ```
 Task plan {ID} written to .orchestrate/tasks/{ID}.md and registered in project.md — status:
 awaiting_go. Nothing has been executed. Run `/orch resume`, pick {ID}, then "go" or "go auto" to
 execute it — that runs immediately, in that session (no background dispatch in this project).
+(Optional: type "grill" instead to run a grill-me interview over this plan first.)
 ```
 Then STOP. Do not invoke task-orchestrate's Execution Loop, do not flip the registry row to
 `running`, do not run any phase. The human owns the go decision. The skill's job is to research,
 plan, and *recommend* — not to ask the human a question to proceed **at this stage**; any question
 that genuinely needed the human was already asked and resolved back in Step 1a, before this point
 (a question surfaced later, during execution, by a Challenge phase is task-orchestrate's
-`needs_human` machinery, not this skill's job).
+`needs_human` machinery, not this skill's job). Grilling (above) is the one exception to "no
+questions at this stage" — it is opt-in and human-initiated, not the skill prompting the human.
 
 ---
 
@@ -522,7 +546,7 @@ id: 20260808-140500
 task: Phase 3 unit-cost ramp — seed fixtures, fix Redis, run the ramp
 mode: gated
 total_phases: 13
-source: breakdown-to-inbox
+source: task-breakdown
 
 ## Goal
 Run the Phase 3 unit-cost ramp successfully: MCC fixtures seeded, redis-proxy healthy, ramp
@@ -724,6 +748,7 @@ doesn't change what work each phase itself does.
 Task plan 20260808-140500 written to .orchestrate/tasks/20260808-140500.md and registered in
 project.md — status: awaiting_go. Nothing has been executed. Run `/orch resume`, pick
 20260808-140500, then "go" or "go auto" to execute it — that runs immediately, in that session.
+(Optional: type "grill" instead to run a grill-me interview over this plan first.)
 ```
 
 ### Variant: when Step 1a triggers instead

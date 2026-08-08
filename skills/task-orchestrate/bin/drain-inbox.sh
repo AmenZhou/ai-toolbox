@@ -17,7 +17,7 @@ GATED_NOTIFIED="$ROOT/.orchestrate/logs/gated-notified.tsv"
 
 # CROSS-1: in-batch map of "referenced ticket's original inbox basename" ->
 # "its real registered ID", built up as this drain-inbox.sh run processes
-# files. Lets a ticket's `blocked_by_ticket:` header (breakdown-to-inbox's
+# files. Lets a ticket's `blocked_by_ticket:` header (task-breakdown's
 # structural marker, SKILL.md Step 6) resolve to a real depends_on: ID when
 # the referenced ticket has ALREADY been drained earlier in this same run.
 # Scoped to this one process (mktemp + EXIT trap) — deliberately does NOT
@@ -213,12 +213,12 @@ materialize_task_file() {
   } > "$task_file"
 }
 
-# CROSS-1: resolve a `blocked_by_ticket:` header (breakdown-to-inbox's
+# CROSS-1: resolve a `blocked_by_ticket:` header (task-breakdown's
 # structural marker for a real cross-ticket ordering dependency — see
 # SKILL.md Step 6) to the real registered ID of the referenced ticket. Only
 # resolves if that ticket has ALREADY been drained earlier in THIS SAME
 # drain-inbox.sh run (recorded in BLOCKED_BY_MAP, keyed by the referenced
-# ticket's original inbox basename — a value breakdown-to-inbox controls and
+# ticket's original inbox basename — a value task-breakdown controls and
 # can reference exactly, since it writes both files itself). If the header is
 # absent/empty, or the ref isn't in the map (not part of this batch, e.g. it
 # arrives in a later file this run, or was already registered in a prior run
@@ -226,7 +226,7 @@ materialize_task_file() {
 # an ID for a ticket we haven't actually observed being registered.
 #
 # CROSS-2 (20260727-inbox-7D4A): the structural `blocked_by_ticket:` header is
-# only ever emitted by breakdown-to-inbox. Self-generated INV/IMPL/VERIFY-style
+# only ever emitted by task-breakdown. Self-generated INV/IMPL/VERIFY-style
 # tickets (this project's own stress-test workstream) instead write a
 # markdown-bold prose line — `**Blocked by:** CH-TABLE-SEED-IMPL.` — which the
 # header regex above never matches, so depends_on silently stayed "none" even
@@ -289,7 +289,7 @@ resolve_depends_on() {
     fi
 
     # Stage 3 (NEW, optional per plan §3 — included here for symmetry with
-    # the no-header prose path below): breakdown-to-inbox itself never emits
+    # the no-header prose path below): task-breakdown itself never emits
     # a title in this header (only a basename or, going forward, an ID), but
     # a hand-authored blocked_by_ticket: header might. Reuses the same
     # durable registry lookup the prose path already relies on.
