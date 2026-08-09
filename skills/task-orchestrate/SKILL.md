@@ -430,9 +430,26 @@ Never stop between steps 5 and 1 in auto mode.
 
 **Parallel batch mixed results:** checkpoint ✅ immediately; re-invoke ⚠️; on any ❌, halt and gate.
 
+## Gated Mode Loop
+
+When a gated task runs (via "go" or "go auto" approval):
+
+```
+GATED:
+  1. Mark registry `running`, start Execution Loop
+  2. Run phases sequentially until all ✓ complete OR any ❌ blocked
+  3. **When no ready phase remains:** MUST transition to Completion
+  4. Run Completion (§6b-direct, §6d, context update, improvements)
+  5. Archive and mark registry `complete`
+```
+
+**Critical difference from auto mode:** gated tasks NEVER skip Completion. If a phase blocks with `❌ needs_human`, halt there — do not proceed to Completion until human approval. But once approved and phases reach completion, Completion is not optional.
+
 ---
 
-## Completion
+## Completion — Mandatory Post-Execution Sequence
+
+⚠️ **Completion is not optional.** Tasks are not truly complete until these steps are explicitly run. Do not archive a task, do not mark it complete in the registry, do not move on to the next task until §6b–§6d have been documented.
 
 When all phases are `✓ complete`:
 
