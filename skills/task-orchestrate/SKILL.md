@@ -172,17 +172,36 @@ Read `## Shared Context` from `project.md` before planning — it contains durab
 
 Immediately after reading Shared Context and before drafting the plan, pull a bounded slice of cross-project wiki knowledge: invoke `/wiki-context-pack "<task title/goal>" --budget 1500` once per task (not re-fetched per phase), and write the result verbatim into the task file under a new `## Wiki Context` section so later phases can reuse it without re-querying. Skip this pull entirely when the task's title/Goal matches a wiki-related job (`wiki-*`, `*-wiki-ingest`, `daily-wiki-digest`, or any ticket whose Design section is itself about wiki maintenance) — avoids recursive/wasteful calls. If `wiki-context-pack` errors, returns empty, or the vault isn't configured, degrade gracefully: proceed with planning unchanged and write `## Wiki Context\n(unavailable — proceeded without it)`.
 
-**Mandatory final phase:** Every plan must include a final `Test & Verify` phase `[inline · execution]`, numbered as Phase N (= total phases). Its acceptance criteria: (1) all output files declared in prior phases exist on disk, (2) detected test suite passes or "no test runner detected", (3) when the task's ACs or summary name a project-local smoke script, run it (see Project-local smoke scripts). Omit only for tasks that produce zero file changes (pure queries, documentation with no outputs).
+**Mandatory execution phases:** Phases 1 through N-1 are execution work. Phase N is always `Test & Verify` `[inline · execution]` with acceptance criteria: (1) all output files declared in prior phases exist on disk, (2) detected test suite passes or "no test runner detected", (3) when the task's ACs or summary name a project-local smoke script, run it (see Project-local smoke scripts). Omit only for tasks that produce zero file changes (pure queries, documentation with no outputs).
+
+**Mandatory Completion phase (Phase N+1):** Every task MUST include Phase N+1: `Completion [inline · ceremony]` with checklist acceptance criteria:
+- [ ] §6b-direct review complete (verdict: PASS | PARTIAL | FAIL)
+- [ ] §6d wiki ingestion (page: ___ | not persisted: reason)
+- [ ] Shared Context updated (or "n/a — no new findings")
+- [ ] Improvement Suggestions filed (or "none: reason")
+
+This is not negotiable. No task is truly complete without Completion. Phase N+1 is where these mandatory post-execution steps are documented and verified. Do not archive, do not mark registry `complete`, do not move to the next task until all four checkboxes are checked.
 
 **Reconcile-and-document literal/numeric ACs:** when a ticket's hard count/literal AC (e.g. `ls web/*.html | wc -l == 11`) conflicts with verified project reality (the real value is 10), do NOT fail the phase or silently pass on the asserted number. Instead reconcile-and-document: run the check, record the *actual* value with evidence in `test_evidence`/verify.log, treat the AC as met at the corrected value, and note the off-by-one (the ticket's total was a guessed/remembered count, not an enumerated sum).
 
 ```
-TASK PLAN — `<summary>`  Complexity: Lightweight|Moderate|Complex (N phases)
+TASK PLAN — `<summary>`  Complexity: Lightweight|Moderate|Complex (N execution phases + Completion)
 Phase 1: `<name>` [inline · simple] → `<output>`
 Phase 2: `<name>` [inline · execution] → `<output>`
 Phase 3: `<name>` [/skill-name · agent/Sonnet] [parallel with 4] → `<output>`
-Phase 5: `<name>` [agent/premium] → `<output>`   ← research/investigation
-Phase N: `Test & Verify` [inline · execution] → `verify.log`   ← always final
+Phase N-1: `<name>` [agent/premium] → `<output>`   ← research/investigation
+Phase N: `Test & Verify` [inline · execution] → `verify.log`   ← execution final
+Phase N+1: `Completion` [inline · ceremony] → (see template below)   ← MANDATORY POST-EXECUTION
+```
+
+**Completion phase template (always Phase N+1):**
+```markdown
+### Phase N+1: Completion [inline · ceremony]
+status: pending
+- [ ] §6b-direct review complete (verdict: PASS | PARTIAL | FAIL)
+- [ ] §6d wiki ingestion (page: ___ | not persisted: reason)
+- [ ] Shared Context updated (or "n/a — no new findings")
+- [ ] Improvement Suggestions filed (or "none: reason")
 ```
 
 Surface pre-execution questions:
@@ -411,6 +430,22 @@ Simple/instructional: high/medium confidence → ✅, low → ⚠️.
 - **❌** → write `✗ failed`. **Before** updating project.md to `status: needs_human`, you MUST run the **Auto-Resolution Check & Human-Only Block Classifier** above. Only set `status: needs_human` if the block passes the classifier (a concrete external dependency) — a locally-executable action (cross-project file write, reversible config write, a runnable script) is NOT a valid block: attempt it instead and retry.
   - Gate: `⏸ retry · skip · replan · abort · instruct`
 
+**Auto-Insert Phase 10 Reminder:** When updating `current_phase` in the ✅ checkpoint (Step C), check if the newly-incremented phase number exceeds the task file's `total_phases`. If so, Phase 10 (Completion) is next and has not been inserted yet. **Append immediately** to the task file:
+
+```markdown
+
+### Phase 10: Completion [inline · ceremony]
+status: pending
+- [ ] §6b-direct review complete (verdict: PASS | PARTIAL | FAIL)
+- [ ] §6d wiki ingestion (page: ___ | not persisted: reason)
+- [ ] Shared Context updated (or "n/a — no new findings")
+- [ ] Improvement Suggestions filed (or "none: reason")
+```
+
+Then log: `⚠️ Phase 10 (Completion) auto-inserted — complete the checklist before archiving`.
+
+This reminder makes it **impossible to forget** Completion: it's visibly in the task file, numbered, and ready to checkpoint like any other phase.
+
 ---
 
 ## Auto Mode Loop
@@ -473,6 +508,21 @@ Use `date -u +%Y-%m-%d` (from `COMPLETED_AT`) for the MANIFEST date column.
 On each phase checkpoint (Step C ✅), also set registry `last_activity` to `$(date -u +%Y-%m-%dT%H:%M:%SZ)` so partial progress is accurate.
 
 **1. Archive task file:**
+
+- **Pre-archive Completion gate (mandatory, run BEFORE anything else):** verify Phase 10 (Completion) is complete before archiving. Check the task file:
+  ```bash
+  if ! grep -q "### Phase 10: Completion" .orchestrate/tasks/{ID}.md; then
+    echo "ERROR: Phase 10 (Completion) section not found in task file"
+    exit 1
+  fi
+  if ! grep -A 5 "### Phase 10: Completion" .orchestrate/tasks/{ID}.md | grep -q "✓ complete\|status: complete"; then
+    echo "ERROR: Phase 10 (Completion) is not marked ✓ complete"
+    echo "All four checklist items must be completed before archiving"
+    exit 1
+  fi
+  ```
+  Refuse to archive if Phase 10 doesn't exist or isn't marked complete. This is a hard gate — do not proceed without it.
+
 - **Pre-archive duplicate-existence check (mandatory, run BEFORE any `cp`/MANIFEST-append/`rm` below):** since another concurrent interactive session can legitimately be working the same project, check for an existing archive before writing one — the same check the Execution Loop's **Pre-execution duplicate-completion guard** (above) uses:
   ```bash
   ls .orchestrate/../orchestrate-history/*-"{ID}"-*.md 2>/dev/null   # or: grep -l "{ID}" orchestrate-history/*.md 2>/dev/null
