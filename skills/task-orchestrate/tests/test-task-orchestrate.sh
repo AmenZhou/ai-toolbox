@@ -79,47 +79,9 @@ else
   fail "SKILL.md source missing at $SKILL_SRC"
 fi
 
-skill_has '\| `tend` \|' "invocation table includes tend"
-skill_has 'tend go auto' "invocation table includes tend go auto"
 skill_has '\| `resume`' "invocation table includes resume"
+skill_has 'Any other non-empty string' "invocation table documents new-task mode"
 skill_has 'needs_human' "registry status values documented (needs_human)"
-
-# ── 3. Tend watchdog mechanics ────────────────────────────────────────────────
-echo ""
-echo "3. Tend watchdog mechanics"
-
-skill_has 'NEED_ACTION=0' "T-1 pre-flight defines NEED_ACTION"
-skill_has 'awaiting_critic' "T-1 checks stalled task statuses (awaiting_critic)"
-skill_has 'awaiting_go \(gated\) is EXCLUDED' "T-1 excludes gated awaiting_go from NEED_ACTION (AT-2, no token wake)"
-skill_has '\.orchestrate/inbox/\*\.md' "T-1 checks inbox glob"
-skill_has '360' "T-0 lock uses 360s staleness threshold"
-skill_has '## Goal' "inbox file format requires Goal section"
-skill_has 'inbox/gated' "T-2 documents inbox/gated/ path"
-skill_has '`inbox`' "invocation table includes inbox mode"
-skill_has '## Inbox Mode' "SKILL.md has Inbox Mode section"
-skill_has 'deferred_at:' "T-2 skips deferred inbox files"
-skill_has 'Gated tasks still never auto-execute' "T-4 awaiting_go tasks are never auto-executed (gated fix 2026-06-21)"
-skill_has 'awaiting_go.*mode: gated.*\*\*SKIP entirely' "T-4 awaiting_go block SKIPS gated rows — no read, no per-cycle notify (AT-2)"
-skill_has 'auto-resolved needs_human' "T-4 auto-resolves needs_human when all phases complete"
-skill_has 'self-unblocked' "T-4 second-pass auto-resolution logs self-unblocked to heartbeat"
-skill_has 'Second-Pass Auto-Resolution Check' "T-4 has second-pass check before surfacing needs_human to human"
-skill_has 're-queued ghost-reset auto job' "T-4 re-queues ghost-reset auto jobs with no task file (not silent skip)"
-skill_has 'claim, don.t wait' "T-4 documents claim-not-wait rule for running rows with no task file (RS01 fix)"
-skill_has 'Fold it directly into the pending-task batch collection' "T-4 folds unclaimed running rows into pending batch collection instead of waiting"
-skill_has 'Bash backstop \(3C1D\) — safety net only, not the primary path' "T-4 documents bash requeue backstop as safety-net-only, not the live-session path"
-skill_has 'physically move' "T-2 requires physical move to processed/ (not processed_as in place)"
-if grep -q 'finding_hashes' "$ANALYZER_SKILL" 2>/dev/null; then
-  ok "inbox-log-analyzer uses finding hash ledger"
-else
-  fail "inbox-log-analyzer missing finding_hashes dedup ledger"
-fi
-if grep -q 'Never.*file "empty task' "$ANALYZER_SKILL" 2>/dev/null && \
-   grep -q '\*-tend\.log' "$ANALYZER_SKILL" 2>/dev/null; then
-  ok "inbox-log-analyzer skips 0-phases false positive on tend.log"
-else
-  fail "inbox-log-analyzer missing tend.log empty-task exclusion"
-fi
-skill_has '## Acceptance Criteria' "inbox file format requires Acceptance Criteria"
 
 # ── 4. Execution + logging invariants ─────────────────────────────────────────
 echo ""
@@ -171,19 +133,19 @@ skill_has 'Wiki: persisted to <page path>' \
   "§6d Step 4 requires the never-silent Wiki: output line"
 
 # ── §6b/§6b-direct reconciliation with manual-only reality (task 20260809-024845) ─
-skill_has '6b\. Auto-enqueue review \+ tests follow-ups' \
-  "Completion §6b documents review+tests auto-enqueue sub-step"
-skill_has 'enqueue-review-and-tests\.sh <ID>' \
-  "§6b documents the model-path mirror call to enqueue-review-and-tests.sh"
-skill_has 'Non-functional by design in a project without the async infra' \
-  "§6b states plainly it's non-functional by design, not by omission"
-skill_has 'entirely empty' \
-  "§6b cites .orchestrate/bin/ being entirely empty as the concrete evidence"
-skill_has 'confirmed intentional by the project owner' \
-  "§6b states the empty bin/ dir is confirmed intentional, not a temporary gap"
+skill_has '6b \(removed 2026-08-09\)' \
+  "§6b marks the async auto-enqueue mechanism as removed, not implemented"
+skill_has 'async infrastructure that used to defer review to a later tend cycle' \
+  "§6b explains why the async infrastructure was removed and what it used to do"
+skill_has '.orchestrate/bin/.*directory is confirmed.*entirely empty and intentionally so' \
+  "§6b cites .orchestrate/bin/ being entirely empty as concrete evidence of intentional removal"
 skill_has '6b-direct\. Direct independent review' \
-  "§6b-direct heading exists as the mandatory fallback"
-skill_has 'Only the review half is new here' \
+  "§6b-direct heading exists as the mandatory synchronous mechanism"
+skill_has 'This step exists because the async infrastructure.*is gone and will not return' \
+  "§6b-direct explains why this step exists (async infra is gone)"
+skill_has 'runs an independent review.*synchronously, in the current session' \
+  "§6b-direct states the review runs synchronously in the current session, not deferred"
+skill_has 'The "tests" half of.*original job is already covered by Completion step 4' \
   "§6b-direct explicitly defers the tests half to Completion step 4 rather than duplicating it"
 skill_has 'no shared context from the implementation phases' \
   "§6b-direct dispatches a fresh, independent Agent() call for genuine review independence"
@@ -260,156 +222,6 @@ if [ -f "$ANALYZER_INSTALLED" ]; then
   fi
 else
   fail "installed inbox-log-analyzer SKILL.md not found at $ANALYZER_INSTALLED"
-fi
-
-# ── 6. T-0 lock simulation ────────────────────────────────────────────────────
-echo ""
-echo "6. T-0 lock simulation"
-
-LOCK="$PROJECT_ROOT/.orchestrate/.tend.lock-test-$$"
-rm -f "$LOCK"
-date -u +%Y-%m-%dT%H:%M:%SZ > "$LOCK"
-AGE=$(( $(date +%s) - $(date -r "$LOCK" +%s) ))
-if [ "$AGE" -lt 360 ]; then
-  ok "fresh lock age (${AGE}s) is under 360s threshold"
-else
-  fail "lock age calculation failed"
-fi
-rm -f "$LOCK"
-ok "lock test file cleaned up"
-
-# ── 7. Launchd (configurable runner) ──────────────────────────────────────────
-echo ""
-echo "7. Launchd (configurable runner)"
-
-TEND_PLIST="$HOME/Library/LaunchAgents/com.orchestrate.tend.plist"
-RUN_JOB="$PROJECT_ROOT/.orchestrate/bin/run-job.sh"
-AGENT_CONF="$PROJECT_ROOT/.orchestrate/agent.conf"
-
-plist_uses_wrapper() {
-  local plist="$1"
-  grep -q "run-job.sh" "$plist"
-}
-
-if [ -f "$INBOX_ANALYZER_PLIST" ]; then
-  ok "inbox-analyzer plist exists"
-  if grep -q "enqueue-analyzer-daily.sh" "$INBOX_ANALYZER_PLIST"; then
-    ok "inbox-analyzer plist uses daily enqueue script"
-  else
-    fail "inbox-analyzer plist should enqueue via enqueue-analyzer-daily.sh"
-  fi
-  if grep -q "StartCalendarInterval" "$INBOX_ANALYZER_PLIST"; then
-    ok "inbox-analyzer uses calendar schedule"
-  else
-    fail "inbox-analyzer missing StartCalendarInterval"
-  fi
-else
-  fail "inbox-analyzer plist not found at $INBOX_ANALYZER_PLIST"
-fi
-
-WIKI_PLIST="$HOME/Library/LaunchAgents/com.orchestrate.wiki-ingest-daily.plist"
-if [ -f "$WIKI_PLIST" ]; then
-  ok "wiki-ingest-daily plist exists"
-  if grep -q "enqueue-wiki-ingest-daily.sh" "$WIKI_PLIST"; then
-    ok "wiki-ingest-daily plist uses enqueue script"
-  else
-    fail "wiki-ingest-daily missing enqueue script"
-  fi
-else
-  fail "wiki-ingest-daily plist not found at $WIKI_PLIST"
-fi
-
-if [ -f "$TEND_PLIST" ]; then
-  ok "tend plist exists"
-  if plist_uses_wrapper "$TEND_PLIST"; then
-    ok "tend plist uses run-job wrapper"
-  else
-    fail "tend plist missing run-job.sh wrapper"
-  fi
-else
-  fail "tend plist not found at $TEND_PLIST"
-fi
-
-if [ -x "$RUN_JOB" ]; then
-  ok "run-job.sh wrapper exists and is executable"
-else
-  fail "run-job.sh missing or not executable at $RUN_JOB"
-fi
-
-if [ -f "$AGENT_CONF" ] && grep -qE '^RUNNER=(cursor|claude)' "$AGENT_CONF"; then
-  ok "agent.conf sets RUNNER"
-else
-  fail "agent.conf missing or RUNNER not set at $AGENT_CONF"
-fi
-
-if [ -f "$AGENT_CONF" ] && grep -qE 'TEND_MODE=.*(go auto|go_auto|notify)' "$AGENT_CONF"; then
-  ok "agent.conf sets TEND_MODE"
-else
-  fail "agent.conf missing TEND_MODE (expected go auto by default)"
-fi
-
-if [ -x "$CURSOR_AGENT" ] || [ -f "$CURSOR_AGENT" ]; then
-  ok "cursor-agent binary exists"
-else
-  fail "cursor-agent binary missing at $CURSOR_AGENT"
-fi
-
-if [ -f "$PROJECT_ROOT/.cursor/skills/inbox-log-analyzer/SKILL.md" ]; then
-  ok "inbox-log-analyzer skill installed in .cursor/skills/"
-  if cmp -s "$ANALYZER_SKILL" "$PROJECT_ROOT/.cursor/skills/inbox-log-analyzer/SKILL.md" 2>/dev/null; then
-    ok ".cursor/skills/inbox-log-analyzer/SKILL.md matches ai-toolbox source"
-  else
-    fail ".cursor/skills/inbox-log-analyzer/SKILL.md is stale vs ai-toolbox source — run: cd /Users/haimengzhou/apps/ai-toolbox && ./sync.sh"
-  fi
-else
-  fail "inbox-log-analyzer missing from .cursor/skills/ (required for headless cursor-agent)"
-fi
-
-if [ -f "$PROJECT_ROOT/.cursor/skills/task-orchestrate/SKILL.md" ]; then
-  ok "task-orchestrate skill installed in .cursor/skills/"
-else
-  fail "task-orchestrate missing from .cursor/skills/ (required for headless cursor-agent tend)"
-fi
-
-if launchctl list 2>/dev/null | grep -q "com.orchestrate.inbox-analyzer"; then
-  ok "com.orchestrate.inbox-analyzer loaded in launchd"
-else
-  fail "com.orchestrate.inbox-analyzer not loaded in launchd"
-fi
-
-if launchctl list 2>/dev/null | grep -q "com.orchestrate.wiki-ingest-daily"; then
-  ok "com.orchestrate.wiki-ingest-daily loaded in launchd"
-else
-  fail "com.orchestrate.wiki-ingest-daily not loaded in launchd"
-fi
-
-RESCUE_PLIST="$HOME/Library/LaunchAgents/com.orchestrate.rescue.plist"
-if [ -f "$RESCUE_PLIST" ]; then
-  ok "rescue plist exists"
-  if grep -q "rescue.sh" "$RESCUE_PLIST"; then
-    ok "rescue plist invokes rescue.sh"
-  else
-    fail "rescue plist should invoke rescue.sh"
-  fi
-  if grep -q "StartInterval" "$RESCUE_PLIST"; then
-    ok "rescue plist uses StartInterval (time-based trigger)"
-  else
-    fail "rescue plist missing StartInterval"
-  fi
-else
-  fail "rescue plist not found at $RESCUE_PLIST"
-fi
-
-if launchctl list 2>/dev/null | grep -q "com.orchestrate.rescue"; then
-  ok "com.orchestrate.rescue loaded in launchd"
-else
-  fail "com.orchestrate.rescue not loaded in launchd"
-fi
-
-if launchctl list 2>/dev/null | grep -q "com.orchestrate.tend"; then
-  ok "com.orchestrate.tend loaded in launchd"
-else
-  fail "com.orchestrate.tend not loaded in launchd"
 fi
 
 # ── 8. Cursor ↔ Claude permission parity ──────────────────────────────────────
