@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # test-task-orchestrate.sh — control plane + SKILL.md invariants for /task-orchestrate
-# Run from the ai-console project root:
-#   bash .orchestrate/tests/test-task-orchestrate.sh
+#
+# Two invocation forms:
+#   1. Copied into a project's control plane, run from that project's root:
+#        bash .orchestrate/tests/test-task-orchestrate.sh
+#      (PROJECT_ROOT defaults to two directories up from this script's location)
+#   2. Run directly from its ai-toolbox source location (no copy needed) by pointing
+#      PROJECT_ROOT at the target project explicitly — e.g. this project no longer has
+#      an .orchestrate/tests/ copy destination (archived 2026-08-06, by design):
+#        PROJECT_ROOT=/Users/haimengzhou/apps/ai-console \
+#          bash skills/task-orchestrate/tests/test-task-orchestrate.sh
 set -euo pipefail
 
 PASS=0
 FAIL=0
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 SKILL_SRC="/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/SKILL.md"
 ANALYZER_SKILL="/Users/haimengzhou/apps/ai-toolbox/skills/inbox-log-analyzer/SKILL.md"
 SKILL_INSTALLED="$HOME/.claude/skills/task-orchestrate/SKILL.md"
@@ -161,6 +169,26 @@ skill_has 'mandatory `log\.md` line' \
   "§6d Step 3 requires a log.md CAPTURE line regardless of which path was used"
 skill_has 'Wiki: persisted to <page path>' \
   "§6d Step 4 requires the never-silent Wiki: output line"
+
+# ── §6b/§6b-direct reconciliation with manual-only reality (task 20260809-024845) ─
+skill_has '6b\. Auto-enqueue review \+ tests follow-ups' \
+  "Completion §6b documents review+tests auto-enqueue sub-step"
+skill_has 'enqueue-review-and-tests\.sh <ID>' \
+  "§6b documents the model-path mirror call to enqueue-review-and-tests.sh"
+skill_has 'Non-functional by design in a project without the async infra' \
+  "§6b states plainly it's non-functional by design, not by omission"
+skill_has 'entirely empty' \
+  "§6b cites .orchestrate/bin/ being entirely empty as the concrete evidence"
+skill_has 'confirmed intentional by the project owner' \
+  "§6b states the empty bin/ dir is confirmed intentional, not a temporary gap"
+skill_has '6b-direct\. Direct independent review' \
+  "§6b-direct heading exists as the mandatory fallback"
+skill_has 'Only the review half is new here' \
+  "§6b-direct explicitly defers the tests half to Completion step 4 rather than duplicating it"
+skill_has 'no shared context from the implementation phases' \
+  "§6b-direct dispatches a fresh, independent Agent() call for genuine review independence"
+skill_has 'Review: <PASS \| PARTIAL: <gap> \| FAIL: <reason>>' \
+  "§6b-direct requires the never-silent Review: output line"
 
 if grep -q 'Task:.*full task:' "$ANALYZER_SKILL" 2>/dev/null || \
    grep -q 'read the full log in Phase 1' "$ANALYZER_SKILL" 2>/dev/null; then

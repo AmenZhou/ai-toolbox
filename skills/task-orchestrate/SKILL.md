@@ -20,6 +20,16 @@ For everything else, run inline.
 
 ---
 
+## ⚠️ Staleness Note — Sections T-0–T-6, Invocation Modes, and `drain-inbox.sh` references
+
+The material in this file's **T-0 through T-6** sections (Lock, Pre-flight, Drain inbox, Load tools, Scan registry) and the **Invocation Modes** table describes the **async background-job infrastructure that was archived 2026-08-06** (`ORCHESTRATION-REDESIGN-COMPLETE.md`). This project's `.orchestrate/bin/` directory is now **entirely empty and intentionally so** — the async tend/launchd/inbox-drain/monitor system is not functional in this project.
+
+**Current state (manual-only execution):** all task execution is now **synchronous and interactive** via `/orch resume` → select task → "go"/"go auto". The two fallback mechanisms applied to Completion steps §6c and §6b provide the pattern for code-changes-time work that previously depended on this infrastructure.
+
+**For projects that restore the async infrastructure**, the T-0–T-6 sections remain the authoritative documentation for that system. For this project, **rely on the direct, self-contained fallback mechanisms described in Completion §6c and §6b-direct** (lines 1028–1026) instead.
+
+---
+
 ## Invocation Modes
 
 Detect which mode applies from the input:
@@ -1001,7 +1011,7 @@ Gap: <what was left undelivered or only partially done>
 
 Append to heartbeat.log: `[<ISO>] follow-up — enqueued followup-<slug> from task <ID>`
 
-**6b. Auto-enqueue review + tests follow-ups (code-changing tasks only):**
+**6b. Auto-enqueue review + tests follow-ups (code-changing tasks only) — requires the async tend/inbox-drain infra:**
 
 Every task that **changed code** must get an INDEPENDENT review pass and test pass in a *fresh* tend cycle — this **supplements** (does not replace) the inline critic + Test & Verify gate (R-1 Decision 3). Run this sub-step always at Completion, after Goal Self-Assessment and before Improvement Suggestions.
 
@@ -1009,6 +1019,21 @@ Every task that **changed code** must get an INDEPENDENT review pass and test pa
 - **Anti-recursion (R-1 Decision 4):** if THIS task itself carries a `followup_for:` header (it IS a review/tests ticket), enqueue NOTHING — terminal. This check takes precedence over the trigger.
 - **Mechanism:** the deterministic shell path is authoritative — `.orchestrate/bin/finalize-completed-tasks.sh` calls `enqueue-review-and-tests.sh <ID>` from its reaper (so unattended `tend` always enforces it even if this model session dies mid-Completion). The model path simply mirrors that: run `ENQ_ROOT=<root> ENQ_INBOX_ROOT=<root> bash .orchestrate/bin/enqueue-review-and-tests.sh <ID>`. The helper writes exactly one `kind: review` + one `kind: tests` ticket to the canonical ai-console inbox with headers `followup_for: <ID>` + `kind: …` + `mode: auto` + `source: self`, **dedups** against inbox/registry/history by the `(followup_for, kind)` pair (idempotent — safe if both the model and the bash backstop fire), and writes NO `gate_reason:` / no risky-op literals so the tickets drain to `pending` and tend go auto runs them (R-1 Decisions 5/7).
 - Append to heartbeat.log (the helper does this): `[<ISO>] enqueue — filed followup-review-<ID>-<stamp> …` (or `skip <ID> …` for docs-only / `followup_for:` / dedup).
+- **Non-functional by design in a project without the async infra this depends on** — the same dead-letter problem §6c has, and the evidence here is stronger, not weaker: this step only ever *files* a `kind: review`/`kind: tests` ticket pair via `enqueue-review-and-tests.sh`; execution depends on that script plus an async `tend`/`tend go auto` cycle draining the inbox. `.orchestrate/bin/` in this project is not merely missing that one script — it is **entirely empty** (confirmed 2026-08-09; not even `minimal-tend.sh`, which was still present days earlier), and this was **confirmed intentional by the project owner, not an oversight or a temporary gap**. Treat this step as permanently inert here, not "not yet restored." **§6b-direct below is the mandatory fallback** — do not rely on this step alone.
+
+**6b-direct. Direct independent review (code-changing tasks only) — mandatory, self-contained, never silent:**
+
+Run this step for every `complete` task whose aggregate `files_changed:` meets §6b's code-change predicate above, at the end of Completion, alongside §6c/§6d — **independent of §6b**: do not wait for or depend on the review/tests ticket above; this step has no `.orchestrate/bin/*.sh` dependency.
+
+**Only the review half is new here — the tests half is already covered.** Completion step 4 (Auto-Verification Run) already runs the project's test/build commands synchronously, in this same session, for every completed task — that satisfies §6b's "tests" intent without any additional mechanism. What §6b's ticket-deferral model was actually providing that nothing else covers is an *independent* review: a look at the diff by something with no stake in having written it. That's the only gap this step closes.
+
+- **Mechanism:** dispatch a fresh `Agent()` call with **no shared context from the implementation phases** — the same independence trick task-breakdown's Challenge phase already uses (a fresh Agent-tool dispatch has no memory of the implementing phase's own reasoning, only its written output) — instructed to review the actual diff (`files_changed:` across all phases) against: (1) the task's stated Acceptance Criteria, (2) any Out-of-Scope/Prohibitions boundary named in the task file, (3) general correctness (obvious bugs, missed edge cases, security issues). The reviewer reports a verdict: **PASS** (no issues), **PARTIAL: \<gap\>** (non-blocking issues worth noting), or **FAIL: \<reason\>** (a real problem the implementation missed).
+- **FAIL handling:** a FAIL verdict does not itself reopen completed phases or block archiving — Completion has already run by the time this step fires. Record the FAIL verbatim in the required output line below and, if the finding is substantive, write it as an improvement/follow-up inbox file via the existing Step 7 (Improvement Suggestions) mechanism, same as any other Completion-time finding — do not invent a second follow-up path.
+- **Required Completion output line (never silent):**
+  ```
+  Review: <PASS | PARTIAL: <gap> | FAIL: <reason>> (independent Agent() dispatch) | not reviewed: <one-line reason>
+  ```
+  The `not reviewed:` branch fires only when the code-change predicate didn't trigger (a docs-only/zero-code-change task) — state that plainly rather than omitting the line.
 
 **6c. Auto-enqueue wiki-sync (every completed task) — requires the async tend/inbox-drain infra:**
 
