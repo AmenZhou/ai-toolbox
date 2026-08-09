@@ -1010,7 +1010,7 @@ Every task that **changed code** must get an INDEPENDENT review pass and test pa
 - **Mechanism:** the deterministic shell path is authoritative — `.orchestrate/bin/finalize-completed-tasks.sh` calls `enqueue-review-and-tests.sh <ID>` from its reaper (so unattended `tend` always enforces it even if this model session dies mid-Completion). The model path simply mirrors that: run `ENQ_ROOT=<root> ENQ_INBOX_ROOT=<root> bash .orchestrate/bin/enqueue-review-and-tests.sh <ID>`. The helper writes exactly one `kind: review` + one `kind: tests` ticket to the canonical ai-console inbox with headers `followup_for: <ID>` + `kind: …` + `mode: auto` + `source: self`, **dedups** against inbox/registry/history by the `(followup_for, kind)` pair (idempotent — safe if both the model and the bash backstop fire), and writes NO `gate_reason:` / no risky-op literals so the tickets drain to `pending` and tend go auto runs them (R-1 Decisions 5/7).
 - Append to heartbeat.log (the helper does this): `[<ISO>] enqueue — filed followup-review-<ID>-<stamp> …` (or `skip <ID> …` for docs-only / `followup_for:` / dedup).
 
-**6c. Auto-enqueue wiki-sync (every completed task):**
+**6c. Auto-enqueue wiki-sync (every completed task) — requires the async tend/inbox-drain infra:**
 
 Every completed task should get its outcome captured into the Obsidian wiki via a *fresh* tend cycle, not wait for the daily batch job — this **supplements** (does not replace or modify) `orchestrate-daily-wiki-ingest`, which keeps writing the operational `Orchestration/Daily/` activity log for every task unconditionally. Run this sub-step always at Completion, alongside 6b, before Improvement Suggestions.
 
@@ -1018,23 +1018,30 @@ Every completed task should get its outcome captured into the Obsidian wiki via 
 - **Anti-recursion:** if the source task itself carries a `followup_for:` header (it IS already a follow-up ticket), enqueue NOTHING — terminal. Also skips when the task's title/tags match a wiki-* job itself (`wiki-ingest`, `wiki-capture`, `wiki-update`, `orchestrate-daily-wiki-ingest`, `daily-wiki-digest`) to avoid recursive wiki-of-wiki noise.
 - **Mechanism:** the deterministic shell path is authoritative — `.orchestrate/bin/finalize-completed-tasks.sh` calls `enqueue-wiki-sync.sh <ID>` from its reaper (structurally mirrors `enqueue-review-and-tests.sh`, independent of and additional to it — any code-changing task fires both a review+tests ticket and a wiki-sync ticket, since 6b's code-change gate and 6c's now-unconditional trigger are independent checks). The model path mirrors that: run `ENQ_ROOT=<root> ENQ_INBOX_ROOT=<root> bash .orchestrate/bin/enqueue-wiki-sync.sh <ID>`. The helper writes exactly one `kind: wiki-sync` ticket to the canonical ai-console inbox with headers `followup_for: <ID>` + `kind: wiki-sync` + `mode: auto` + `source: self`, **dedups** against inbox/registry/history by the `(followup_for, kind=wiki-sync)` pair, and writes NO `gate_reason:` / no risky-op literals so the ticket drains to `pending` and tend go auto runs it.
 - Append to heartbeat.log (the helper does this): `[<ISO>] enqueue — filed followup-wiki-sync-<ID>-<stamp> …` (or `skip <ID> …` for `followup_for:` / wiki-job / dedup — there is no code-change/no-keyword skip path anymore, since WIKI-1 removed that gate).
+- **Non-functional without the async infra this depends on.** This step only ever *files a ticket* — the ticket does nothing until a later `tend`/`tend go auto` cycle drains the inbox and runs `enqueue-wiki-sync.sh`. A project without that infra (no `.orchestrate/bin/enqueue-wiki-sync.sh`, no async tend cycle draining `.orchestrate/inbox/`) gets a filed ticket that nothing will ever execute — this project is a concrete example: both were archived 2026-08-06 (`ORCHESTRATION-REDESIGN-COMPLETE.md`), and `.orchestrate/bin/` here now contains only `minimal-tend.sh` (unused reference). **Before relying on 6c, verify `enqueue-wiki-sync.sh` actually exists on disk** — if it doesn't, treat 6c as a no-op and rely on **§6d below**, which has no such dependency and is the mandatory step regardless of whether 6c's ticket-file did anything.
 
-**6d. Direct Wiki Ingestion (task state into topic page):**
+**6d. Direct Wiki Ingestion (task state into a wiki page) — mandatory, self-contained, never silent:**
 
-After enqueueing the wiki-sync follow-up ticket (step 6c), immediately ingest the completed task state into the Obsidian wiki page relevant to its topic. This captures the task outcome synchronously into topic-specific context files (not a daily operational log).
+Run this step for every `complete` task, at the end of Completion, before Improvement Suggestions (7) — **independent of §6c**: do not wait for or depend on the wiki-sync ticket above; this step has no `.orchestrate/bin/*.sh` dependency and works whether or not the async infra in 6c exists.
 
-- **Mechanism:**
-  1. Extract the task's **topic** from: task tags (if `tags:` line in `.orchestrate/tasks/{ID}.md`), task title keywords, or project context
-  2. Resolve the topic to a wiki page path (e.g. task tagged `rate-limiting` → `$VAULT/Rate Limiting.md` or `$VAULT/topics/Rate Limiting.md`)
-  3. Distill the archived task state: extract summary, phase outcomes, learnings from `orchestrate-history/{ARCHIVE_STAMP}-{ID}-*.md`
-  4. Append to the topic page under a timestamped section: `## Completed: <task summary> — <ISO>` with phase summaries and key learnings as bullets
-  5. If the topic page does not exist, create it with a header + sections for `## Overview` and `## Completed Tasks`
+**Step 1 — decide if this is worth persisting.** Reuses the exact judgment `grounded-investigate/SKILL.md`'s own Step 6 ("Persist to Wiki") already applies — don't reinvent a second philosophy:
+- **Persist** when the task involved an architectural/design decision, a non-obvious fact about the environment or codebase (especially one that contradicts existing documentation), a corrected mistaken assumption, or a reusable pattern/lesson a future session would otherwise have to re-derive.
+- **Skip the write** when the outcome is routine/mechanical — a scheduled sync with nothing new to report, a one-line config bump, applying an already-documented pattern with no new information.
+- **Never skip silently either way.** Whichever branch this lands in, the Completion output MUST carry the `Wiki:` line specified below — a skip is a stated, one-line decision, not an absence.
 
-- **Fallback (topic resolution unclear):** if no topic can be determined, append to a default `$VAULT/Orchestration/Completed Tasks.md` page indexed by date/ID
+**Step 2 — if persisting, choose *how*, in this precedence order:**
+1. **Existing closely-related page, still `lifecycle: active`.** Check the vault's `index.md` for a page already covering this exact subsystem/decision thread (same topic, same skill, same ongoing redesign). If one exists, append an `## Update — <ISO>` section to it instead of creating a duplicate — do not restate the page's original content, just add what's new.
+2. **Substantial, self-contained new decision or finding, no existing page fits.** Use the `wiki-capture` skill — it classifies the content, rewrites it as declarative knowledge, and produces a properly cross-linked page. Prefer it over hand-rolling a page.
+3. **Routine/operational outcome that's still worth a trace, but doesn't rise to (1) or (2).** Fall back to the topic-page-append mechanism this step used to be the only option: extract the task's **topic** (tags, title keywords, or project context), resolve it to a page path (e.g. `rate-limiting` → `$VAULT/Rate Limiting.md` or `$VAULT/topics/Rate Limiting.md`, falling back to `$VAULT/Orchestration/Completed Tasks.md` if no topic resolves), distill the archived task state (`orchestrate-history/{ARCHIVE_STAMP}-{ID}-*.md`), and append `## Completed: <task summary> — <ISO>` with phase summaries and key learnings as bullets — creating the page with `## Overview`/`## Completed Tasks` sections if it doesn't exist yet.
 
-- **Trigger:** fires for every `complete` task at the end of Completion, after wiki-sync enqueue (6c) but before Improvement Suggestions (7).
+**Step 3 — mandatory `log.md` line, regardless of which path above was used.** Append one `CAPTURE` line to `$VAULT/log.md` (the `wiki-capture` skill's own protocol does this automatically for path 2 — for paths 1 and 3, which don't have their own logging protocol, append it manually: `- [<ISO>] CAPTURE type=<update|routine> page="<path>" title="<title>" task=<ID>`). A wiki write with no `log.md` trace is exactly the gap that motivated writing this step out explicitly (a prior task's page-append happened without one).
 
-- **Idempotency:** the ingestion is idempotent — re-running on an already-ingested task is a clean no-op (check for existing `## Completed: <task summary>` section by `task_id:` frontmatter). Append to heartbeat.log: `[<ISO>] wiki-ingest — ingested task {ID} → <topic-page>` (only if changes were made; skip line if deduped/no-op).
+**Step 4 — required Completion output line (never silent):**
+```
+Wiki: persisted to <page path> (<method: existing-page-update | wiki-capture | topic-page>) | not persisted: <one-line reason>
+```
+
+**Idempotency:** re-running on an already-ingested task is a clean no-op — check for an existing `## Completed: <task summary>` (path 3) or `## Update — <ISO>` (path 1) section keyed to this task's ID before writing again. Append to heartbeat.log: `[<ISO>] wiki-ingest — <method> for task {ID} → <page>` (only if a write happened; skip the heartbeat line, not the required Step 4 output line, if deduped/no-op).
 
 **7. Improvement Suggestions:**
 

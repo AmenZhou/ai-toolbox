@@ -175,6 +175,19 @@ skill_has '^source: task-breakdown$' "Step 6 schema sets source: task-breakdown"
 skill_has 'final .Test & Verify. phase is \*\*mandatory\*\*' \
   "Step 6 states the final aggregate Test & Verify phase is mandatory"
 
+# ── 7b. wiki-context-pack citation (task 20260809-021452) ────────────────────
+echo ""
+echo "7b. wiki-context-pack citation"
+
+skill_has 'Pull wiki context before constructing the task file' \
+  "Step 6 documents pulling wiki context before writing the task file"
+skill_has 'this is a citation, not a restatement' \
+  "Step 6 explicitly frames this as a citation to task-orchestrate, not a duplicated paragraph"
+skill_has '/wiki-context-pack "<job title/goal>" --budget 1500' \
+  "Step 6 documents the exact wiki-context-pack invocation"
+skill_has '^## Wiki Context$' \
+  "task file schema block includes a ## Wiki Context section"
+
 # ── 8. Step 7/8 — phase table + /orch resume go-gate phrasing ────────────────
 echo ""
 echo "8. Step 7/8 go-gate phrasing"

@@ -369,6 +369,19 @@ with a normal file edit, matching the table's existing column format exactly
 `status: awaiting_go`, `last_activity:` the same UTC timestamp used for `{ID}`). Do not invent or
 assume a helper script.
 
+**Pull wiki context before constructing the task file.** task-orchestrate's own Plan Presentation
+section pulls a bounded slice of wiki knowledge for every new task it plans interactively — a
+task-breakdown-authored task file must get the same treatment, not skip it just because this skill
+bypasses that flow. Do it exactly as task-orchestrate's Plan Presentation does — same invocation,
+same budget, same skip condition, same output location — see `task-orchestrate/SKILL.md`'s Plan
+Presentation section for the canonical definition; this is a citation, not a restatement: invoke
+`/wiki-context-pack "<job title/goal>" --budget 1500` once per job (not once per unit), and write
+the result verbatim into the task file under a `## Wiki Context` section (placed after `##
+Acceptance Criteria`, before the `## PHASES` separator — see the schema below). Skip when the
+job's title/Goal is itself wiki-related, and degrade gracefully (`## Wiki Context\n(unavailable —
+proceeded without it)`) if the pull errors or the vault isn't configured — identical conditions to
+task-orchestrate's own.
+
 **Task file schema** (confirmed against real files in `orchestrate-history/`):
 
 ```markdown
@@ -389,6 +402,9 @@ hard or soft matches, list them here explicitly — see Step 4 — so a human re
 ## Acceptance Criteria
 - <aggregate, job-level done-statements — the per-phase acceptance_criteria are the detailed,
   checkable version; these are the top-level summary>
+
+## Wiki Context
+<verbatim /wiki-context-pack output, or "(unavailable — proceeded without it)" — see above>
 
 ---
 

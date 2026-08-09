@@ -136,6 +136,32 @@ skill_has 'enqueue-wiki-sync\.sh <ID>' "§6c documents the model-path mirror cal
 skill_has 'supplements.*does not replace or modify.*orchestrate-daily-wiki-ingest' "§6c states it supplements (not replaces) orchestrate-daily-wiki-ingest"
 skill_has 'kind: wiki-sync' "§6c documents the kind: wiki-sync ticket contract"
 
+# ── §6c/§6d reconciliation with manual-only reality (task 20260809-021452) ────
+skill_has 'Non-functional without the async infra' \
+  "§6c states plainly it's non-functional without enqueue-wiki-sync.sh + async tend"
+skill_has '2026-08-06' \
+  "§6c cites this project's 2026-08-06 archival as the concrete example"
+skill_has 'mandatory, self-contained, never silent' \
+  "§6d heading states it's the mandatory, self-contained, never-silent step"
+skill_has 'independent of §6c' \
+  "§6d states it does not depend on §6c's ticket-file succeeding"
+skill_has 'decide if this is worth persisting' \
+  "§6d Step 1 is the persistence-worthiness gate"
+skill_has 'grounded-investigate/SKILL\.md`.s own Step 6' \
+  "§6d Step 1 cites grounded-investigate's Step 6 as the reused judgment, not a reinvented one"
+skill_has 'Never skip silently either way' \
+  "§6d states the worthiness decision itself is never silent"
+skill_has 'Existing closely-related page, still `lifecycle: active`' \
+  "§6d Step 2 precedence tier 1: append to an existing active page"
+skill_has 'Use the `wiki-capture` skill' \
+  "§6d Step 2 precedence tier 2: wiki-capture for a substantial new finding"
+skill_has 'topic-page-append mechanism' \
+  "§6d Step 2 precedence tier 3: topic-page fallback for routine outcomes"
+skill_has 'mandatory `log\.md` line' \
+  "§6d Step 3 requires a log.md CAPTURE line regardless of which path was used"
+skill_has 'Wiki: persisted to <page path>' \
+  "§6d Step 4 requires the never-silent Wiki: output line"
+
 if grep -q 'Task:.*full task:' "$ANALYZER_SKILL" 2>/dev/null || \
    grep -q 'read the full log in Phase 1' "$ANALYZER_SKILL" 2>/dev/null; then
   ok "inbox-log-analyzer Step 5 Context includes full task line + log pointer"
