@@ -1,0 +1,272 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit",
+      "Write",
+      "Read",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Edit(/Users/haimengzhou/.claude/**)",
+      "Write(/Users/haimengzhou/.claude/**)",
+      "Read(/Users/haimengzhou/.claude/**)",
+      "Edit(.claude/**)",
+      "Write(.claude/**)",
+      "Read(.claude/**)"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Bash(find * -exec*)",
+      "Bash(curl * | sh)",
+      "Bash(wget * | sh)",
+      "Bash(shutdown*)",
+      "Bash(reboot*)",
+      "Bash(poweroff*)",
+      "Bash(grep * //*)",
+      "Bash(find //*)",
+      "Bash(rg * //*)",
+      "Bash(fd * //*)",
+      "Bash(ag * //*)",
+      "Bash(dd if=/dev/*)",
+      "Bash(sudo -i*)",
+      "Bash(sudo su*)",
+      "Bash(mount *)",
+      "Bash(umount*)",
+      "Bash(mkfs*)",
+      "Bash(shred*)",
+      "Bash(chmod 777*)",
+      "Bash(modprobe*)",
+      "Bash(insmod*)",
+      "Bash(rmmod*)",
+      "Bash(truncate -s 0*)",
+      "Bash(gh repo delete*)",
+      "Bash(chmod u+s*)",
+      "Bash(chmod g+s*)",
+      "Bash(chmod *[4286][7654][7654][7654]*)",
+      "Bash(mv * /etc/*)",
+      "Bash(mv * /System/*)",
+      "Bash(mv * /usr/*)",
+      "Bash(mv * /bin/*)",
+      "Bash(mv * /sbin/*)",
+      "Bash(mv * /Library/*)",
+      "Bash(mv * ~/.ssh/**)",
+      "Bash(mv * ~/.aws/**)",
+      "Bash(chown root*)",
+      "Bash(chown 0:*)",
+      "Bash(chown -R root*)",
+      "Bash(exec *<>/dev/tcp/*)",
+      "Bash(exec *<>/dev/udp/*)",
+      "Bash(chmod -R * /*)"
+    ],
+    "ask": [
+      "Bash(rm -rf *)",
+      "Bash(kubectl scale *)",
+      "Bash(kubectl patch *)",
+      "Bash(kubectl apply *)",
+      "Bash(kubectl delete *)",
+      "Bash(kubectl rollout *)",
+      "Bash(kubectl port-forward *)",
+      "Bash(terraform apply *)",
+      "Bash(pulumi up *)",
+      "Bash(git push --force *)",
+      "Bash(git push * -f *)",
+      "Bash(npm publish *)",
+      "Bash(npm uninstall *)",
+      "Bash(gh pr merge *)",
+      "Bash(curl * | bash)",
+      "Bash(curl * | sh)",
+      "Bash(find * -delete*)",
+      "Bash(dd *)",
+      "Bash(mkfs*)",
+      "Bash(* > /dev/sd*)",
+      "Bash(* > /dev/disk*)",
+      "Bash(* > /dev/rdisk*)",
+      "Bash(* > /dev/nvme*)",
+      "Bash(wget * | sh)",
+      "Bash(wget * | bash)",
+      "Read(//**/.ssh/**)",
+      "Read(//**/*.pem)",
+      "Read(//**/*.key)",
+      "Read(//**/.aws/**)",
+      "Edit(//**/.ssh/**)",
+      "Edit(//**/*.pem)",
+      "Edit(//**/*.key)",
+      "Edit(//**/.aws/**)",
+      "Bash(kubectl exec -it*)",
+      "Bash(kubectl exec -ti*)",
+      "Bash(kubectl exec -i*)",
+      "Bash(kubectl exec -t*)",
+      "Read(//**/.env*)",
+      "Edit(//**/.env*)",
+      "Read(//**/.credentials)",
+      "Edit(//**/.credentials)",
+      "Bash(rmdir:*)",
+      "Bash(git push:*)",
+      "Bash(git reset:*)",
+      "Bash(git rebase:*)",
+      "Bash(git force-push:*)",
+      "Bash(git branch -D*)",
+      "Bash(git branch -d*)",
+      "Bash(git config --global *)",
+      "Bash(git config --system *)",
+      "Bash(git config --unset*)",
+      "Bash(git config --replace-all*)",
+      "Bash(git config --add *)",
+      "Bash(git checkout --*)",
+      "Bash(git clean*)",
+      "Bash(git stash drop*)",
+      "Bash(git stash clear*)",
+      "Bash(sudo:*)",
+      "Bash(kill *)",
+      "Bash(kill)",
+      "Bash(pkill *)",
+      "Bash(killall *)",
+      "Bash(chown *)",
+      "Bash(truncate *)",
+      "Bash(brew install:*)",
+      "Bash(pip install:*)",
+      "Bash(npm install -g:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh release create:*)",
+      "Bash(launchctl load *)",
+      "Bash(launchctl unload *)",
+      "Bash(launchctl bootout *)",
+      "Bash(gh repo fork*)",
+      "Bash(gh issue create*)",
+      "Bash(gh issue close*)",
+      "Bash(gh pr close*)",
+      "Bash(gh workflow run*)",
+      "Bash(gh release delete*)",
+      "Bash(ln -s * /tmp/*)",
+      "Bash(ln -s * /var/tmp/*)",
+      "Bash(chmod 000*)",
+      "Bash(chmod 666*)",
+      "Bash(umask 000*)",
+      "Bash(xattr -d com.apple.quarantine*)",
+      "Bash(chgrp *:staff*)",
+      "Bash(chgrp *:everyone*)"
+    ]
+  },
+  "model": "haiku",
+  "fallbackModel": [
+    "sonnet"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/wiki-research-gate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // \"\"' | { read -r cmd; if echo \"$cmd\" | grep -qE '(kubectl\\s+(scale|patch|apply|delete|rollout\\s+(restart|undo|resume|pause)|set|edit|expose|autoscale|create|replace|drain|cordon|uncordon|taint|label|annotate))'; then echo '{\"continue\": false, \"stopReason\": \"Mutating kubectl command blocked by safety guard. Allowed read-only operations: get, describe, logs, rollout history. For mutations, add to allow rules first.\"}'; else echo '{\"continue\": true}'; fi; }"
+          },
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/kube-pretooluse.sh"
+          },
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/pg-pretooluse.sh"
+          },
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/graphify-search-intercept.sh"
+          },
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/restrict-paths.sh"
+          },
+          {
+            "type": "command",
+            "command": "/opt/homebrew/bin/rtk hook claude"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Write|Edit|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/restrict-paths.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/ts-pretooluse.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Write|Edit|mcp__obsidian__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/env-verification.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p ~/apps/ai-console/logs && jq -r 'if (.tool_input.command // \"\") | test(\"graphify\") then \"[\" + (now | strftime(\"%Y-%m-%dT%H:%M:%SZ\")) + \"] Bash | \" + .tool_input.command else empty end' >> ~/apps/ai-console/logs/tool-usage.log 2>/dev/null || true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/haimengzhou/.claude/hooks/stop-checkpoint.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "ponytail@ponytail": true
+  },
+  "extraKnownMarketplaces": {
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
+  },
+  "deniedMcpServers": [
+    {
+      "serverName": "obsidian"
+    }
+  ],
+  "effortLevel": "high",
+  "tui": "fullscreen",
+  "theme": "light"
+}
