@@ -1,7 +1,7 @@
 ---
 name: task-breakdown
 description: Turn a job (spec, plan doc, rough notes, or the current conversation) into a set of well-structured, right-sized units of work and write them as ONE task-orchestrate task plan — a single `.orchestrate/tasks/{ID}.md` file with every unit expressed as chained phases — so a subsequent task-orchestrate run executes the whole job by working through the plan. Use when the user says "break this down into a task plan", "turn this spec into a task-orchestrate plan", "decompose this job for orchestrate to execute", "plan and orchestrate this", or "split this work into phases for /orch". This is the multi-unit decomposer + task-plan writer. For refining ONE ticket/unit's own description (add ACs / a test plan / flesh it out) defer to the ticket-planning skill instead. Every unit of work becomes four chained phases — Investigation/Plan → Challenge → Implementation → Verification. Open questions answerable by investigation are resolved there; a genuine human-judgment gap surfaces through task-orchestrate's own needs_human machinery at execution time, not a bespoke ask flow. Never starts execution — writes the plan and stops at the orchestrate go-gate.
-version: 3.1.0
+version: 3.2.0
 investigation_model_tier: sonnet
 decomposition_model_tier: sonnet
 ---
@@ -154,6 +154,42 @@ When that happens:
 This is narrower than "ask about anything unclear" — a question you *could* answer yourself by
 reading the repo is not a reason to stop. Reserve stopping for things only the human can actually
 settle.
+
+## Step 1c — Clarify and validate the job's Goal and Acceptance Criteria against wiki context
+
+Before decomposing into units (Step 2), state the job's **Goal** and its top-level **Acceptance
+Criteria** in the same one-to-a-few-sentence form Step 6's task file schema uses, then validate
+both against the wiki — as one more thing investigation resolves before decomposition starts, not
+a separate ask-the-human step.
+
+**Pull wiki context once, here.** task-orchestrate's own Plan Presentation section pulls a bounded
+slice of cross-project wiki knowledge for every new task it plans interactively — a
+task-breakdown-authored task file gets the same treatment; this is a citation, not a restatement:
+invoke `/wiki-context-pack "<job title/goal>" --budget 1500` once per job, right here (not once per
+unit, and not again in Step 6 — see Step 6's revised wording). Skip when the job's title/Goal is
+itself wiki-related (`wiki-*`, `*-wiki-ingest`, `daily-wiki-digest`, or a job whose own Design is
+about wiki maintenance), and degrade gracefully (`## Wiki Context\n(unavailable — proceeded without
+it)`) if the pull errors or the vault isn't configured — identical conditions to task-orchestrate's
+own.
+
+**Validate, don't just append.** Read the pulled pack for two things:
+1. **Contradiction.** Does the stated Goal or an Acceptance Criterion conflict with an established
+   fact, decision, or precedent the wiki records (e.g. a prior decision to remove exactly what this
+   job proposes adding back; a documented constraint the Goal's approach would violate)? A
+   coincidental topic overlap is not a contradiction — only flag a real conflict.
+2. **Enrichment.** Does the pack surface a naming convention, an existing mechanism to reuse, a
+   prior precedent, or a related in-flight decision that should shape Step 2's unit boundaries or
+   Step 3's per-phase Design sections? Carry these forward — this is why the pull now happens here
+   instead of after decomposition.
+
+**If a real contradiction is found:** route it through **Step 1a's existing stop-and-ask
+mechanism** (same threshold: human judgment, access the agent lacks, or a hard-to-reverse design
+call) — do not invent a second ask-flow for wiki-contradictions specifically. If the contradiction
+is resolvable by further reading (e.g. the wiki page is stale and the code already reflects the
+job's proposed Goal), resolve it here and note the resolution instead of stopping.
+
+**If no contradiction is found (the common case):** proceed to Step 2 with the validated Goal/ACs
+and the pack's enrichment in hand.
 
 ## Step 2 — Decompose into right-sized units, each expressed as four chained phases
 
@@ -369,18 +405,15 @@ with a normal file edit, matching the table's existing column format exactly
 `status: awaiting_go`, `last_activity:` the same UTC timestamp used for `{ID}`). Do not invent or
 assume a helper script.
 
-**Pull wiki context before constructing the task file.** task-orchestrate's own Plan Presentation
-section pulls a bounded slice of wiki knowledge for every new task it plans interactively — a
-task-breakdown-authored task file must get the same treatment, not skip it just because this skill
-bypasses that flow. Do it exactly as task-orchestrate's Plan Presentation does — same invocation,
-same budget, same skip condition, same output location — see `task-orchestrate/SKILL.md`'s Plan
-Presentation section for the canonical definition; this is a citation, not a restatement: invoke
-`/wiki-context-pack "<job title/goal>" --budget 1500` once per job (not once per unit), and write
-the result verbatim into the task file under a `## Wiki Context` section (placed after `##
-Acceptance Criteria`, before the `## PHASES` separator — see the schema below). Skip when the
-job's title/Goal is itself wiki-related, and degrade gracefully (`## Wiki Context\n(unavailable —
-proceeded without it)`) if the pull errors or the vault isn't configured — identical conditions to
-task-orchestrate's own.
+**Pull wiki context before constructing the task file.** This was already done once, in Step 1c —
+task-orchestrate's own Plan Presentation section pulls a bounded slice of wiki knowledge for every
+new task it plans interactively, and a task-breakdown-authored task file gets the same treatment,
+but pulled a single time up front (Step 1c) rather than once per job here, so its content can also
+enrich Step 2's decomposition and Step 3's Design sections, not just the finished task file. Do not
+invoke `/wiki-context-pack` a second time here — write the exact pack Step 1c already pulled
+verbatim into the task file under a `## Wiki Context` section (placed after `## Acceptance
+Criteria`, before the `## PHASES` separator — see the schema below); if Step 1c's pull was skipped
+or degraded, carry the same `(unavailable — proceeded without it)` text through unchanged.
 
 **Task file schema** (confirmed against real files in `orchestrate-history/`):
 
@@ -505,6 +538,31 @@ Recommended next step: `/orch resume`, pick {ID}, then "go auto" — Wave 1's tw
 read-only investigations; nothing mutates until Wave 3. Phase 7 (P3-9-IMPL) is gated — review
 /tmp/kube-cmd-redis-proxy-restart.sh before approving the Redis mutation when execution reaches it.
 ```
+
+## Step 7b — Verify the phase plan traces to the Goal and Acceptance Criteria
+
+Before Step 8's go-gate, confirm the finished phase plan actually delivers the `## Goal` and every
+bullet in `## Acceptance Criteria` written in Step 6's task file — a plan can pass Steps 1–7 and
+still quietly under-cover what it claims to do (a unit dropped during a late re-split, an AC that
+sounded covered but maps to no phase's own `acceptance_criteria`).
+
+**Check:** for each top-level `## Acceptance Criteria` bullet, find at least one phase whose own
+`acceptance_criteria` demonstrably satisfies it (a phase's Description/Test Plan referencing the
+same artifact, count, or outcome the bullet names). Also confirm the `## Goal` sentence(s) are
+achievable by the union of all phases taken together — not just each bullet in isolation.
+
+**If every bullet traces to a phase:** proceed to Step 8 unchanged.
+
+**If a gap is found** (an AC with no covering phase, or a Goal clause no phase addresses): fix the
+plan before Step 8 — add or adjust a unit/phase to cover it, then re-run Step 4's numbering and
+reprint Step 7's summary table. This is an authoring-time fix, made by task-breakdown itself while
+still writing the plan — it is not the same check as the per-unit Challenge phase (Step 2), which
+reviews one unit's INV plan at execution time; this step reviews the whole job's plan against its
+own stated Goal/ACs, once, before the go-gate.
+
+**If the gap can't be fixed without a human decision** (e.g. the AC itself is ambiguous about what
+"done" means): this is the same bar as Step 1a — stop and ask, using Step 1a's existing mechanism,
+rather than guessing at a phase to paper over the gap. Do not invent a third ask-flow.
 
 ## Step 8 — STOP at the go-gate
 
@@ -814,3 +872,7 @@ write the complete task file right after you answer.
   to them. A question that slips past authoring time gets one more independent check at execution
   time via the Challenge phase, which surfaces through task-orchestrate's own `needs_human`
   machinery rather than a second ask-flow.
+- **Validate before decomposing, verify before the go-gate.** Step 1c clarifies and validates the
+  job's Goal/ACs against wiki context before Step 2 decomposes; Step 7b verifies the finished plan
+  traces back to that Goal/ACs before Step 8's go-gate. Both reuse Step 1a's stop-and-ask threshold
+  for anything that turns out to need a human — neither introduces a new ask mechanism.

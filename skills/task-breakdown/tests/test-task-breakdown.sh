@@ -53,7 +53,7 @@ skill_lacks() {
 }
 
 echo ""
-echo "── task-breakdown — test suite (v3.1.0) ─────"
+echo "── task-breakdown — test suite (v3.2.0) ─────"
 
 # ── 1. Source file exists, version bumped ────────────────────────────────────
 echo ""
@@ -65,7 +65,7 @@ else
   fail "SKILL.md source missing at $SKILL_SRC"
 fi
 
-skill_has '^version: 3\.1\.0' "version bumped to 3.1.0 (rename + grill-me wiring)"
+skill_has '^version: 3\.2\.0' "version bumped to 3.2.0 (goal validation + wiki-consistency + plan-vs-goal verification)"
 
 # ── 2. No inbox-staging model left as the live instruction ───────────────────
 echo ""
@@ -269,6 +269,23 @@ if [ -f "$GEMINI_MIRROR" ]; then
 else
   fail "~/.gemini/skills/task-breakdown/SKILL.md mirror not found"
 fi
+
+# ── 12. Goal validation (Step 1c) + plan-vs-goal verification (Step 7b) [v3.2.0] ─
+echo ""
+echo "12. Goal validation + plan-vs-goal verification"
+
+skill_has "## Step 1c — Clarify and validate the job's Goal and Acceptance Criteria against wiki context" \
+  "Step 1c exists — goal clarification/validation against wiki context"
+skill_has "route it through \*\*Step 1a's existing stop-and-ask" \
+  "Step 1c routes wiki contradictions through Step 1a, not a new ask-flow"
+skill_has "## Step 7b — Verify the phase plan traces to the Goal and Acceptance Criteria" \
+  "Step 7b exists — plan-vs-goal/ACs traceability check before the go-gate"
+skill_has "reprint Step 7.s summary table" \
+  "Step 7b requires re-printing the summary table when the plan is amended"
+skill_has "This is an authoring-time fix, made by task-breakdown itself" \
+  "Step 7b is distinguished from the per-unit Challenge phase"
+skill_has "Validate before decomposing, verify before the go-gate" \
+  "Constraints section documents the new Step 1c/Step 7b discipline"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
