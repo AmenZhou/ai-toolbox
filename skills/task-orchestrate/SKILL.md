@@ -105,6 +105,8 @@ Type "grant" · "grant global" · "skip"
 ```
 On "grant"/"grant global": merge missing entries into settings, confirm `✓ Permissions updated`.
 
+**Cross-reference:** the Gate Tier section's Priority 1 destructive-override list (`git push`, bare `mv`, bare `rm`, `rm -rf`, mutating `kubectl`/`helm`, etc.) reuses this exact permission set — see **Gate Tier** below. Do not maintain a second copy of that list.
+
 ---
 
 ## State File & Resume
@@ -121,6 +123,10 @@ On "grant"/"grant global": merge missing entries into settings, confirm `✓ Per
 - `awaiting_critic` on resume: check `captured_output`. If present: skip pre-critic write, go directly to inline assessment. If absent: reset to `pending`, increment retries, re-invoke.
 
 **`resume` must be the full input.** Any other input is a new task.
+
+Resume is now the **expected steady-state** for any task long enough to hit the Session
+Budget above, not just a crash-recovery path — see Session Budget & Proactive Checkpoint,
+below.
 
 ---
 
@@ -163,6 +169,54 @@ Precedence: reasoning > execution > simple > instructional.
 
 - `depends_on`: phase numbers that must complete first
 - `acceptance_criteria`: 2–3 done-statements for execution/reasoning phases
+- `gate_tier`: `light` | `moderate` | `heavy` — computed per the **Gate Tier** section below; determines whether this phase's Step C ✅ checkpoint pauses for approval under gated/auto mode
+
+---
+
+## Gate Tier
+
+Every execution/reasoning phase gets a `gate_tier` — `light`, `moderate`, or `heavy` — computed once at Phase Classification Step 3. It governs whether Step C's ✅ checkpoint (below) pauses for approval. Evaluate in this priority order; **first match wins**:
+
+**Priority 1 — Destructive-override (always `heavy`, no exceptions).** If any action in this phase's declared scope includes:
+- `git push` (any form)
+- `kubectl scale|patch|rollout|apply` without `--dry-run`
+- any mutating `helm` command
+- `rm -rf`
+- bare `mv` (any invocation — not only `mv -f`)
+- bare `rm` (any invocation — not only `rm -rf`)
+- credential/secret rotation
+- a file write outside the project root
+
+→ `gate_tier: heavy`. This is the same permission set the **Permission Check** section above already tracks (`Bash(mv:*)`, `Bash(rm:*)`, `Bash(git push:*)`) — Permission Check governs whether the action is *allowed at all*; this list governs whether an otherwise-permitted action still pauses for a human look. Don't maintain the list twice — this is the canonical copy.
+
+**Priority 2 — Feeds an approval gate (at least `moderate`, never downgraded).** A phase "feeds an approval gate" when any of:
+- (a) it is a Plan/Challenge-type phase — its output is inherently approval-input (e.g. a `[/skill-name]` phase that produces a plan a later "go" gate consumes)
+- (b) a later phase's acceptance criteria explicitly reference this phase's output as a decision input
+- (c) the phase block is annotated `approval_feeds: true`
+
+If Priority 4's matrix would land on `light`, bump to `moderate`. If the matrix lands on `heavy`, leave it `heavy`.
+
+**Priority 3 — Unconditional-simple, capped.** Phase type (Step 1 above) is `simple` or `instructional` **AND** `files_changed ≤ 2` → `gate_tier: light` unconditionally. The `≤ 2` cap exists so a bulk simple-typed phase (e.g. a `simple` phase that touches many files) can't ride its *type* to `light` — beyond 2 files it falls through to the matrix (Priority 4) like any other phase.
+
+**Priority 4 — Matrix (default).** Everything not resolved above reads `gate_tier` off this hand-tuned table by (file-count axis, line-count axis). Estimate `files_changed` and total added+removed lines from the phase's declared scope/output.
+
+| Files \ Lines changed | ≤40 | 41–250 | >250 |
+|---|---|---|---|
+| 1–2 | light | light | moderate |
+| 3–5 | light | moderate | moderate |
+| 6+ | moderate | moderate | heavy |
+
+**Reading the matrix:** hand-tuned to be monotonic in both dimensions — **not** a literal `max(file-tier, line-tier)` function. Read the cell, don't compute it. Examples: `[1–2 files × ≤40 lines]` = light; `[1–2 files × >250 lines]` = moderate, **not** heavy; `[6+ files × any lines]` = moderate or heavy per the table, never light.
+
+**What gate_tier controls** (applied in Step C below):
+
+| gate_tier | gated mode | auto mode |
+|---|---|---|
+| light | proceed immediately, no pause | proceed immediately, no pause |
+| moderate | pause: `⏸ Ready for Phase N+1...` | proceed, append `⚠ audit note` to the phase log |
+| heavy | pause: `⏸ Proceeding requires approval...` | pause — same as gated |
+
+`heavy` is the only case where auto mode still stops — see the Auto Mode Loop's heavy-tier exception below.
 
 ---
 
@@ -188,11 +242,13 @@ This is not negotiable. No task is truly complete without Completion. Phase N+1 
 TASK PLAN — `<summary>`  Complexity: Lightweight|Moderate|Complex (N execution phases + Completion)
 Phase 1: `<name>` [inline · simple] → `<output>`
 Phase 2: `<name>` [inline · execution] → `<output>`
-Phase 3: `<name>` [/skill-name · agent/Sonnet] [parallel with 4] → `<output>`
+Phase 3: `<name>` [/skill-name · agent/Sonnet] [parallel with 4] [gate_tier:moderate] → `<output>`
 Phase N-1: `<name>` [agent/premium] → `<output>`   ← research/investigation
 Phase N: `Test & Verify` [inline · execution] → `verify.log`   ← execution final
 Phase N+1: `Completion` [inline · ceremony] → (see template below)   ← MANDATORY POST-EXECUTION
 ```
+
+`[gate_tier:...]` is optional in the phase line — surface it when it's `moderate` or `heavy` (worth flagging to the human up front); omit for `light` phases to keep the plan readable.
 
 **Completion phase template (always Phase N+1):**
 ```markdown
@@ -284,6 +340,8 @@ If `files_changed` non-empty: run Bash lint/build/test. Downgrade to PARTIAL if 
 
 **External-repo commit hygiene (inline or Agent-dispatched phases alike):** Before editing any file outside this project's own root (e.g. a fix applied under a different repo in `~/apps/`), run `git -C <target-repo-root> status --short -- <file>` FIRST, before making the edit. If that pre-edit check already shows an uncommitted diff on that file **not authored by this phase**, do not silently layer a new edit on top of it — flag the pre-existing backlog in `test_evidence`/`blockers` (name the file and note a prior uncommitted diff exists) so it surfaces at the moment it's found, rather than compounding until a dedicated audit catches it later. After making the change, run `git -C <target-repo-root> status --short -- <file>` again, then either commit locally in that repo with a descriptive message (`git -C <target-repo-root> commit -m "<message>"` — local commit only, never `git push` without explicit approval) or record in `test_evidence` exactly why it was left uncommitted (e.g. "batching with an in-flight follow-up", "awaiting human review before commit"). Without this, a real fix can sit uncommitted indefinitely with no signal from the task file that it's incomplete from a repo-hygiene standpoint — a linecook fix sat uncommitted across 4 completed registry rows before a later task finally committed it (task 20260729-inbox-6B23/DDF6), and 4 more `ai-toolbox/skills/*/SKILL.md` files independently accumulated the identical uncommitted, multi-ticket backlog before a dedicated audit found them (task 20260730-inbox-16C8).
 
+**Fork-hook verification (inline or Agent-dispatched phases alike, non-skippable when applicable):** If this phase spawns a fork (`Agent({subagent_type: "fork", ...})`) whose directive includes a tool call a `PreToolUse` hook may intercept (a live-mutating `kubectl`/`helm` command, a write outside the project root, or any other hook-gated action), do not accept the fork's own self-report as confirmation of what the hook did. Fork self-reports for hook-gated tool calls have been independently proven unreliable in three concrete ways — vague, completely empty, or outright false (task `20260830-140000` Phase 15; `reports/hooks/test_run.md`) — so a phase that trusts one uncritically can mark a denied or queued action `✓ complete` on the strength of a fabricated or absent claim. Instead, verify via `ForkHookVerifier` (`scripts/fork-hook-verifier.ts`, packaged in task `20260903-020955`): call `verifyBlockingHook`/`verifyTranscript` against the fork's raw transcript at its `output_file`, and `verifyIndependentSideEffect` against any filesystem side effect the hook itself wrote (e.g. a `.orchestrate/kube-reviews/pending/*.json` queue file), and cite the returned `evidence` array — not the fork's prose — in `test_evidence`. Note the `ts-pretooluse`-style inversion: for an advisory hook whose non-firing inside a fork is the expected behavior, `verified: true` means "confirmed absent," not "hook fired" — see `reports/hooks/fork_template.md` §9 before writing the check.
+
 **Phase log write (mandatory — atomic, single call):** Append the full PHASE OUTPUT block to `.orchestrate/logs/{ID}-phase{N}.log` in ONE call — write the header and body together, never as two separate writes:
 ```bash
 cat >> ".orchestrate/logs/{ID}-phase{N}.log" << 'EOF'
@@ -315,7 +373,7 @@ Agent({
 For narrow execution phases (≤2 files, clear spec), use standard tier (Haiku or unspecified). The model parameter takes precedence over any `@claude/*/SKILL.md` frontmatter, so always specify explicitly when a phase tier differs from the skill's default.
 
 **Agent prompt must include:**
-1. Prior phase summaries
+1. **Prior phase result paths**, never pasted text — `.orchestrate/logs/{ID}-phase{k}.log` for each `depends_on` entry. The dispatched agent reads these itself, on its own fresh budget, only if it actually needs a dependency's detail. This keeps prompt size O(1) regardless of how many phases already ran — a phase 40 dependency chain means a fixed list of paths, not 39 phases of pasted summaries.
 2. Absolute working directory
 3. `## Shared Context` from project.md (paste verbatim — gives agent project-level knowledge)
 4. Acceptance criteria: "This phase is complete when: 1. … 2. … 3. …"
@@ -341,6 +399,7 @@ For execution and reasoning phases:
 **Rule:** any `✗` in `acceptance_criteria_met` disqualifies PASS — minimum PARTIAL.
 **Rule:** for execution phases, `test_evidence: n/a` or missing = PARTIAL unless the phase made zero file changes.
 **Rule (external-repo commit hygiene gate — non-skippable):** if any `files_changed` path resolves outside this project's own root, `test_evidence`/`blockers` MUST show the pre-edit `git -C <target-repo-root> status --short -- <file>` check plus either a local commit or an explicit stated reason it's left uncommitted (per the External-repo commit hygiene rule above). Its absence is not a stylistic gap — treat it exactly like a missing `test_evidence` for an execution phase: PARTIAL, not PASS, even if every other criterion is met. This is the gate the prose-only version of the rule lacked, and its absence is what let 4 `ai-toolbox` skill files accumulate uncommitted multi-ticket backlogs undetected (task 20260730-inbox-16C8).
+**Rule (fork-hook verification gate — non-skippable):** if this phase spawned a fork whose directive included a hook-gated tool call, `test_evidence` MUST show a `ForkHookVerifier` check (`verifyBlockingHook`/`verifyTranscript`/`verifyIndependentSideEffect`) against the fork's raw transcript and/or independent side effect — not just the fork's own self-report text. Its absence is not a stylistic gap — treat it exactly like a missing `test_evidence` for an execution phase: PARTIAL, not PASS, even if every other criterion is met. A fork's self-report for a hook-gated action has been independently proven vague, empty, or false (task `20260830-140000` Phase 15) — trusting it uncritically is exactly the failure mode `ForkHookVerifier` (task `20260903-020955`) exists to close.
 
 If `files_changed` non-empty: run Bash verify (build, lint, fast tests). Override to PARTIAL if fails.
 
@@ -399,9 +458,9 @@ Writing `status: needs_human` without first attempting self-resolution is a **pr
 ```
 phase N status → awaiting_critic
 phase N captured_output → {summary, confidence, files_changed, blockers, acceptance_criteria_met, test_evidence}
-phase N raw_output → <full PHASE OUTPUT block text>
+phase N result_log → .orchestrate/logs/{ID}-phase{N}.log
 ```
-Append the raw output block to the task state file under the phase section (so `.orchestrate/tasks/{ID}.md` contains a full record of what Claude produced). Update project.md registry: `status: awaiting_critic`.
+Write only the pointer (`result_log:`) into the task state file — the full `## PHASE OUTPUT` text already lives in the phase log (Phase log write, above); never also write a `raw_output:` full-text copy into `.orchestrate/tasks/{ID}.md`. This is what keeps "Self-refresh at start of each turn" (line 295) bounded and constant-size per turn regardless of phase count — without it, the task file grows by one full raw-text block per phase, the same unbounded-growth failure mode this section's link-based Agent prompts (above) fix on the dispatch side but not on the parent's own re-read. Update project.md registry: `status: awaiting_critic`.
 
 **Step B — Verdict table:**
 
@@ -419,9 +478,12 @@ Simple/instructional: high/medium confidence → ✅, low → ⚠️.
 
 **Step C — Act:**
 
-- **✅** → write checkpoint (`✓ complete`, copy summary). Reset retries to 0. Update project.md: `current_phase += 1`.
-  - Gated: `⏸ Ready for Phase N+1 — "go" · changes · "skip" · "abort"`
-  - Auto: `✓ Phase N — <summary>`, immediately execute next ready phase(s)
+- **✅** → write checkpoint (`✓ complete`, copy summary). Reset retries to 0. Apply the mode × gate_tier matrix (see **Gate Tier** section above) to decide whether to pause:
+  - `gate_tier: light` → proceed immediately in both modes: `✓ Phase N — <summary>`, no pause, no audit note.
+  - `gate_tier: moderate` AND mode `gated` → pause: `⏸ Ready for Phase N+1 — "go" · changes · "skip" · "abort"`
+  - `gate_tier: moderate` AND mode `auto` → proceed immediately (`✓ Phase N — <summary>`), but append `⚠ audit note: Phase N (moderate) auto-proceeded` to the phase log.
+  - `gate_tier: heavy` → pause in **both** modes: `⏸ Proceeding requires approval — Phase N is heavy (destructive-override or feeds-approval-gate) — "go" · changes · "skip" · "abort"`. This is the sole exception to auto mode's "never stop" invariant (see Auto Mode Loop below).
+  Update project.md: `current_phase += 1`.
 
 - **⚠️** → increment retries. `🔍 Gap: <what's missing>`. Re-invoke with gap appended.
   - Retry schedule (agent phases): retry 1 → original tier; retry 2 → upgrade (Haiku→Sonnet, Sonnet→premium); retry 3 → halt (Sonnet-tier) or retry 4 → halt (Haiku-tier). Premium: retry 1 → premium; retry 2 → halt.
@@ -448,6 +510,48 @@ This reminder makes it **impossible to forget** Completion: it's visibly in the 
 
 ---
 
+## Session Budget & Proactive Checkpoint
+
+The Execution Loop's own bookkeeping (self-refresh, checkpoint writes) never shrinks the
+parent session's transcript — it only grows, one phase at a time. Left unbounded, a long
+chained task (task-breakdown-generated plans routinely chain 4+ phases per unit × 20+
+units) accumulates enough turn history to hit the parent's context ceiling before
+Completion, losing the run mid-execution with only partial `✓ complete` checkpoints and
+no live session left to continue from them. The fix is a **proactive, deliberate yield**
+at a clean phase boundary — never running until forcibly cut off.
+
+```
+BUDGET = 8   # phases per parent session before proactive checkpoint+yield
+             # ponytail: fixed heuristic, not adaptive token accounting — tune BUDGET
+             # (or weight heavy/premium phases higher) if 8 proves wrong in practice.
+phases_this_session = 0
+```
+
+After every completed **batch** (never mid-batch — batches are already capped at 6, so
+worst-case overshoot before the check fires is small and bounded) in both the Auto and
+Gated loops below:
+
+```
+phases_this_session += <phases completed this batch>
+if phases_this_session >= BUDGET:
+  SELF_CHECKPOINT_AND_YIELD(ID)   # below — end this turn; do not loop further
+```
+
+**`SELF_CHECKPOINT_AND_YIELD(ID)`:** the task file's per-phase `status` list (already
+written by Step C, above) is the entire checkpoint — nothing new to persist there. Confirm
+it's current, print `⏸ Checkpointed at Phase <last ✓ complete> of <total_phases>. Session
+budget reached — run "resume" to continue.`, and end the turn. The next `resume`
+invocation (State File & Resume, above) picks up from the task file's phase statuses with
+a small, bounded prompt — never a replay of this session's transcript.
+
+**Stop hook (belt-and-suspenders):** a project-level `Stop` hook
+(`.claude/settings.json` → `hooks.Stop`, script `.orchestrate/bin/checkpoint-on-stop.sh`)
+guards the case where a session ends *without* a clean yield above — a user-initiated
+stop or a hard cutoff mid-turn. It is idempotent: if `SELF_CHECKPOINT_AND_YIELD` already
+ran, it's a no-op; it only matters for the unplanned-exit case.
+
+---
+
 ## Auto Mode Loop
 
 ```
@@ -461,7 +565,9 @@ LOOP:
   7. ❌ → checkpoint all ✅ in batch, halt and gate the human
 ```
 
-Never stop between steps 5 and 1 in auto mode.
+Never stop between steps 5 and 1 in auto mode — **except** the heavy-tier gate_tier exception below.
+
+**Heavy-tier exception:** a phase whose Step C ✅ checkpoint resolves `gate_tier: heavy` (see **Gate Tier** section above) pauses even in auto mode — the only case where "never stop between steps 5 and 1" does not hold. Everything else (`light`, `moderate`) follows the loop unchanged in auto mode.
 
 **Parallel batch mixed results:** checkpoint ✅ immediately; re-invoke ⚠️; on any ❌, halt and gate.
 

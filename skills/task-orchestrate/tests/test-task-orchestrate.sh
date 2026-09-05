@@ -99,6 +99,8 @@ skill_has 'Mandatory final phase.*Test & Verify' "plan requires mandatory Test &
 skill_has 'Background Job Dry-Run' "verify phase mandates dry-run for background jobs"
 skill_has 'Project-local smoke scripts' "verify phase mandates running inbox-referenced smoke scripts"
 skill_has 'disqualifies PASS' "critic gate: any ✗ in AC → PARTIAL minimum"
+skill_has 'fork-hook verification gate' "critic gate: fork-hook verification non-skippable"
+skill_has 'ForkHookVerifier' "fork-spawning phases must verify via ForkHookVerifier, not self-report"
 skill_has 'Premium: retry 1.*premium; retry 2.*halt' "premium retry cap documented (retry 2 → halt)"
 skill_has 'confidence-only gate' "critic applies confidence gate for simple/instructional phases"
 skill_has '6c\. Auto-enqueue wiki-sync' "Completion §6c documents wiki-sync auto-enqueue sub-step"
