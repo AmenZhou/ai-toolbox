@@ -24,6 +24,44 @@ If any input is missing, ask the user before proceeding.
 
 ## Steps
 
+### Step 0 — Resolve the canonical clone before anything else
+
+**`~/apps` can contain more than one clone of the same remote, and the folder names do not tell you
+which is current.** Picking the stale one gives you a worktree branched from a repo whose working
+tree disagrees with `origin`, and whose docs may assert conclusions that have since been withdrawn.
+
+Known case: `~/apps/dsp_stress_test` and `~/apps/ads_stress_test` are **both** clones of
+`git@gitlab.cloudokyo.dev:haimeng.zhou/ads_stress_test.git`. `dsp_stress_test` is canonical;
+`ads_stress_test` is a stale duplicate. See ai-console's `CLAUDE.md` → "Stress-test repo".
+
+Before using `<source_repo>`, confirm it is the canonical clone:
+
+```bash
+# What remote does it track, and is it current?
+git -C <source_repo> remote get-url origin
+git -C <source_repo> fetch origin --quiet
+git -C <source_repo> rev-list --left-right --count origin/main...HEAD   # want "0  0"
+```
+
+Then check no sibling **clone** shares that remote. Note the `-d "$d/.git"` test — a clone has a
+`.git` *directory*, a worktree has a `.git` *file*. Without that test the scan flags every worktree
+this skill creates, which is a false alarm:
+
+```bash
+for d in ~/apps/*/; do
+  [ -d "$d/.git" ] || continue          # clones only; skip worktrees
+  u=$(git -C "$d" remote get-url origin 2>/dev/null)
+  [ -n "$u" ] && echo "$u  $d"
+done | sort | awk '{c[$1]++; l[$1]=l[$1]"\n    "$2} END {for (r in c) if (c[r]>1) print "DUPLICATE CLONES of "r l[r]}'
+```
+
+As of 2026-09-13 this reports exactly one pair: `ads_stress_test` + `dsp_stress_test`. Every other
+repo-looking folder under `~/apps` (`infra-6`, `p3-9b`, `ads-un1`, …) is a legitimate worktree.
+
+If duplicates exist, use the one that reports `0  0` against `origin/main` and tell the user the
+other is stale. **Do not create a new clone to get an isolated checkout — that is what produces this
+problem.** A worktree shares the source repo's object store; that is the entire point of this skill.
+
 ### Step 1 — Verify source repo and fetch latest main
 
 ```bash
@@ -87,3 +125,8 @@ Then remove the row from `workspace.local.md`.
 - The worktree shares the `.git` object store with the source repo (no disk duplication of history).
 - Each worktree can only have one branch checked out at a time.
 - List active worktrees: `git -C <source_repo> worktree list`
+- **A worktree is not a clone.** If you find yourself running `git clone` to get a second working
+  copy of a repo already under `~/apps`, stop and use this skill instead. Duplicate clones drift
+  silently: one gets fetched, the other doesn't, and months later two folders assert different
+  conclusions from the same filenames.
+- To check for existing duplicates at any time, run the Step 0 sibling-clone scan.
