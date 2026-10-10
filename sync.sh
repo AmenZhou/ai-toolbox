@@ -68,6 +68,11 @@ for skill_dir in "$SKILLS_DIR"/*/; do
   [[ -f "$skill_dir/SKILL.md" ]] || continue
   skill_name="$(basename "$skill_dir")"
   skill_dest="$CLAUDE_SKILLS/$skill_name"
+  # Already a symlink to this source dir (e.g. speckit-*): leave it alone
+  if [[ -L "$skill_dest" && "$(readlink "$skill_dest")" == "${skill_dir%/}" ]]; then
+    skill_count=$((skill_count + 1))
+    continue
+  fi
   [[ -L "$skill_dest" ]] && rm "$skill_dest"
   mkdir -p "$skill_dest"
   cp "$skill_dir/SKILL.md" "$skill_dest/SKILL.md"
