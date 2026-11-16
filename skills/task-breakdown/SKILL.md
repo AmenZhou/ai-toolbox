@@ -102,9 +102,16 @@ AC hygiene (these save reruns): derive any count AC from enumerated artifacts
 (`existing + new == asserted`), never from memory; for "0 failures" ACs exclude tests that need
 live local state (running service, installed binary, network/DB) or say so in the AC.
 
-Executor/tier: INV and CHALLENGE are `agent/Sonnet`; IMPL is `agent/Sonnet` for 3+ files or
-iteration, `inline · execution` for ≤2 files with a clear spec; VERIFY and the final phase are
-`inline · execution`.
+Executor/tier: INV and CHALLENGE are `agent/Sonnet` (`general-purpose` with `model: "sonnet"`; never
+the Haiku-pinned `scout` or `Explore`). IMPL is `agent/executor` for 3+ files or iteration where the
+agent makes design choices, `agent/mech-executor` when the phase is fully specified and mechanical
+(renames, bulk edits from an explicit spec, tests that follow an existing convention), and
+`inline · execution` for ≤2 files with a clear spec. VERIFY and the final phase are
+`inline · execution`. Write the cell the same way every time: `[agent/executor · execution]`,
+`[agent/mech-executor · execution]`, `[agent/Sonnet · investigation]` or `[inline · execution]`.
+Name an Opus role (`verifier`, `security-reviewer`, `security-executor`) only when the plan wants it
+for a high-stakes phase, and say why in that phase's Description: they matched a generic agent on
+quality in a measured test and cost 1.5x to 1.7x as much (`security-reviewer` was the exception).
 
 ## Step 4 — Gating
 

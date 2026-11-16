@@ -153,13 +153,15 @@ Precedence: reasoning > execution > simple > instructional.
 | execution — narrow (≤2 files, clear spec, ≤5 tool calls) | **inline** | — |
 | skill phase where skill declares `inline: true` | **inline · /skill-name** | — |
 | research / investigation / challenging analysis (keywords: `investigate`, `research`, `plan`, `design`, `analyze`, `discovery`, `derive`, `INV`, `PLAN`) | **agent/premium** | **Sonnet or higher** |
-| execution — moderate or broad (3+ files, iterative) | **agent/Sonnet** | **Sonnet** |
+| execution — moderate or broad (3+ files, iterative), design choices left to the agent | **agent/`executor`** | **Sonnet** (the role's own pin) |
+| execution — fully specified and mechanical (renames, bulk edits from an explicit spec, tests that follow an existing convention) | **agent/`mech-executor`** | **Sonnet** (the role's own pin) |
 | reasoning phase | **agent/premium** | **Sonnet or higher** |
 | any phase that must run in parallel | **agent/*** | *match primary phase tier* |
 | skill phase without `inline: true` | **agent/** at tier | *per condition above* |
 
 **Model Tier Specifics:**
 - **Sonnet:** Default for investigation, planning, reasoning phases; also for moderate/broad execution that iterates
+- **Role agents (execution phases only):** `executor` and `mech-executor` are pinned to Sonnet, so they meet the Sonnet-or-higher rule with no `model` parameter. Do not send research, investigation, plan, design or discovery phases to `scout` or `Explore` (pinned to Haiku): keep `general-purpose` with `model: "sonnet"` for those. The Opus roles were measured on 2 runs per arm and matched the generic agent on quality: `security-reviewer` used about half the tokens (cost 0.9x at 1.33 USD per million Opus tokens, 2.6x at 4.00), `verifier` and `security-executor` cost 1.5x to 1.7x. Use an Opus role only when a plan names it; `plan-verifier` was not measured.
 - **Haiku:** Use for simple, instructional, and narrow execution phases (cost optimization)
 - **Opus:** Consider for particularly complex multi-step reasoning; optional upgrade on retry
 - **Claude Code:** Specify `model: "sonnet"` (or `model: "opus"`) in Agent() calls; will degrade to Haiku if Sonnet unavailable
@@ -370,6 +372,12 @@ Agent({
 })
 ```
 
+For a role row of Step 2 (`agent/executor`, `agent/mech-executor`, or an Opus role a plan names), pass the role and no model, so the role's own pin applies (`executor` and `mech-executor` pin Sonnet):
+
+```javascript
+Agent({ description: "Implement phase N", prompt: "...", subagent_type: "executor", run_in_background: false })
+```
+
 For narrow execution phases (≤2 files, clear spec), use standard tier (Haiku or unspecified). The model parameter takes precedence over any `@claude/*/SKILL.md` frontmatter, so always specify explicitly when a phase tier differs from the skill's default.
 
 **Agent prompt must include:**
@@ -387,7 +395,9 @@ For narrow execution phases (≤2 files, clear spec), use standard tier (Haiku o
 
 After agent returns: extract `## PHASE OUTPUT`. If missing → treat as ⚠️ with gap "no PHASE OUTPUT block".
 
-**Phase log write (mandatory — atomic, single call):** Append the full PHASE OUTPUT block (or the raw agent return text if block is missing) to `.orchestrate/logs/{ID}-phase{N}.log` the same way as inline phases above — one call, header + body together, `Phase N (retry R)` when R > 0. Never write the header via a separate call "to mark progress" and come back for the body later.
+**Usage record (mandatory for agent phases):** the agent cannot report its own usage; the dispatching session sees it in the Agent result (`total_tokens`, `tool_uses`, `duration_ms`). Write one line directly under the phase log header, in the same atomic call as the PHASE OUTPUT block: `usage: role=<subagent_type, or general-purpose>, model=<the model parameter, or "role pin">, total_tokens=<n>, tool_uses=<n>, duration_ms=<n>`. One line per attempt when a phase retries. An inline phase writes `usage: inline`. If the Agent result shows no usage, write `usage: not shown`; never estimate it.
+
+**Phase log write (mandatory — atomic, single call):** Append the full PHASE OUTPUT block (or the raw agent return text if block is missing) to `.orchestrate/logs/{ID}-phase{N}.log` the same way as inline phases above — one call, header, `usage:` line and body together, `Phase N (retry R)` when R > 0. Never write the header via a separate call "to mark progress" and come back for the body later.
 
 ### Critic & micro-verifier (always inline)
 
@@ -637,7 +647,7 @@ On each phase checkpoint (Step C ✅), also set registry `last_activity` to `$(d
   - **Hit (archive already exists for this ID):** skip the `cp`/MANIFEST-append/`rm` entirely — do not touch the archive file, do not append a duplicate MANIFEST line. Reconcile instead: confirm the registry row reflects `complete` (flip it if it still shows `running`), confirm a MANIFEST line exists for that archive filename (`grep` `orchestrate-history/MANIFEST.md`; do not append a second line if one is already present). Continue to step 2 (Update project.md registry) and the rest of Completion as normal — only the physical archive/copy/delete is skipped.
 - Ensure `~/apps/ai-console/orchestrate-history/` exists.
 - Copy `.orchestrate/tasks/{ID}.md` → `orchestrate-history/${ARCHIVE_STAMP}-${ID}-<slug>.md` (use `ARCHIVE_STAMP` from timestamp contract above — not a separate guessed time)
-- Add `tags:` line to archive copy.
+- Add `tags:` line to archive copy, and a `usage:` block listing one line per phase from its phase log (phase number, role, model, total_tokens, tool_uses, duration_ms; `inline` for inline phases), so a later archive search can compare roles on real work.
 - **Mandatory:** Append one line to `orchestrate-history/MANIFEST.md` in the canonical format `YYYY-MM-DD | filename | summary | tag1, tag2` via a direct file edit — validate the date format and reject any field containing `|` before writing. Skipping MANIFEST breaks History search — never omit it.
 - Delete original task file from `.orchestrate/tasks/`.
 - **Pre-archive files_changed self-check (mandatory, run BEFORE copying/deleting):** if ANY phase's `files_changed` (from `.orchestrate/logs/{ID}-phase*.log` or the phase's `## PHASE OUTPUT` block) was non-empty, the task file MUST already have a top-level `files_changed:` line. Check with `grep -q '^files_changed:' .orchestrate/tasks/{ID}.md`. If the grep fails but any phase shows non-empty `files_changed`, derive the union of paths from the phase blocks/logs and insert a `files_changed: <union>` line into the task file NOW, before archiving — do not proceed to archive/delete until the line is present. This catches the exact omission (an inline phase that changed files but never wrote the top-level line) that silently causes §6b-direct/§6d to think nothing changed.
