@@ -161,7 +161,7 @@ Precedence: reasoning > execution > simple > instructional.
 
 **Model Tier Specifics:**
 - **Sonnet:** Default for investigation, planning, reasoning phases; also for moderate/broad execution that iterates
-- **Role agents (execution phases only):** `executor` and `mech-executor` are pinned to Sonnet, so they meet the Sonnet-or-higher rule with no `model` parameter. Do not send research, investigation, plan, design or discovery phases to `scout` or `Explore` (pinned to Haiku): keep `general-purpose` with `model: "sonnet"` for those. The Opus roles were measured on 2 runs per arm and matched the generic agent on quality: `security-reviewer` used about half the tokens (cost 0.9x at 1.33 USD per million Opus tokens, 2.6x at 4.00), `verifier` and `security-executor` cost 1.5x to 1.7x. Use an Opus role only when a plan names it; `plan-verifier` was not measured.
+- **Role agents (execution phases only):** `executor` and `mech-executor` are pinned to Sonnet, so they meet the Sonnet-or-higher rule with no `model` parameter. Do not send research, investigation, plan, design or discovery phases to `scout` or `Explore` (pinned to Haiku): keep `general-purpose` with `model: "sonnet"` for those. The Opus roles were measured on 2 runs per arm and matched the generic agent on quality: `security-reviewer` used about half the tokens (cost 0.9x at 1.33 USD per million Opus tokens, 2.6x at 4.00), `verifier` and `security-executor` cost 1.5x to 1.7x. Use an Opus role only when a plan names it, or when the independent-verifier gate in the Critic section requires `verifier`; `plan-verifier` was not measured.
 - **Haiku:** Use for simple, instructional, and narrow execution phases (cost optimization)
 - **Opus:** Consider for particularly complex multi-step reasoning; optional upgrade on retry
 - **Claude Code:** Specify `model: "sonnet"` (or `model: "opus"`) in Agent() calls; will degrade to Haiku if Sonnet unavailable
@@ -399,7 +399,7 @@ After agent returns: extract `## PHASE OUTPUT`. If missing → treat as ⚠️ w
 
 **Phase log write (mandatory — atomic, single call):** Append the full PHASE OUTPUT block (or the raw agent return text if block is missing) to `.orchestrate/logs/{ID}-phase{N}.log` the same way as inline phases above — one call, header, `usage:` line and body together, `Phase N (retry R)` when R > 0. Never write the header via a separate call "to mark progress" and come back for the body later.
 
-### Critic & micro-verifier (always inline)
+### Critic & micro-verifier (inline; only the independent-verifier gate below dispatches an agent)
 
 For execution and reasoning phases:
 - **PASS** — all criteria met AND no `✗` in `acceptance_criteria_met` AND `test_evidence` shows behavioral confirmation (not just file existence)
@@ -410,7 +410,7 @@ For execution and reasoning phases:
 **Rule:** for execution phases, `test_evidence: n/a` or missing = PARTIAL unless the phase made zero file changes.
 **Rule (external-repo commit hygiene gate — non-skippable):** if any `files_changed` path resolves outside this project's own root, `test_evidence`/`blockers` MUST show the pre-edit `git -C <target-repo-root> status --short -- <file>` check plus either a local commit or an explicit stated reason it's left uncommitted (per the External-repo commit hygiene rule above). Its absence is not a stylistic gap — treat it exactly like a missing `test_evidence` for an execution phase: PARTIAL, not PASS, even if every other criterion is met. This is the gate the prose-only version of the rule lacked, and its absence is what let 4 `ai-toolbox` skill files accumulate uncommitted multi-ticket backlogs undetected (task 20260730-inbox-16C8).
 **Rule (fork-hook verification gate — non-skippable):** if this phase spawned a fork whose directive included a hook-gated tool call, `test_evidence` MUST show a `ForkHookVerifier` check (`verifyBlockingHook`/`verifyTranscript`/`verifyIndependentSideEffect`) against the fork's raw transcript and/or independent side effect — not just the fork's own self-report text. Its absence is not a stylistic gap — treat it exactly like a missing `test_evidence` for an execution phase: PARTIAL, not PASS, even if every other criterion is met. A fork's self-report for a hook-gated action has been independently proven vague, empty, or false (task `20260830-140000` Phase 15) — trusting it uncritically is exactly the failure mode `ForkHookVerifier` (task `20260903-020955`) exists to close.
-**Rule (independent-verifier gate — high-stakes execution phases):** if an execution phase changes files outside this project's own root, changes shared state (a pushed branch, a database, a cluster, a config other tools read), or produces a result the task will cite as evidence to others, the critic's PASS is not enough. Dispatch a fresh `verifier` (`Agent({subagent_type: "verifier", ...})`, an Opus role, so a different model from the Sonnet executors) with only the diff or paths and the acceptance criteria — not the executor's reasoning or conclusion. The phase is PASS only when it returns CONFIRMED and `test_evidence` cites its findings; REFUTED is FAIL, INCONCLUSIVE is PARTIAL. Routine phases keep the inline critic, so the 1.5x to 1.7x verifier cost applies only here.
+**Rule (independent-verifier gate — high-stakes execution phases):** if an execution phase changes files outside this project's own root, changes shared state (a pushed branch, a database, a cluster, a config other tools read), or produces a figure, report or claim that the task's final output states as a finding for others to rely on, the critic's PASS is not enough. Dispatch a fresh `verifier` (`Agent({subagent_type: "verifier", ...})`, an Opus role, so a different model from the Sonnet executors) with only the diff or paths and the acceptance criteria — not the executor's reasoning or conclusion. The phase is PASS only when it returns CONFIRMED and `test_evidence` cites its findings; REFUTED is FAIL, INCONCLUSIVE is PARTIAL. If the `verifier` role is unavailable in this environment, write that in `blockers` and cap the phase at PARTIAL; never substitute the inline critic's PASS. Routine phases keep the inline critic, so the 1.5x to 1.7x verifier cost applies only here. §6b-direct's end-of-task review still runs; it may cite this verifier's verdict but does not replace it.
 
 If `files_changed` non-empty: run Bash verify (build, lint, fast tests). Override to PARTIAL if fails.
 
@@ -471,7 +471,7 @@ phase N status → awaiting_critic
 phase N captured_output → {summary, confidence, files_changed, blockers, acceptance_criteria_met, test_evidence}
 phase N result_log → .orchestrate/logs/{ID}-phase{N}.log
 ```
-Write only the pointer (`result_log:`) into the task state file — the full `## PHASE OUTPUT` text already lives in the phase log (Phase log write, above); never also write a `raw_output:` full-text copy into `.orchestrate/tasks/{ID}.md`. This is what keeps "Self-refresh at start of each turn" (line 295) bounded and constant-size per turn regardless of phase count — without it, the task file grows by one full raw-text block per phase, the same unbounded-growth failure mode this section's link-based Agent prompts (above) fix on the dispatch side but not on the parent's own re-read. Update project.md registry: `status: awaiting_critic`.
+Write only the pointer (`result_log:`) into the task state file — the full `## PHASE OUTPUT` text already lives in the phase log (Phase log write, above); never also write a `raw_output:` full-text copy into `.orchestrate/tasks/{ID}.md`. This is what keeps "Self-refresh at start of each turn" (first item of the Execution Loop) bounded and constant-size per turn regardless of phase count — without it, the task file grows by one full raw-text block per phase, the same unbounded-growth failure mode this section's link-based Agent prompts (above) fix on the dispatch side but not on the parent's own re-read. Update project.md registry: `status: awaiting_critic`.
 
 **Step B — Verdict table:**
 
@@ -503,11 +503,11 @@ Simple/instructional: high/medium confidence → ✅, low → ⚠️.
 - **❌** → write `✗ failed`. **Before** updating project.md to `status: needs_human`, you MUST run the **Auto-Resolution Check & Human-Only Block Classifier** above. Only set `status: needs_human` if the block passes the classifier (a concrete external dependency) — a locally-executable action (cross-project file write, reversible config write, a runnable script) is NOT a valid block: attempt it instead and retry.
   - Gate: `⏸ retry · skip · replan · abort · instruct`
 
-**Auto-Insert Phase 10 Reminder:** When updating `current_phase` in the ✅ checkpoint (Step C), check if the newly-incremented phase number exceeds the task file's `total_phases`. If so, Phase 10 (Completion) is next and has not been inserted yet. **Append immediately** to the task file:
+**Auto-Insert Completion Reminder:** When updating `current_phase` in the ✅ checkpoint (Step C), check whether the task file has a `### Phase <n>: Completion` section. If it does not, Completion is next and has not been inserted yet. **Append immediately** to the task file, numbered one above the highest existing phase (`<n>` below):
 
 ```markdown
 
-### Phase 10: Completion [inline · ceremony]
+### Phase <n>: Completion [inline · ceremony]
 status: pending
 - [ ] §6b-direct review complete (verdict: PASS | PARTIAL | FAIL)
 - [ ] §6d wiki ingestion (page: ___ | not persisted: reason)
@@ -515,7 +515,7 @@ status: pending
 - [ ] Improvement Suggestions filed (or "none: reason")
 ```
 
-Then log: `⚠️ Phase 10 (Completion) auto-inserted — complete the checklist before archiving`.
+Then log: `⚠️ Completion phase auto-inserted as Phase <n> — complete the checklist before archiving`.
 
 This reminder makes it **impossible to forget** Completion: it's visibly in the task file, numbered, and ready to checkpoint like any other phase.
 
@@ -605,6 +605,8 @@ GATED:
 
 When all phases are `✓ complete`:
 
+**Order of operations.** The numbered steps below are grouped by topic, not run in numeric order. The archive gate in step 1 requires the Completion phase to be `✓ complete`, and that needs all four of its checklist items, which steps 3 to 7 produce. So run steps 3, 4, 5, 6, 6b-direct, 6d and 7 first, mark the Completion phase `✓ complete`, and only then run step 1 (archive) and step 2 (registry).
+
 **Timestamp contract (mandatory — History tab depends on this):**
 
 Capture **once** at the start of Completion — never invent or round timestamps (forbidden: `T22:00:00Z`, `T12:00:00Z` unless that is the actual wall time):
@@ -626,19 +628,19 @@ On each phase checkpoint (Step C ✅), also set registry `last_activity` to `$(d
 
 **1. Archive task file:**
 
-- **Pre-archive Completion gate (mandatory, run BEFORE anything else):** verify Phase 10 (Completion) is complete before archiving. Check the task file:
+- **Pre-archive Completion gate (mandatory, run BEFORE anything else in this step):** verify the Completion phase (always the last phase, numbered `total_phases + 1`) is complete before archiving. Check the task file:
   ```bash
-  if ! grep -q "### Phase 10: Completion" .orchestrate/tasks/{ID}.md; then
-    echo "ERROR: Phase 10 (Completion) section not found in task file"
+  if ! grep -q "^### Phase [0-9]*: Completion" .orchestrate/tasks/{ID}.md; then
+    echo "ERROR: Completion phase section not found in task file"
     exit 1
   fi
-  if ! grep -A 5 "### Phase 10: Completion" .orchestrate/tasks/{ID}.md | grep -q "✓ complete\|status: complete"; then
-    echo "ERROR: Phase 10 (Completion) is not marked ✓ complete"
+  if ! grep -A 5 "^### Phase [0-9]*: Completion" .orchestrate/tasks/{ID}.md | grep -q "✓ complete\|status: complete"; then
+    echo "ERROR: Completion phase is not marked ✓ complete"
     echo "All four checklist items must be completed before archiving"
     exit 1
   fi
   ```
-  Refuse to archive if Phase 10 doesn't exist or isn't marked complete. This is a hard gate — do not proceed without it.
+  Refuse to archive if the Completion phase doesn't exist or isn't marked complete. This is a hard gate — do not proceed without it.
 
 - **Pre-archive duplicate-existence check (mandatory, run BEFORE any `cp`/MANIFEST-append/`rm` below):** since another concurrent interactive session can legitimately be working the same project, check for an existing archive before writing one — the same check the Execution Loop's **Pre-execution duplicate-completion guard** (above) uses:
   ```bash
@@ -759,7 +761,7 @@ This step exists because the async infrastructure that used to defer review to a
 Run this step for every `complete` task whose aggregate `files_changed:` contains ≥1 code/test/script/config file (`*.ts *.js *.py *.go *.sh *.sql *.yaml *.json` … `Dockerfile Makefile`), EXCLUDING pure docs/log/registry/archive/control-plane paths (`*.md *.txt`, `.orchestrate/logs/**`, `.orchestrate/project.md`, `orchestrate-history/**`, `MANIFEST.md`). A zero-code-change task (pure docs/query) skips this step — say so in the required output line below, don't omit it.
 
 - **Mechanism:** dispatch a fresh `Agent()` call with **no shared context from the implementation phases** — the same independence trick task-breakdown's Challenge phase uses (a fresh Agent-tool dispatch has no memory of the implementing phase's own reasoning, only its written output) — instructed to review the actual diff (`files_changed:` across all phases) against: (1) the task's stated Acceptance Criteria, (2) any Out-of-Scope/Prohibitions boundary named in the task file, (3) general correctness (obvious bugs, missed edge cases, security issues). The reviewer reports a verdict: **PASS** (no issues), **PARTIAL: \<gap\>** (non-blocking issues worth noting), or **FAIL: \<reason\>** (a real problem the implementation missed).
-- **FAIL handling:** a FAIL verdict does not itself reopen completed phases or block archiving — Completion has already run by the time this step fires. Record the FAIL verbatim in the required output line below; if it's substantive, mention it in Step 7's Improvement Suggestions output too, same as any other Completion-time finding.
+- **FAIL handling:** a FAIL verdict does not itself reopen completed phases or block archiving — every implementation phase has already run by the time this step fires. Record the FAIL verbatim in the required output line below; if it's substantive, mention it in Step 7's Improvement Suggestions output too, same as any other Completion-time finding.
 - **Required Completion output line (never silent):**
   ```
   Review: <PASS | PARTIAL: <gap> | FAIL: <reason>> (independent Agent() dispatch) | not reviewed: <one-line reason>
@@ -780,7 +782,7 @@ Run this step for every `complete` task, at the end of Completion, before Improv
 **Step 2 — if persisting, choose *how*, in this precedence order:**
 1. **Existing closely-related page, still `lifecycle: active`.** Check the vault's `index.md` for a page already covering this exact subsystem/decision thread (same topic, same skill, same ongoing redesign). If one exists, append an `## Update — <ISO>` section to it instead of creating a duplicate — do not restate the page's original content, just add what's new.
 2. **Substantial, self-contained new decision or finding, no existing page fits.** Use the `wiki-capture` skill — it classifies the content, rewrites it as declarative knowledge, and produces a properly cross-linked page. Prefer it over hand-rolling a page.
-3. **Routine/operational outcome that's still worth a trace, but doesn't rise to (1) or (2).** Fall back to the topic-page-append mechanism this step used to be the only option: extract the task's **topic** (tags, title keywords, or project context), resolve it to a page path (e.g. `rate-limiting` → `$VAULT/Rate Limiting.md` or `$VAULT/topics/Rate Limiting.md`, falling back to `$VAULT/Orchestration/Completed Tasks.md` if no topic resolves), distill the archived task state (`orchestrate-history/{ARCHIVE_STAMP}-{ID}-*.md`), and append `## Completed: <task summary> — <ISO>` with phase summaries and key learnings as bullets — creating the page with `## Overview`/`## Completed Tasks` sections if it doesn't exist yet.
+3. **Routine/operational outcome that's still worth a trace, but doesn't rise to (1) or (2).** Fall back to the topic-page-append mechanism this step used to be the only option: extract the task's **topic** (tags, title keywords, or project context), resolve it to a page path (e.g. `rate-limiting` → `$VAULT/Rate Limiting.md` or `$VAULT/topics/Rate Limiting.md`, falling back to `$VAULT/Orchestration/Completed Tasks.md` if no topic resolves), distill the task state (the live `.orchestrate/tasks/{ID}.md`; step 1's archive has not been written yet when this step runs), and append `## Completed: <task summary> — <ISO>` with phase summaries and key learnings as bullets — creating the page with `## Overview`/`## Completed Tasks` sections if it doesn't exist yet.
 
 **Step 3 — mandatory `log.md` line, regardless of which path above was used.** Append one `CAPTURE` line to `$VAULT/log.md` (the `wiki-capture` skill's own protocol does this automatically for path 2 — for paths 1 and 3, which don't have their own logging protocol, append it manually: `- [<ISO>] CAPTURE type=<update|routine> page="<path>" title="<title>" task=<ID>`). A wiki write with no `log.md` trace is exactly the gap that motivated writing this step out explicitly (a prior task's page-append happened without one).
 
