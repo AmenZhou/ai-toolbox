@@ -1,7 +1,7 @@
 ---
 name: smart-code-review
 description: Ticket-aware code review. Fetches associated ticket/requirements (Linear, GitHub issue, PR description) and validates implementation against them. Falls back to a structured branch summary when no ticket is found. Runs an OWASP Top 10 security pass, the project's own lint / typecheck / syntax checks (reporting errors in changed files), and a standard BUG/FIX/AUTO/CONSIDER code review pass, then posts the kept findings as inline review comments on the detected PR/MR (GitHub `gh` / GitLab `glab`) — or documents them in a local review doc when there is no PR/MR.
-version: 1.4.3
+version: 1.4.4
 inline: true
 ---
 
@@ -75,6 +75,10 @@ Take the first that applies:
 Use the remote-tracking ref (`origin/<target>`), not a local branch — a local copy can be stale or
 missing. Run `git fetch origin <target>` first; if the fetch fails (offline, VPN down), use the ref
 you already have and say so. State the base in the output: `Base: origin/master`.
+
+`$BASE` is a placeholder: write the actual ref into every command (`git diff origin/master...HEAD`).
+Shell variables don't persist between tool calls, and an empty `$BASE` makes `git diff ...HEAD`
+compare HEAD with itself: no output, exit code 0, and a branch full of changes looks empty.
 
 **C. Collect branch diff metadata** (always needed)
 ```bash
