@@ -1,6 +1,6 @@
 ---
 name: task-breakdown
-description: Turn a job (spec, plan doc, rough notes, or the current conversation) into the SMALLEST safe task-orchestrate plan — one `.orchestrate/tasks/{ID}.md` file of right-sized units, most of them a single phase — so a later task-orchestrate run executes the whole job. Use when the user says "break this down into a task plan", "turn this spec into a task-orchestrate plan", "decompose this job for orchestrate to execute", "plan and orchestrate this", or "split this work into phases for /orch". This is the multi-unit decomposer + task-plan writer; for refining ONE ticket's description (ACs, test plan) use ticket-planning instead. Investigation, Challenge and Verify phases are added only where a unit's risk or unknowns earn them, because task-orchestrate already critiques every phase and reviews the finished task. Never starts execution — writes the plan and stops at the orchestrate go-gate.
+description: Turn a job (spec, plan doc, rough notes, or the current conversation) into the SMALLEST safe task-orchestrate plan — one `.orchestrate/tasks/{ID}.md` file of right-sized units, most of them a single phase — so a later task-orchestrate run executes the whole job. Use when the user says "break this down into a task plan", "turn this spec into a task-orchestrate plan", "decompose this job for orchestrate to execute", "plan and orchestrate this", or "split this work into phases for /orch". This is the multi-unit decomposer + task-plan writer. Investigation, Challenge and Verify phases are added only where a unit's risk or unknowns earn them, because task-orchestrate already critiques every phase and reviews the finished task. Never starts execution — writes the plan and stops at the orchestrate go-gate.
 version: 4.0.0
 investigation_model_tier: sonnet
 decomposition_model_tier: sonnet
@@ -18,8 +18,7 @@ boundaries and dependencies are the part worth the premium model.
 one task file, not inbox tickets: the async inbox/tend infrastructure was archived 2026-08-06, so
 execution is manual and immediate.)
 
-**Scope:** this skill splits a job into units. To flesh out one unit's own description, use
-**ticket-planning**.
+**Scope:** this skill splits a job into units; it does not write a unit's own description in depth.
 
 ## The principle: pay for a phase only when it removes a real risk
 

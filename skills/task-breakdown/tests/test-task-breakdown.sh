@@ -112,10 +112,6 @@ echo "9. Example is lean"
 skill_has 'a three-unit job, 6 phases \(not 13\)' "worked example shows 6 phases, not 13"
 
 echo ""
-echo "10. ticket-planning referenced for scope boundary"
-skill_has "ticket-planning" "still points single-ticket refinement at ticket-planning"
-
-echo ""
 echo "11. sync.sh mirrors"
 for mirror in "$CLAUDE_MIRROR" "$GEMINI_MIRROR"; do
   if [ -f "$mirror" ]; then
