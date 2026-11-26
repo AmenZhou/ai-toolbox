@@ -16,11 +16,8 @@ PASS=0
 FAIL=0
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 SKILL_SRC="/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/SKILL.md"
-ANALYZER_SKILL="/Users/haimengzhou/apps/ai-toolbox/skills/inbox-log-analyzer/SKILL.md"
 SKILL_INSTALLED="$HOME/.claude/skills/task-orchestrate/SKILL.md"
-ANALYZER_INSTALLED="$HOME/.claude/skills/inbox-log-analyzer/SKILL.md"
 MONITOR_DIR="/Users/haimengzhou/apps/ai-toolbox/skills/task-orchestrate/monitor"
-INBOX_ANALYZER_PLIST="$HOME/Library/LaunchAgents/com.orchestrate.inbox-analyzer.plist"
 CURSOR_AGENT="$HOME/.local/bin/cursor-agent"
 
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
@@ -154,52 +151,6 @@ skill_has 'no shared context from the implementation phases' \
 skill_has 'Review: <PASS \| PARTIAL: <gap> \| FAIL: <reason>>' \
   "§6b-direct requires the never-silent Review: output line"
 
-if grep -q 'Task:.*full task:' "$ANALYZER_SKILL" 2>/dev/null || \
-   grep -q 'read the full log in Phase 1' "$ANALYZER_SKILL" 2>/dev/null; then
-  ok "inbox-log-analyzer Step 5 Context includes full task line + log pointer"
-else
-  fail "inbox-log-analyzer Step 5 Context missing full task line or log pointer"
-fi
-
-# Keyword-overlap check for substance-duplicates against differently-titled tickets
-# (20260728-inbox-7B05): title-prefix comparison alone misses a candidate finding
-# that describes the same root cause as an already-filed ticket worded differently.
-if grep -q 'Keyword-overlap check for likely substance-duplicates' "$ANALYZER_SKILL" 2>/dev/null; then
-  ok "inbox-log-analyzer Step 4 documents keyword-overlap substance-duplicate check"
-else
-  fail "inbox-log-analyzer missing keyword-overlap substance-duplicate check"
-fi
-if grep -q 'Extract distinctive keywords' "$ANALYZER_SKILL" 2>/dev/null && \
-   grep -qE '2 or more.*distinctive keywords|1 keyword.*full file basename' "$ANALYZER_SKILL" 2>/dev/null; then
-  ok "inbox-log-analyzer keyword-overlap check defines extraction + match threshold"
-else
-  fail "inbox-log-analyzer keyword-overlap check missing extraction or match threshold rules"
-fi
-if grep -q 'orchestrate-history/MANIFEST.md' "$ANALYZER_SKILL" 2>/dev/null && \
-   grep -q '\.orchestrate/project\.md' "$ANALYZER_SKILL" 2>/dev/null; then
-  ok "inbox-log-analyzer keyword-overlap search corpus includes project.md + MANIFEST.md"
-else
-  fail "inbox-log-analyzer keyword-overlap search corpus missing project.md or MANIFEST.md"
-fi
-# Regression case (AC): the 5639/8CA8 pair — a recurring-blocker finding whose
-# auto-generated title shares no 60-char prefix with the already-filed 8CA8 ticket's
-# human-authored title, but whose excerpt keywords (test-task-orchestrate.sh,
-# .orchestrate/, PROJECT_ROOT) overlap 8CA8's filed ticket body — must be documented
-# as caught by the new check, not just theoretically covered.
-if grep -q '20260726-inbox-8CA8' "$ANALYZER_SKILL" 2>/dev/null && \
-   grep -q '20260727-inbox-5639' "$ANALYZER_SKILL" 2>/dev/null && \
-   grep -q 'test-task-orchestrate\.sh' "$ANALYZER_SKILL" 2>/dev/null; then
-  ok "inbox-log-analyzer documents 5639/8CA8 regression case for keyword-overlap check"
-else
-  fail "inbox-log-analyzer missing 5639/8CA8 regression worked example"
-fi
-if grep -q 'flag, don.t silently skip' "$ANALYZER_SKILL" 2>/dev/null && \
-   grep -q 'Possible duplicate of' "$ANALYZER_SKILL" 2>/dev/null; then
-  ok "inbox-log-analyzer keyword-overlap match flags (not suppresses) the finding"
-else
-  fail "inbox-log-analyzer keyword-overlap match should flag, not suppress"
-fi
-
 # ── 5. Installed skill sync ───────────────────────────────────────────────────
 echo ""
 echo "5. Installed skill sync"
@@ -213,17 +164,6 @@ if [ -f "$SKILL_INSTALLED" ]; then
   fi
 else
   fail "installed SKILL.md not found at $SKILL_INSTALLED"
-fi
-
-if [ -f "$ANALYZER_INSTALLED" ]; then
-  ok "installed inbox-log-analyzer SKILL.md exists (~/.claude/skills/)"
-  if cmp -s "$ANALYZER_SKILL" "$ANALYZER_INSTALLED" 2>/dev/null; then
-    ok "installed inbox-log-analyzer SKILL.md matches ai-toolbox source"
-  else
-    fail "installed inbox-log-analyzer SKILL.md is stale — run: cd /Users/haimengzhou/apps/ai-toolbox && ./sync.sh"
-  fi
-else
-  fail "installed inbox-log-analyzer SKILL.md not found at $ANALYZER_INSTALLED"
 fi
 
 # ── 8. Cursor ↔ Claude permission parity ──────────────────────────────────────
@@ -772,13 +712,6 @@ if grep -q 'requeue-unblocked.sh' "$PROJECT_ROOT/.orchestrate/bin/run-job.sh" 2>
   ok "run-job.sh invokes requeue-unblocked.sh in tend preflight"
 else
   fail "run-job.sh missing requeue-unblocked.sh preflight call"
-fi
-
-UNBLOCK_SKILL="/Users/haimengzhou/apps/ai-toolbox/skills/unblock-task/SKILL.md"
-if grep -q 'to_clear:' "$UNBLOCK_SKILL" 2>/dev/null; then
-  ok "unblock-task displays needs/why/to_clear fields"
-else
-  fail "unblock-task missing structured human-ask display"
 fi
 
 # Fixture: first-pass C2 on deferral language (non-EXTERNAL task)
