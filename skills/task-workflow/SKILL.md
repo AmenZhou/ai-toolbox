@@ -1,7 +1,7 @@
 ---
 name: task-workflow
 description: Turn a reusable workflow template into a task-orchestrate task plan, so a recurring kind of task (a deck, a design doc, a report) needs only a one-line prompt. A template lists the steps once, for example "spec, then slides, then agent review, then human review, then agent review until no comments", together with the task's goal and rules. This skill fills in the inputs and writes the `.orchestrate/tasks/{ID}.md` plan that task-orchestrate runs and tracks. It also creates a new template from a prompt and updates existing ones. Use whenever the user says "create a workflow for", "use the <name> workflow", "start a <deck/doc/report> workflow", "plan this from the <name> template", "save this as a workflow template", "update the <name> template", or describes a repeatable sequence of work, review and approval steps. Do NOT use it for a Workflow tool script that fans out many agents (workflow-authoring), or for a one-off job with no reusable shape (task-breakdown). Running the plan is task-orchestrate's job ("/orch resume", "go").
-version: 4.0.0
+version: 4.1.0
 ---
 
 # task-workflow
@@ -13,8 +13,9 @@ by hand every time.
 
 | What | Where |
 |---|---|
-| Templates | `/Users/haimengzhou/apps/ai-console/.orchestrate/workflows/templates/<name>.md` |
+| Templates (the source) | `/Users/haimengzhou/apps/ai-toolbox/workflows/templates/<name>.md` |
 | Old template versions | `.../workflows/templates/_old/<name>.v<N>.md`. Never offer these as templates. |
+| Synced copy | `/Users/haimengzhou/apps/ai-console/.orchestrate/workflows/templates/`, written by ai-toolbox `sync.sh`. Never edit it: change the source, then run sync. |
 | Task plans | `/Users/haimengzhou/apps/ai-console/.orchestrate/tasks/{ID}.md`, registered in `.../.orchestrate/project.md` |
 
 Always use these absolute paths, whatever the current directory.
