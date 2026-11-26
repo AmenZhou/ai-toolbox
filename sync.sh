@@ -174,6 +174,20 @@ backup "$CURSOR_RULES"
 build_instructions "Cursor" > "$CURSOR_RULES"
 info "~/.cursorrules written"
 
+# ── Workflow templates ────────────────────────────────────────────────────────
+
+section "Workflow templates"
+
+# ai-toolbox/workflows/templates is the source; ai-console keeps a synced copy.
+# Copies files over, never deletes anything from the destination.
+WORKFLOWS_SRC="$REPO_DIR/workflows/templates"
+WORKFLOWS_DEST="/Users/haimengzhou/apps/ai-console/.orchestrate/workflows/templates"
+if [[ -d "$WORKFLOWS_SRC" ]]; then
+  mkdir -p "$WORKFLOWS_DEST"
+  cp -R "$WORKFLOWS_SRC/." "$WORKFLOWS_DEST/"
+  info "$WORKFLOWS_DEST — synced workflow templates from $WORKFLOWS_SRC"
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo
