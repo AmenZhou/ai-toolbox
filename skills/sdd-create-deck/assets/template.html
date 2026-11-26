@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sample Deck: Windowsill Herb Trial</title>
+<!-- TEMPLATE for sdd-create-deck. Made-up content: replace every slide, keep the CSS and the script.
+     Fonts: Source Serif 4 (voice) · DM Sans (substance) · IBM Plex Mono (metadata) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;0,8..60,700;1,8..60,400;1,8..60,600;1,8..60,700&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ===========================================================================
+   THEME TOKENS — change these to re-skin the whole deck
+   Palette: deep editorial navy + warm cream paper + one antique-gold accent.
+   Gold is a precision tool: rules, italic emphasis inside headlines, and
+   numerals only. It never fills a background and never carries body text.
+   =========================================================================== */
+:root {
+    /* Surfaces */
+    --navy:        #1C2644;
+    --navy-alt:    #232F55;
+    --cream:       #F0ECE3;
+    --cream-alt:   #E6E0D4;
+
+    /* Foregrounds on navy */
+    --warm:        #E2DCD0;   /* primary   */
+    --muted-d:     #8A96A8;   /* secondary */
+    --hint-d:      #7F8BA0;   /* tertiary  */
+
+    /* Foregrounds on cream */
+    --ink:         #1A2030;   /* primary   */
+    --muted-l:     #5A6270;   /* secondary */
+    --hint-l:      #6B727C;   /* tertiary  */
+
+    /* The one accent + hairlines */
+    --gold:        #C8A870;
+    --border-d:    #2E3D5C;
+    --border-l:    #CAC4B4;
+
+    /* Type roles — authored at the 1920×1080 stage size */
+    --f-serif: 'Source Serif 4', Georgia, serif;
+    --f-sans:  'DM Sans', system-ui, sans-serif;
+    --f-mono:  'IBM Plex Mono', monospace;
+
+    --t-display: 182px;  /* cover hero            */
+    --t-h1:      100px;  /* chapter opener        */
+    --t-h2:       58px;  /* slide headline        */
+    --t-h3:       34px;  /* panel / sub headline  */
+    --t-stat:     96px;  /* statistical numeral   */
+    --t-lead:     27px;  /* lead sentence         */
+    --t-body:     21px;  /* paragraph body        */
+    --t-cap:      16px;  /* caption / footnote    */
+    --t-label:    14px;  /* mono chrome + kicker  */
+
+    /* Spacing — 7.5vw / 5.5vh translated to stage px */
+    --pad-x: 144px;
+    --pad-y:  58px;
+
+    /* Motion */
+    --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+    --dur: 0.7s;
+
+    --stage-bg: #10162B;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ===========================================================================
+   FIXED 16:9 STAGE — MANDATORY BASE (viewport-base.css, verbatim)
+   Slides are authored at 1920×1080 and the stage is scaled as a whole.
+   =========================================================================== */
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--stage-bg, #000);
+}
+
+.deck-viewport {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    background: var(--stage-bg, #000);
+}
+
+.deck-stage {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    transform-origin: 0 0;
+    background: var(--slide-bg, #fff);
+}
+
+.slide {
+    position: absolute;
+    inset: 0;
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    display: block;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    background: var(--slide-bg, #fff);
+}
+
+.slide.active,
+.slide.visible {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
+    z-index: 1;
+}
+
+img,
+video,
+canvas,
+svg {
+    max-width: 100%;
+    max-height: 100%;
+}
+
+.deck-controls {
+    position: fixed;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 1000;
+}
+
+@media print {
+    html,
+    body {
+        width: 1920px;
+        height: auto;
+        overflow: visible;
+        background: #fff;
+    }
+
+    .deck-viewport {
+        position: static;
+        overflow: visible;
+        background: #fff;
+    }
+
+    .deck-stage {
+        position: static;
+        width: auto;
+        height: auto;
+        transform: none !important;
+        background: none;
+    }
+
+    .slide {
+        position: relative;
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        width: 1920px;
+        height: 1080px;
+        break-after: page;
+        page-break-after: always;
+    }
+
+    .slide:last-child {
+        break-after: auto;
+        page-break-after: auto;
+    }
+
+    .deck-controls {
+        display: none !important;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.2s !important;
+    }
+}
+
+/* ===========================================================================
+   DUAL SURFACES
+   Navy and cream are both first-class. Cream acts as a reset inside a dark
+   run. Only dark slides carry the 80px grid texture — the system fingerprint.
+   =========================================================================== */
+.slide.dark  { background: var(--navy);  color: var(--warm); }
+.slide.light { background: var(--cream); color: var(--ink);  }
+
+.slide.dark::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 80px 80px;
+}
+
+/* ===========================================================================
+   SLIDE FRAME — grid rows: chrome / body / foot
+   =========================================================================== */
+.pad {
+    position: relative;
+    z-index: 1;
+    height: 100%;
+    padding: var(--pad-y) var(--pad-x);
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+}
+
+/* Chromeless layouts (cover, chapter, statement) get one full-bleed region */
+.pad.bare { grid-template-rows: 1fr; }
+
+/* Top chrome strip: mono label left, counter right, hairline beneath.
+   The hairline is what makes chrome read as chrome rather than floating text. */
+.chrome,
+.foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-family: var(--f-mono);
+    font-size: var(--t-label);
+    font-weight: 500;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+}
+.chrome { padding-bottom: 16px; }
+.foot   { padding-top: 18px; }
+
+.dark  .chrome { border-bottom: 1px solid var(--border-d); color: var(--hint-d); }
+.light .chrome { border-bottom: 1px solid var(--border-l); color: var(--hint-l); }
+.dark  .foot   { border-top: 1px solid var(--border-d);    color: var(--hint-d); }
+.light .foot   { border-top: 1px solid var(--border-l);    color: var(--hint-l); }
+
+.chrome .sect { color: inherit; }
+.dark  .chrome .sect { color: var(--muted-d); }
+.light .chrome .sect { color: var(--muted-l); }
+.count { color: var(--gold); }
+
+.body-region {
+    min-height: 0;
+    padding: 34px 0 26px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.body-region > * { flex-shrink: 0; }
+
+/* ===========================================================================
+   TYPOGRAPHY — serif = voice, sans = substance, mono = metadata.
+   An <em> inside any serif headline renders italic in gold: the Signal moment.
+   =========================================================================== */
+h1, h2, h3 { font-family: var(--f-serif); font-weight: 600; }
+
+h1 { font-size: var(--t-h1); line-height: 1.08; letter-spacing: -0.01em; }
+h2 { font-size: var(--t-h2); line-height: 1.14; letter-spacing: -0.01em; }
+h3 { font-size: var(--t-h3); font-weight: 500; line-height: 1.3; }
+
+h1 em, h2 em, h3 em, .display em {
+    font-style: italic;
+    font-weight: 600;
+    color: var(--gold);
+}
+
+.display {
+    font-family: var(--f-serif);
+    font-weight: 700;
+    font-size: var(--t-display);
+    line-height: 0.96;
+    letter-spacing: -0.02em;
+}
+
+/* Kicker: mono uppercase gold, generously tracked, above a headline */
+.kicker {
+    font-family: var(--f-mono);
+    font-size: var(--t-label);
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--gold);
+}
+
+/* The 36px gold rule — kicker separator and chapter break */
+.rule {
+    width: 36px;
+    height: 1px;
+    background: var(--gold);
+    margin: 20px 0 22px;
+}
+.rule.wide { width: 120px; }
+
+.lead {
+    font-family: var(--f-sans);
+    font-weight: 400;
+    font-size: var(--t-lead);
+    line-height: 1.58;
+}
+.dark  .lead { color: var(--warm);  }
+.light .lead { color: var(--ink);   }
+
+p, li, td, th {
+    font-family: var(--f-sans);
+    font-size: var(--t-body);
+    line-height: 1.62;
+}
+
+/* Emphasis in sans body switches family to italic serif gold — the font
+   change IS the emphasis. Bold inside body does not exist in this system. */
+.lead em, p em, li em, td em {
+    font-family: var(--f-serif);
+    font-style: italic;
+    font-weight: 600;
+    color: var(--gold);
+}
+
+.dark  .sec { color: var(--muted-d); }
+.light .sec { color: var(--muted-l); }
+
+.note {
+    font-family: var(--f-sans);
+    font-size: var(--t-cap);
+    line-height: 1.5;
+}
+.dark  .note { color: var(--hint-d); }
+.light .note { color: var(--hint-l); }
+
+.mono {
+    font-family: var(--f-mono);
+    font-size: var(--t-label);
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+code {
+    font-family: var(--f-mono);
+    font-size: 0.92em;
+    letter-spacing: 0;
+}
+
+/* Outlined gold tag — the pill version of a kicker */
+.tag {
+    display: inline-block;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    padding: 0.3em 0.8em;
+    font-family: var(--f-mono);
+    font-size: var(--t-label);
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+/* Every statistical numeral: serif 600, gold, tight tracking */
+.stat-v {
+    font-family: var(--f-serif);
+    font-weight: 600;
+    font-size: var(--t-stat);
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--gold);
+}
+.stat-v.sm { font-size: 62px; }
+
+.stat-l {
+    font-family: var(--f-sans);
+    font-size: var(--t-cap);
+    line-height: 1.45;
+    margin-top: 10px;
+}
+.dark  .stat-l { color: var(--muted-d); }
+.light .stat-l { color: var(--muted-l); }
+
+/* Stat tile: top hairline, gold serif numeral, sans label */
+.stat {
+    padding: 22px 26px 22px 0;
+}
+.dark  .stat { border-top: 1px solid var(--border-d); }
+.light .stat { border-top: 1px solid var(--border-l); }
+
+/* ===========================================================================
+   LISTS — em-dash marker in mono gold replaces the bullet dot
+   =========================================================================== */
+ul.dash { list-style: none; }
+ul.dash li {
+    display: grid;
+    grid-template-columns: 1.2em 1fr;
+    gap: 0.5em;
+    margin-bottom: 16px;
+}
+ul.dash li::before {
+    content: '—';
+    font-family: var(--f-mono);
+    color: var(--gold);
+}
+.dark  ul.dash li { color: var(--muted-d); }
+.light ul.dash li { color: var(--muted-l); }
+.dark  ul.dash li strong { color: var(--warm); font-weight: 500; }
+.light ul.dash li strong { color: var(--ink);  font-weight: 500; }
+
+/* ===========================================================================
+   TABLES — hairline separation only. No card chrome, no zebra fills.
+   =========================================================================== */
+table { width: 100%; border-collapse: collapse; }
+thead th {
+    font-family: var(--f-mono);
+    font-size: var(--t-label);
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    text-align: left;
+    padding: 0 22px 14px 0;
+    vertical-align: bottom;
+}
+.dark  thead th { color: var(--hint-d);  border-bottom: 1px solid var(--border-d); }
+.light thead th { color: var(--hint-l);  border-bottom: 1px solid var(--border-l); }
+
+tbody td {
+    padding: 17px 22px 17px 0;
+    vertical-align: top;
+}
+.dark  tbody td { border-bottom: 1px solid var(--border-d); color: var(--muted-d); }
+.light tbody td { border-bottom: 1px solid var(--border-l); color: var(--muted-l); }
+.dark  tbody tr:last-child td { border-bottom: 0; }
+.light tbody tr:last-child td { border-bottom: 0; }
+
+.dark  td.key, .dark  td strong { color: var(--warm); font-weight: 500; }
+.light td.key, .light td strong { color: var(--ink);  font-weight: 500; }
+
+/* Numeric cells always read as gold serif figures.
+   Scoped by surface so these win over the `.dark/.light tbody td` color rule. */
+td.num, th.num { text-align: right; }
+.dark tbody td.fig,
+.light tbody td.fig {
+    font-family: var(--f-serif);
+    font-weight: 600;
+    font-size: 30px;
+    letter-spacing: -0.02em;
+    color: var(--gold);
+    white-space: nowrap;
+}
+td.fig.big { font-size: 44px; }
+table.compact tbody td { padding: 13px 20px 13px 0; font-size: 20px; }
+table.compact thead th { padding-bottom: 12px; }
+
+/* ===========================================================================
+   REGIONS — hairline-separated columns and panels
+   =========================================================================== */
+.cols { display: grid; gap: 0; }
+.col { padding-right: 54px; }
+.dark  .col + .col { border-left: 1px solid var(--border-d); padding-left: 54px; }
+.light .col + .col { border-left: 1px solid var(--border-l); padding-left: 54px; }
+.col:last-child { padding-right: 0; }
+
+.panel { padding: 26px 30px 26px 0; }
+.dark  .panel { border-top: 1px solid var(--border-d); }
+.light .panel { border-top: 1px solid var(--border-l); }
+
+/* A quiet aside for caveats — hairline left rule in gold, never a filled box */
+.aside {
+    border-left: 3px solid var(--gold);
+    padding: 4px 0 4px 26px;
+}
+
+/* ===========================================================================
+   ENTRANCE — one orchestrated load per slide, staggered
+   =========================================================================== */
+.reveal {
+    opacity: 0;
+    transform: translateY(26px);
+    transition: opacity var(--dur) var(--ease-spring),
+                transform var(--dur) var(--ease-spring);
+}
+.slide.visible .reveal { opacity: 1; transform: none; }
+
+.r1 { transition-delay: 0.05s; }
+.r2 { transition-delay: 0.15s; }
+.r3 { transition-delay: 0.25s; }
+.r4 { transition-delay: 0.35s; }
+.r5 { transition-delay: 0.45s; }
+.r6 { transition-delay: 0.55s; }
+.r7 { transition-delay: 0.65s; }
+.r8 { transition-delay: 0.75s; }
+
+/* Gold rules draw themselves open from the left */
+.slide .rule { transform: scaleX(0); transform-origin: left;
+               transition: transform 0.8s var(--ease-spring) 0.3s; }
+.slide.visible .rule { transform: none; }
+
+/* ===========================================================================
+   DECK CHROME — lives outside the stage, never inside the slide design
+   =========================================================================== */
+.deck-controls {
+    display: flex;
+    align-items: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s ease;
+    gap: 14px;
+    font-family: var(--f-mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(226, 220, 208, 0.42);
+    background: rgba(16, 22, 43, 0.82);
+    border: 1px solid rgba(226, 220, 208, 0.14);
+    padding: 9px 16px;
+    backdrop-filter: blur(6px);
+}
+.deck-controls button {
+    background: none;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    padding: 2px 6px;
+    letter-spacing: inherit;
+}
+.deck-controls button:hover { color: var(--gold); }
+.deck-controls .pos { color: var(--gold); min-width: 62px; text-align: center; }
+.deck-controls.show { opacity: 1; pointer-events: auto; }
+
+.progress {
+    position: fixed;
+    left: 0; bottom: 0;
+    height: 2px;
+    background: var(--gold);
+    z-index: 1000;
+    transition: width 0.45s var(--ease-spring);
+}
+
+/* ===========================================================================
+   INLINE EDITING — hover the top-left hotzone or press E
+   Visibility is driven by JS classes only (a CSS ~ sibling rule would break
+   the hover chain via pointer-events: none).
+   =========================================================================== */
+.edit-hotzone {
+    position: fixed;
+    top: 0; left: 0;
+    width: 80px; height: 80px;
+    z-index: 10000;
+    cursor: pointer;
+}
+.edit-toggle {
+    position: fixed;
+    top: 18px; left: 18px;
+    z-index: 10001;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+    background: rgba(16, 22, 43, 0.9);
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    font-family: var(--f-mono);
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    padding: 9px 14px;
+    cursor: pointer;
+}
+.edit-toggle.show, .edit-toggle.active { opacity: 1; pointer-events: auto; }
+.edit-toggle.active { background: var(--gold); color: var(--navy); }
+
+body.editing [contenteditable="true"]:hover {
+    outline: 1px dashed var(--gold);
+    outline-offset: 4px;
+}
+body.editing [contenteditable="true"]:focus {
+    outline: 1px solid var(--gold);
+    outline-offset: 4px;
+}
+.edit-hint {
+    position: fixed;
+    top: 18px; left: 140px;
+    z-index: 10001;
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(226, 220, 208, 0.55);
+    background: rgba(16, 22, 43, 0.9);
+    border: 1px solid rgba(226, 220, 208, 0.16);
+    padding: 10px 14px;
+    display: none;
+}
+body.editing .edit-hint { display: block; }
+
+/* ===========================================================================
+   SLIDE-SPECIFIC LAYOUTS
+   =========================================================================== */
+
+/* --- Cover --- */
+.cover-grid {
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+}
+.cover-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--border-d);
+    font-family: var(--f-mono);
+    font-size: var(--t-label);
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted-d);
+}
+.cover-top .g { color: var(--gold); }
+.cover-main { display: grid; grid-template-columns: 1.32fr 1fr; align-items: center; gap: 96px; }
+.cover-title { font-size: 128px; line-height: 1.0; }
+.cover-rail { border-top: 1px solid var(--border-d); }
+.cover-rail .row {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 26px;
+    padding: 28px 0 24px;
+    border-bottom: 1px solid var(--border-d);
+}
+.cover-rail .lab {
+    font-family: var(--f-mono); font-size: var(--t-label); font-weight: 500;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--muted-d); max-width: 420px; line-height: 1.55;
+}
+.cover-rail .val {
+    font-family: var(--f-serif); font-weight: 600; font-size: 58px; line-height: 1;
+    letter-spacing: -0.02em; color: var(--gold); white-space: nowrap;
+}
+.cover-foot {
+    display: flex; justify-content: space-between; align-items: flex-end;
+    padding-top: 20px; border-top: 1px solid var(--border-d);
+    font-family: var(--f-mono); font-size: var(--t-label); font-weight: 500;
+    letter-spacing: 0.2em; text-transform: uppercase; color: var(--hint-d);
+}
+
+/* --- Chapter opener --- */
+.chapter { height: 100%; display: flex; flex-direction: column; justify-content: center; max-width: 1360px; }
+.chapter .num {
+    font-family: var(--f-mono); font-size: 20px; font-weight: 500;
+    letter-spacing: 0.3em; color: var(--gold);
+}
+.chapter h1 { margin-top: 4px; }
+.chapter .sub { margin-top: 34px; max-width: 1140px; }
+.chapter .chapter-foot { margin-top: 46px; display: flex; align-items: center; gap: 22px; }
+.chapter .chapter-foot .where {
+    font-family: var(--f-mono); font-size: 14px; font-weight: 500;
+    letter-spacing: 0.18em; text-transform: uppercase; color: var(--hint-d);
+}
+
+/* --- Key-points slide --- */
+.kp-wrap { display: grid; grid-template-columns: 1fr 384px; gap: 0; height: 100%; }
+.kp-list {
+    padding-right: 62px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+.kp {
+    display: grid;
+    grid-template-columns: 74px 1fr auto;
+    gap: 0 20px;
+    padding: 19px 0;
+}
+/* Signpost to where this point is expanded */
+.kp .go {
+    font-family: var(--f-mono); font-size: 13px; font-weight: 500;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--gold);
+    padding-top: 12px; white-space: nowrap; text-align: right;
+}
+.light .kp { border-top: 1px solid var(--border-l); }
+.kp .n {
+    font-family: var(--f-serif); font-weight: 600; font-size: 40px;
+    line-height: 1; letter-spacing: -0.02em; color: var(--gold); padding-top: 4px;
+}
+.kp h3 { font-size: 31px; margin-bottom: 5px; }
+.kp p { font-size: 20px; line-height: 1.52; }
+.kp .blk {
+    font-family: var(--f-mono); font-size: 13px; font-weight: 500;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--gold);
+    margin-top: 7px; display: block;
+}
+.kp-rail { border-left: 1px solid var(--border-l); padding-left: 54px; }
+
+/* --- 2x2 failure grid --- */
+.quad {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto;
+    align-content: center;
+    row-gap: 64px;
+    height: 100%;
+}
+.quad .cell { padding: 24px 46px 24px 0; }
+.light .quad .cell { border-top: 1px solid var(--border-l); }
+.dark  .quad .cell { border-top: 1px solid var(--border-d); }
+.light .quad .cell:nth-child(even) { border-left: 1px solid var(--border-l); padding-left: 46px; }
+.dark  .quad .cell:nth-child(even) { border-left: 1px solid var(--border-d); padding-left: 46px; }
+.quad .cell .k {
+    font-family: var(--f-mono); font-size: 13px; font-weight: 500;
+    letter-spacing: 0.2em; text-transform: uppercase; color: var(--gold);
+}
+.quad .cell h3 { font-size: 29px; margin: 8px 0 10px; }
+.quad .cell p { font-size: 19px; line-height: 1.55; }
+.light .quad .cell .cost { color: var(--hint-l); }
+.dark  .quad .cell .cost { color: var(--hint-d); }
+.quad .cell .cost {
+    margin-top: 10px; font-size: 17px; line-height: 1.5;
+    font-family: var(--f-sans); font-style: italic;
+}
+
+/* --- Statement / closing --- */
+.statement { height: 100%; display: flex; flex-direction: column; justify-content: center; }
+.statement h1 { max-width: 1420px; }
+.next { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: 66px; }
+.next .step { padding: 26px 46px 0 0; border-top: 1px solid var(--border-d); }
+.next .step + .step { border-left: 1px solid var(--border-d); padding-left: 46px; }
+.next .step .n {
+    font-family: var(--f-mono); font-size: 13px; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--gold);
+}
+.next .step h3 { font-size: 27px; margin: 10px 0 8px; }
+.next .step p { font-size: 18px; line-height: 1.55; color: var(--muted-d); }
+
+/* --- Phase metric strip: five tiles, same order on every phase slide --- */
+.metrics { display: grid; grid-template-columns: repeat(5, 1fr); margin: 8px 0 26px; }
+.metrics .stat { padding: 18px 22px 8px 0; }
+.light .metrics .stat + .stat { border-left: 1px solid var(--border-l); padding-left: 26px; }
+.dark  .metrics .stat + .stat { border-left: 1px solid var(--border-d); padding-left: 26px; }
+.metrics .stat-v.sm { font-size: 54px; }
+
+/* --- Catch bars on the comparison slide --- */
+.bar { display: inline-block; width: 240px; height: 12px; vertical-align: middle; margin-right: 18px; background: var(--border-l); }
+.bar > i { display: block; height: 100%; background: var(--navy); }
+.bv { font-family: var(--f-serif); font-weight: 600; font-size: 24px; letter-spacing: -0.01em; color: var(--ink); vertical-align: middle; white-space: nowrap; }
+
+/* --- Industry slides --- */
+table.ind tbody td { padding: 11px 18px 11px 0; font-size: 20px; line-height: 1.4; }
+table.ind tbody td.fig { font-size: 26px; line-height: 1.1; }
+a.src { color: inherit; text-decoration: underline; text-decoration-color: var(--gold); text-underline-offset: 3px; }
+</style>
+</head>
+<body>
+
+<div class="deck-viewport">
+<main class="deck-stage" id="deckStage">
+
+<section class="slide dark active" data-edit-key="s01" aria-label="Cover">
+  <div class="pad bare">
+    <div class="cover-grid">
+      <div class="cover-top reveal r1"><span>Sample report &nbsp;·&nbsp; windowsill herb trial</span><span class="g">2026-01-15</span></div>
+      <div class="cover-main">
+        <div>
+          <div class="kicker reveal r2">Four herbs · three windows · eight weeks</div>
+          <div class="rule wide"></div>
+          <h1 class="cover-title reveal r3">Herb Trial<br><em>Results</em></h1>
+          <p class="lead reveal r5" style="margin-top:38px;max-width:880px">One paragraph that says the whole finding. Light matters more than water. A grow lamp rescues the north window. Mint is the safest start, and basil is <em>not ready</em> for a shaded sill.</p>
+        </div>
+        <nav class="reveal r5" aria-label="Index of slides">
+            <div class="kicker" style="margin-bottom:12px">Index</div>
+<a href="#2" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">2</b>Why herbs fail</a>
+<a href="#3" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">3</b>The journey: four steps</a>
+<a href="#4" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">4</b>What we did and learned</a>
+<a href="#5" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">5</b>What we found</a>
+<a href="#6" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">6</b>Success by method</a>
+<a href="#7" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">7</b>Challenges</a>
+<a href="#8" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">8</b>Practice and our gaps</a>
+<a href="#9" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">9</b>Decisions</a>
+<a href="#10" style="display:grid;grid-template-columns:64px 1fr;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--border-d);text-decoration:none;color:var(--warm);font-family:var(--f-sans);font-size:24px"><b style="font-family:var(--f-serif);font-size:28px;font-weight:600;color:var(--gold)">A</b>Appendix: the numbers</a>
+        </nav>
+      </div>
+      <div class="cover-foot reveal r8"><span>Main slides 1–9 · details in the appendix · made-up sample</span><span>01 / 09</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide light" data-edit-key="s02" aria-label="Why herbs fail">
+  <div class="pad">
+<header class="chrome"><span class="sect">Why herbs fail</span><span class="count">02 / 09</span></header>
+    <div class="body-region">
+      <h2 class="reveal r1" style="max-width:1620px;margin-bottom:8px">A herb on a windowsill can <em>fail in four ways</em>.</h2>
+      <p class="reveal r1" style="font-size:22px;margin-bottom:16px">Most people lose a herb in the first month. Four kinds of failure explain nearly all of it:</p>
+      <div class="reveal r2" style="display:grid;grid-template-columns:repeat(4,1fr);background:var(--navy);margin-bottom:24px">
+        <div style="padding:18px 26px 20px"><div class="kicker">Light · Too little</div><h3 style="font-size:27px;margin:8px 0 6px;color:var(--warm)">Grows tall and pale</h3><p style="font-size:18px;line-height:1.45;color:var(--warm)">A plant that leans toward the glass and thins out.</p></div>
+        <div style="padding:18px 26px 20px;border-left:1px solid var(--border-d)"><div class="kicker">Water · Too much</div><h3 style="font-size:27px;margin:8px 0 6px;color:var(--warm)">Roots rot</h3><p style="font-size:18px;line-height:1.45;color:var(--warm)">A pot that never dries, with yellow lower leaves.</p></div>
+        <div style="padding:18px 26px 20px;border-left:1px solid var(--border-d)"><div class="kicker">Heat · Too hot</div><h3 style="font-size:27px;margin:8px 0 6px;color:var(--warm)">Leaves scorch</h3><p style="font-size:18px;line-height:1.45;color:var(--warm)">Afternoon sun through a south window in summer.</p></div>
+        <div style="padding:18px 26px 20px;border-left:1px solid var(--border-d)"><div class="kicker">Care · Too little</div><h3 style="font-size:27px;margin:8px 0 6px;color:var(--warm)">Dries out</h3><p style="font-size:18px;line-height:1.45;color:var(--warm)">A pot that is forgotten for a week.</p></div>
+      </div>
+      <div class="cols reveal r6" style="grid-template-columns:1fr 1fr;margin-top:14px">
+        <div class="col"><h3 style="font-size:28px;margin-bottom:6px">Goal 1 · Keep <em>one herb alive</em></h3><p style="font-size:20px;line-height:1.5">Name the cheapest setup that keeps a first herb alive for eight weeks.</p></div>
+        <div class="col"><h3 style="font-size:28px;margin-bottom:6px">Goal 2 · Compare <em>the setups</em></h3><p style="font-size:20px;line-height:1.5">Compare windows and lamps on the same pots, so the result is fair.</p></div>
+      </div>
+    </div>
+<footer class="foot"><span>Examples are made up</span><span>Why</span></footer>
+  </div>
+</section>
+
+<section class="slide light" data-edit-key="s03" aria-label="The journey">
+  <div class="pad">
+<header class="chrome"><span class="sect">The journey: four steps</span><span class="count">03 / 09</span></header>
+    <div class="body-region">
+      <h2 class="reveal r1" style="max-width:1620px;margin-bottom:24px">Four steps: <em>each answer raised the next question</em>.</h2>
+      <table class="compact ind reveal r2">
+        <thead><tr><th style="width:330px">Step</th><th style="width:430px">We asked</th><th style="width:430px">We learned</th><th>So we</th><th style="width:110px">Detail</th></tr></thead>
+        <tbody>
+          <tr><td class="key">1 · South window</td><td>Does bright light keep a herb alive?</td><td>Yes, but afternoon heat scorched some leaves</td><td>Tried the east window</td><td><a class="src" href="#11">A1</a></td></tr>
+          <tr><td class="key">2 · East window</td><td>Is gentler light enough?</td><td>Yes for mint, not for basil</td><td>Tried the north window with a lamp</td><td><a class="src" href="#11">A1–A2</a></td></tr>
+          <tr><td class="key">3 · Grow lamp</td><td>Can a lamp rescue a dark sill?</td><td>It lifted growth in the north window</td><td>Compared lamp hours</td><td><a class="src" href="#12">A2</a></td></tr>
+          <tr><td class="key">4 · Watering plan</td><td>Does a fixed plan beat guessing?</td><td>It cut root rot; the test does not show more</td><td>Wrote the starter guide</td><td><a class="src" href="#13">A3</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+<footer class="foot"><span>Mint, basil, parsley and thyme · eight weeks per step</span><span>Journey</span></footer>
+  </div>
+</section>
+
+<section class="slide dark" data-edit-key="s04" aria-label="What we did and learned">
+  <div class="pad">
+<header class="chrome"><span class="sect">Steps 1–2 · windows</span><span class="count">04 / 09</span></header>
+    <div class="body-region">
+      <h2 class="reveal r1" style="max-width:1620px;margin-bottom:24px">Light from the sun <em>is not enough alone</em>.</h2>
+      <div class="cols" style="grid-template-columns:1fr 1fr">
+        <div class="col reveal r2" style="--line:var(--border-d)"><div class="kicker">Step 1</div><h3 style="font-size:36px;margin:8px 0 18px">South window</h3><div style="padding:16px 0;border-top:1px solid var(--line)"><div class="kicker" style="margin-bottom:6px">What we did</div><p style="font-size:24px;line-height:1.45">Grew four herbs in a row of pots facing south.</p></div><div style="padding:16px 0;border-top:1px solid var(--line)"><div class="kicker" style="margin-bottom:6px">What we learned</div><p style="font-size:24px;line-height:1.45">Growth was strong in spring and weak in summer heat.</p></div><div style="padding:16px 0;border-top:1px solid var(--line)"><div class="kicker" style="margin-bottom:6px">Decision</div><p style="font-size:24px;line-height:1.45">Keep it as the baseline. Detail: <a class="src" href="#11">A1</a></p></div></div>
+        <div class="col reveal r2" style="--line:var(--border-d)"><div class="kicker">Step 2</div><h3 style="font-size:36px;margin:8px 0 18px">East window</h3><div style="padding:16px 0;border-top:1px solid var(--line)"><div class="kicker" style="margin-bottom:6px">What we did</div><p style="font-size:24px;line-height:1.45">Grew the same four herbs facing east.</p></div><div style="padding:16px 0;border-top:1px solid var(--line)"><div class="kicker" style="margin-bottom:6px">What we learned</div><p style="font-size:24px;line-height:1.45">Mint did well. Basil stayed small.</p></div><div style="padding:16px 0;border-top:1px solid var(--line)"><div class="kicker" style="margin-bottom:6px">Decision</div><p style="font-size:24px;line-height:1.45">Mint can start here. Detail: <a class="src" href="#11">A1</a></p></div></div>
+      </div>
+    </div>
+<footer class="foot"><span>Different pots in each step</span><span>Steps 1–2</span></footer>
+  </div>
+</section>
+
+<section class="slide light" data-edit-key="s05" aria-label="What we found">
+  <div class="pad">
+<header class="chrome"><span class="sect">What we found</span><span class="count">05 / 09</span></header>
+    <div class="body-region">
+      <h2 class="reveal r1" style="max-width:1620px;margin-bottom:24px">Light decided the result; <em>a lamp helped most</em>.</h2>
+      <div class="quad" style="height:auto;row-gap:12px">
+        <div class="cell reveal r2"><div class="k">Step 3 · lamp</div><h3 style="font-size:34px">A lamp rescued the north window</h3><p style="font-size:24px;line-height:1.45">Pots under a lamp grew like east-window pots. <a class="src" href="#12">A2</a></p></div>
+        <div class="cell reveal r2"><div class="k">Step 3 · hours</div><h3 style="font-size:34px">Twelve hours was enough</h3><p style="font-size:24px;line-height:1.45">More hours showed no clear difference. <a class="src" href="#12">A2</a></p></div>
+        <div class="cell reveal r2"><div class="k">Step 4 · watering</div><h3 style="font-size:34px">A plan cut root rot</h3><p style="font-size:24px;line-height:1.45">Fewer pots rotted. Growth looked the same. <a class="src" href="#13">A3</a></p></div>
+        <div class="cell reveal r2"><div class="k">All steps · basil</div><h3 style="font-size:34px">Basil needs the most light</h3><p style="font-size:24px;line-height:1.45">It failed in every setup but the south window. <a class="src" href="#13">A3</a></p></div>
+      </div>
+    </div>
+<footer class="foot"><span>Small samples · one kitchen</span><span>Findings</span></footer>
+  </div>
+</section>
+
+<section class="slide light" data-edit-key="s06" aria-label="Success by method">
+  <div class="pad">
+<header class="chrome"><span class="sect">Success by method</span><span class="count">06 / 09</span></header>
+    <div class="body-region">
+      <h2 class="reveal r1" style="max-width:1632px;margin-bottom:22px">On checked pots the lamp keeps most herbs alive; <em>the window alone about three in four</em>.</h2>
+      <table class="compact ind reveal r2">
+        <thead><tr><th style="width:280px">All saw the same pots</th><th style="width:170px">Checked by a grower?</th><th>Window alone</th><th>Lamp alone</th><th>Either one (not built)</th><th style="width:230px">Stunted pots</th></tr></thead>
+        <tbody>
+          <tr><td class="key">Trial A<div style="font-size:17px;font-weight:400">24 pots</div></td><td>Yes</td><td><div style="white-space:nowrap"><span class="bv" style="font-size:26px">75%</span> <span style="font-size:17px">18 of 24 · 55–88%</span></div></td><td><div style="white-space:nowrap"><span class="bv" style="font-size:26px">92%</span> <span style="font-size:17px">22 of 24 · 74–98%</span></div></td><td><div style="white-space:nowrap"><span class="bv" style="font-size:26px">96%</span> <span style="font-size:17px">23 of 24 · 80–99%</span></div></td><td>Window 1, lamp 2 of 40</td></tr>
+          <tr><td class="key">Trial B<div style="font-size:17px;font-weight:400">12 pots</div></td><td>No</td><td><div style="white-space:nowrap"><span class="bv" style="font-size:26px">50%</span> <span style="font-size:17px">6 of 12 · 25–75%</span></div></td><td><div style="white-space:nowrap"><span class="bv" style="font-size:26px">67%</span> <span style="font-size:17px">8 of 12 · 39–86%</span></div></td><td>Not worked out</td><td>Window 0, lamp 1 of 30</td></tr>
+        </tbody>
+      </table>
+      <div class="aside reveal r4" style="margin-top:22px;max-width:1632px"><p class="note" style="font-size:18px;color:var(--muted-l)"><b>How to read it.</b> Compare only along a row. “Healthy” counts only a clear verdict from the grower. A pot nobody could judge is left out and named in a note. The second percentage is the 95% range. “Either one” is never lower than each alone; it was worked out later. Full table: <a class="src" href="#12">A2</a>.</p></div>
+    </div>
+<footer class="foot"><span>Small samples, one kitchen</span><span>Comparison</span></footer>
+  </div>
+</section>
+
+<section class="slide light" data-edit-key="s07" aria-label="Challenges">
+  <div class="pad">
+<header class="chrome"><span class="sect">Challenges</span><span class="count">07 / 09</span></header>
+    <div class="body-region">
+      <h2 class="reveal r1" style="max-width:1620px;margin-bottom:24px">Two challenges: <em>unjudged</em> pots, and a choice only the owner <em>can make</em>.</h2>
+      <div class="cols" style="grid-template-columns:1fr 1fr">
+        <div class="col reveal r2"><div class="kicker">Key challenge · measuring</div><h3 style="font-size:34px;margin:8px 0 16px">Success is hard to measure</h3>
+          <div style="padding:13px 0;border-top:1px solid var(--border-l)"><p style="font-size:23px;line-height:1.45"><b>Some pots could not be judged.</b> A pot that was moved cannot be scored. <a class="src" href="#12">A2</a></p></div><div style="padding:13px 0;border-top:1px solid var(--border-l)"><p style="font-size:23px;line-height:1.45"><b>So no success rate counts them.</b> They are a challenge, not a result.</p></div><div style="padding:13px 0;border-top:1px solid var(--border-l)"><p style="font-size:23px;line-height:1.45"><b>Labels are weak.</b> One grower scored most pots.</p></div></div>
+        <div class="col reveal r3"><div class="kicker">Business decision · not sure</div><h3 style="font-size:34px;margin:8px 0 16px">What do we do with a doubtful pot?</h3>
+          <div style="padding:13px 0;border-top:1px solid var(--border-l)"><p style="font-size:23px;line-height:1.45"><b>Count it as lost (rule today).</b> Fewer false wins; some good herbs are written off.</p></div><div style="padding:13px 0;border-top:1px solid var(--border-l)"><p style="font-size:23px;line-height:1.45"><b>Count it as alive.</b> Better totals; the result may flatter the method.</p></div><div style="padding:13px 0;border-top:1px solid var(--border-l)"><p style="font-size:23px;line-height:1.45"><b>A second grower decides.</b> Fairer, but it needs time.</p></div></div>
+      </div>
+    </div>
+<footer class="foot"><span>Open until the owner decides; until then the pot counts as lost</span><span>Challenges</span></footer>
+  </div>
+</section>
+
+<section class="slide dark" data-edit-key="s08" aria-label="Practice and our gaps">
+  <div class="pad">
+<header class="chrome"><span class="sect">Practice and our gaps</span><span class="count">08 / 09</span></header>
+    <div class="body-region">
+      <h2 class="reveal r1" style="max-width:1620px;margin-bottom:24px">Growers use light, a plan and a log; <em>we have gaps</em>.</h2>
+      <table class="compact ind reveal r2">
+        <thead><tr><th style="width:380px">Practice</th><th style="width:290px">Who says so</th><th style="width:400px">Our trial today</th><th>What to apply</th></tr></thead>
+        <tbody>
+          <tr><td class="key">1 · Measure the light</td><td>Garden society</td><td>Judged by eye</td><td>Use a cheap light meter</td></tr>
+          <tr><td class="key">2 · Water by a plan</td><td>Garden society</td><td>A fixed plan in step 4 only</td><td>Use the plan in every step</td></tr>
+          <tr><td class="key">3 · Keep a log</td><td>Two growers</td><td>Notes in one file</td><td>One log per pot</td></tr>
+          <tr><td class="key">✓ · Start with mint</td><td>Garden society</td><td>Mint first</td><td>Keep</td></tr>
+        </tbody>
+      </table>
+      <div class="aside reveal r5" style="margin-top:24px;max-width:1600px"><p class="note" style="font-size:19px;color:var(--muted-d)"><b>1 to 3 are proposals, not approved.</b> Sources and detail: <a class="src" href="#13">A3</a>.</p></div>
+    </div>
+<footer class="foot"><span>Public sources read 2026-01-10</span><span>Practice</span></footer>
+  </div>
+</section>
+
+<section class="slide dark" data-edit-key="s09" aria-label="Decisions">
+  <div class="pad">
+<header class="chrome"><span class="sect">What to decide next</span><span class="count">09 / 09</span></header>
+    <div class="body-region">
+      <div class="statement">
+        <div class="kicker reveal r1">Decisions</div>
+        <div class="rule"></div>
+        <h1 class="reveal r2" style="font-size:84px">Two choices made, <em>one still open</em>.</h1>
+        <div class="next reveal r4" style="grid-template-columns:repeat(3,1fr)">
+          <div class="step"><div class="n">01 · Start</div><h3 style="font-size:31px">Start with mint</h3><p style="font-size:22px;line-height:1.5">Mint survived in every window. <a class="src" href="#11">A1</a></p></div>
+          <div class="step"><div class="n">02 · Light</div><h3 style="font-size:31px">Add a lamp to the north window</h3><p style="font-size:22px;line-height:1.5">It lifted growth to the east-window level. <a class="src" href="#12">A2</a></p></div>
+          <div class="step"><div class="n">03 · Doubtful pots</div><h3 style="font-size:31px">Decide how a doubtful pot counts</h3><p style="font-size:22px;line-height:1.5">Lost, alive, or a second grower? Open until the owner decides. <a class="src" href="#13">A3</a></p></div>
+        </div>
+      </div>
+    </div>
+<footer class="foot"><span>Also open: budget for lamps, a second kitchen</span><span>Next steps</span></footer>
+  </div>
+</section>
+
+<section class="slide dark" data-edit-key="s10" aria-label="Appendix">
+  <div class="pad">
+<header class="chrome"><span class="sect">Appendix</span><span class="count">A1–A3</span></header>
+    <div class="body-region">
+      <div class="kicker reveal r1">Part 2</div>
+      <div class="rule"></div>
+      <h1 class="reveal r1" style="margin-bottom:44px">Appendix: <em>the numbers</em></h1>
+      <div class="cols reveal r3" style="grid-template-columns:1fr"><div class="col"><p style="font-size:24px;line-height:2.1"><a class="src" href="#11">A1</a> &nbsp; The brief, in three lines</p><p style="font-size:24px;line-height:2.1"><a class="src" href="#12">A2</a> &nbsp; Results by trial</p><p style="font-size:24px;line-height:2.1"><a class="src" href="#13">A3</a> &nbsp; Our opinion</p></div></div>
+    </div>
+<footer class="foot"><span>Click a number to open the slide</span><span>Appendix</span></footer>
+  </div>
+</section>
+
+<section class="slide light" data-edit-key="a01" aria-label="The brief">
+  <div class="pad">
+<header class="chrome"><span class="sect">Appendix · The brief in three lines</span><span class="count">A1 / A3</span></header>
+    <div class="body-region">
+      <div class="kp-wrap"><div class="kp-list">
+        <div class="reveal r1" style="margin-bottom:22px"><h2>What each step showed, <em>in three lines</em>.</h2></div>
+        <div class="kp reveal r2"><div class="n">01</div><div><h3>Windows: bright light works, heat scorches</h3><p>In 24 pots the south window kept <strong>75%</strong> healthy (18 of 24).</p><span class="blk">→ Use it in spring only</span></div><div class="go">Slides A2</div></div>
+        <div class="kp reveal r2"><div class="n">02</div><div><h3>Lamp: rescues a dark sill</h3><p>Under a lamp <strong>92%</strong> of 24 pots stayed healthy (22).</p><span class="blk">→ Add a lamp to the north window</span></div><div class="go">Slides A2</div></div>
+        <div class="kp reveal r3"><div class="n">03</div><div><h3>Doubtful pots: success is hard to measure</h3><p>Some pots could not be judged and are left out of every rate.</p><span class="blk">→ Open for the owner</span></div><div class="go">Slides A3</div></div>
+      </div></div>
+    </div>
+<footer class="foot"><span>Counts only · sample numbers are made up</span><span>Brief</span></footer>
+  </div>
+</section>
+
+<section class="slide light" data-edit-key="a02" aria-label="Results by trial">
+  <div class="pad">
+<header class="chrome"><span class="sect">Appendix · Results by trial</span><span class="count">A2 / A3</span></header>
+    <div class="body-region">
+      <div class="kicker reveal r1">Window and lamp · 2026-01-05 to 01-12</div>
+      <div class="rule"></div>
+      <h2 class="reveal r1" style="max-width:1560px;margin-bottom:12px">A lamp kept <em>92%</em> of the pots healthy.</h2>
+      <div class="metrics reveal r2">
+        <div class="stat"><div class="stat-v sm">40</div><div class="stat-l">pots in the window trial</div></div><div class="stat"><div class="stat-v sm">30</div><div class="stat-l">pots in the lamp trial</div></div><div class="stat"><div class="stat-v sm">92%</div><div class="stat-l">success: 22 of 24 pots (interval 74–98%)</div></div><div class="stat"><div class="stat-v sm">3.3%</div><div class="stat-l">stunted: 1 of 30 pots</div></div><div class="stat"><div class="stat-v sm">$12</div><div class="stat-l">for lamps and soil; time not counted</div></div>
+      </div>
+      <table class="compact ind reveal r3">
+        <thead><tr><th style="width:420px">Trial</th><th style="width:520px">Pots</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td class="key">Trial A</td><td>24 pots, checked by a grower</td><td>18 healthy by window alone, 22 under a lamp</td></tr>
+          <tr><td class="key">Trial B</td><td>12 pots, not checked</td><td>6 healthy by window alone, 8 under a lamp</td></tr>
+        </tbody>
+      </table>
+      <h3 class="reveal r4" style="font-size:26px;margin:24px 0 8px">Our opinion</h3>
+      <div class="cols reveal r4" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="col"><p style="font-size:18px;line-height:1.5"><b>Use a lamp on a dark sill.</b> The gain is clear on the checked pots.</p></div>
+        <div class="col"><p style="font-size:18px;line-height:1.5"><b>Do not trust trial B alone.</b> Nobody checked it, and it is small.</p></div>
+        <div class="col"><p style="font-size:18px;line-height:1.5"><b>So we tested a plan.</b> Step 4 and slide <a class="src" href="#13">A3</a>.</p></div>
+      </div>
+    </div>
+<footer class="foot"><span>One kitchen, one season · small samples</span><span>Trials</span></footer>
+  </div>
+</section>
+
+<section class="slide dark" data-edit-key="a03" aria-label="Our opinion">
+  <div class="pad">
+<header class="chrome"><span class="sect">Appendix · Our opinion</span><span class="count">A3 / A3</span></header>
+    <div class="body-region">
+      <h2 class="reveal r1" style="max-width:1500px;margin-bottom:10px">Start with mint; <em>add a lamp</em> where it is dark.</h2>
+      <div class="quad" style="height:auto;row-gap:34px;margin-top:20px">
+        <div class="cell reveal r2"><div class="k">Mint</div><h3>Start here</h3><p>It survived in every window and every setup we tried.</p></div>
+        <div class="cell reveal r2"><div class="k">Basil</div><h3>Not ready for shade</h3><p>It stayed small in every window but the south one.</p></div>
+        <div class="cell reveal r2"><div class="k">Lamp</div><h3>Worth the cost</h3><p>A cheap lamp lifted growth in the dark window.</p></div>
+        <div class="cell reveal r2"><div class="k">Watering plan</div><h3>Helps, not proven</h3><p>Fewer pots rotted. The test does not show a growth gain.</p></div>
+      </div>
+    </div>
+<footer class="foot"><span>Opinion, not a result · one kitchen</span><span>Opinion</span></footer>
+  </div>
+</section>
+
+</main>
+</div>
+
+<!-- Deck chrome — outside the 1920×1080 stage by design -->
+<div class="progress" id="progress"></div>
+<nav class="deck-controls" aria-label="Slide navigation">
+  <button id="prevBtn" aria-label="Previous slide">◂ Prev</button>
+  <span class="pos" id="pos">01 / 13</span>
+  <button id="nextBtn" aria-label="Next slide">Next ▸</button>
+</nav>
+
+<!-- Inline editing affordance -->
+<div class="edit-hotzone" aria-hidden="true"></div>
+<button class="edit-toggle" id="editToggle" title="Edit mode (E)">Edit</button>
+<div class="edit-hint">Click any text to edit · ⌘S saves to this browser · E exits</div>
+
+<script>
+/* ===========================================================================
+   SLIDE PRESENTATION CONTROLLER
+   Scales the fixed 1920×1080 stage to the window as one transform, and
+   drives slide visibility via .active / .visible (never display:none).
+   =========================================================================== */
+class SlidePresentation {
+    constructor() {
+        this.slides  = Array.from(document.querySelectorAll('.slide'));
+        this.stage   = document.getElementById('deckStage');
+        this.pos     = document.getElementById('pos');
+        this.bar     = document.getElementById('progress');
+        this.current = 0;
+
+        this.setupStageScale();
+        this.setupKeyboardNav();
+        this.setupTouchNav();
+        this.setupWheelNav();
+        this.setupButtons();
+        this.show(this.readHash());
+    }
+
+    /* One transform scales the whole stage; letterboxes rather than reflows. */
+    setupStageScale() {
+        const scale = () => {
+            const f = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+            const x = (window.innerWidth  - 1920 * f) / 2;
+            const y = (window.innerHeight - 1080 * f) / 2;
+            this.stage.style.transform = `translate(${x}px, ${y}px) scale(${f})`;
+        };
+        scale();
+        window.addEventListener('resize', scale);
+    }
+
+    setupKeyboardNav() {
+        document.addEventListener('keydown', (e) => {
+            if (e.target.getAttribute('contenteditable') === 'true') return;
+            switch (e.key) {
+                case 'ArrowRight': case 'ArrowDown': case ' ': case 'PageDown':
+                    e.preventDefault(); this.next(); break;
+                case 'ArrowLeft': case 'ArrowUp': case 'PageUp':
+                    e.preventDefault(); this.prev(); break;
+                case 'Home': e.preventDefault(); this.show(0); break;
+                case 'End':  e.preventDefault(); this.show(this.slides.length - 1); break;
+            }
+        });
+    }
+
+    setupTouchNav() {
+        let x0 = null;
+        document.addEventListener('touchstart', (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+        document.addEventListener('touchend', (e) => {
+            if (x0 === null) return;
+            const dx = e.changedTouches[0].clientX - x0;
+            if (Math.abs(dx) > 60) { dx < 0 ? this.next() : this.prev(); }
+            x0 = null;
+        }, { passive: true });
+    }
+
+    setupWheelNav() {
+        let lock = false;
+        document.addEventListener('wheel', (e) => {
+            if (lock || document.body.classList.contains('editing')) return;
+            if (Math.abs(e.deltaY) < 24) return;
+            lock = true;
+            e.deltaY > 0 ? this.next() : this.prev();
+            setTimeout(() => { lock = false; }, 620);
+        }, { passive: true });
+    }
+
+    setupButtons() {
+        document.getElementById('nextBtn').addEventListener('click', () => this.next());
+        document.getElementById('prevBtn').addEventListener('click', () => this.prev());
+        window.addEventListener('hashchange', () => this.show(this.readHash()));
+        this.setupControlFade();
+    }
+
+    /* Controls surface on pointer activity and fade out again, so they never
+       sit permanently over a slide's foot bar. */
+    setupControlFade() {
+        const bar = document.querySelector('.deck-controls');
+        let timer = null;
+        const wake = () => {
+            bar.classList.add('show');
+            clearTimeout(timer);
+            timer = setTimeout(() => bar.classList.remove('show'), 2400);
+        };
+        ['mousemove', 'touchstart', 'keydown'].forEach((evt) =>
+            document.addEventListener(evt, wake, { passive: true })
+        );
+        bar.addEventListener('mouseenter', () => { clearTimeout(timer); bar.classList.add('show'); });
+        wake();
+    }
+
+    readHash() {
+        const n = parseInt((location.hash || '').replace('#', ''), 10);
+        return Number.isFinite(n) ? n - 1 : 0;
+    }
+
+    next() { this.show(this.current + 1); }
+    prev() { this.show(this.current - 1); }
+
+    show(index) {
+        this.current = Math.max(0, Math.min(index, this.slides.length - 1));
+        this.slides.forEach((s, i) => {
+            const on = i === this.current;
+            s.classList.toggle('active', on);
+            s.classList.toggle('visible', on);
+        });
+        const label = String(this.current + 1).padStart(2, '0');
+        this.pos.textContent = `${label} / ${String(this.slides.length).padStart(2, '0')}`;
+        this.bar.style.width = `${((this.current + 1) / this.slides.length) * 100}%`;
+        if (history.replaceState) history.replaceState(null, '', `#${this.current + 1}`);
+    }
+}
+
+/* ===========================================================================
+   INLINE TEXT EDITOR
+   Click any text to edit. Changes persist to localStorage for this browser
+   and can be exported as a fresh HTML file.
+   =========================================================================== */
+class InlineEditor {
+    constructor(deck) {
+        this.deck     = deck;
+        this.isActive = false;
+        this.targets  = document.querySelectorAll(
+            '.slide h1, .slide h2, .slide h3, .slide p, .slide li span, ' +
+            '.slide td, .slide th, .slide .kicker, .slide .stat-v, .slide .stat-l, ' +
+            '.slide .lab, .slide .val, .slide .n, .slide .k, .slide .blk, .slide .cost'
+        );
+        this.restore();
+        this.bind();
+    }
+
+    key() { return 'sample-deck-edits'; }
+
+    /* Each editable element is addressed by slide index + its order within it. */
+    addressOf(el) {
+        const slide = el.closest('.slide');
+        const i = slide.dataset.editKey || Array.from(document.querySelectorAll('.slide')).indexOf(slide);
+        const peers = Array.from(slide.querySelectorAll(el.tagName));
+        return `${i}:${el.tagName}:${peers.indexOf(el)}`;
+    }
+
+    restore() {
+        let saved;
+        try { saved = JSON.parse(localStorage.getItem(this.key()) || '{}'); }
+        catch (_) { return; }
+        this.targets.forEach((el) => {
+            const v = saved[this.addressOf(el)];
+            if (typeof v === 'string') el.innerHTML = v;
+        });
+    }
+
+    save() {
+        const out = {};
+        this.targets.forEach((el) => { out[this.addressOf(el)] = el.innerHTML; });
+        try { localStorage.setItem(this.key(), JSON.stringify(out)); } catch (_) {}
+    }
+
+    toggle() {
+        this.isActive = !this.isActive;
+        document.body.classList.toggle('editing', this.isActive);
+        document.getElementById('editToggle').classList.toggle('active', this.isActive);
+        this.targets.forEach((el) => {
+            el.setAttribute('contenteditable', this.isActive ? 'true' : 'false');
+        });
+        if (!this.isActive) this.save();
+    }
+
+    /* Export the current DOM as a standalone HTML file. */
+    export() {
+        const clone = document.documentElement.cloneNode(true);
+        clone.querySelectorAll('[contenteditable]').forEach((el) => el.removeAttribute('contenteditable'));
+        clone.querySelector('body').classList.remove('editing');
+        const blob = new Blob(['<!DOCTYPE html>\n' + clone.outerHTML], { type: 'text/html' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'sample-deck.html';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
+
+    bind() {
+        const toggle  = document.getElementById('editToggle');
+        const hotzone = document.querySelector('.edit-hotzone');
+        let hideTimer = null;
+
+        const showBtn = () => { clearTimeout(hideTimer); toggle.classList.add('show'); };
+        const hideBtn = () => {
+            hideTimer = setTimeout(() => {
+                if (!this.isActive) toggle.classList.remove('show');
+            }, 400);
+        };
+
+        hotzone.addEventListener('mouseenter', showBtn);
+        hotzone.addEventListener('mouseleave', hideBtn);
+        toggle.addEventListener('mouseenter', showBtn);
+        toggle.addEventListener('mouseleave', hideBtn);
+
+        hotzone.addEventListener('click', () => this.toggle());
+        toggle.addEventListener('click', () => this.toggle());
+
+        document.addEventListener('keydown', (e) => {
+            const inField = e.target.getAttribute('contenteditable') === 'true';
+            if ((e.key === 'e' || e.key === 'E') && !inField) { showBtn(); this.toggle(); }
+            if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); this.save(); this.export(); }
+        });
+
+        document.addEventListener('input', () => { if (this.isActive) this.save(); });
+    }
+}
+
+const deck = new SlidePresentation();
+const editor = new InlineEditor(deck);
+</script>
+</body>
+</html>
